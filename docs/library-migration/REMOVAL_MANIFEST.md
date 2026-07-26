@@ -5,13 +5,22 @@ fixture-parity test** in its assigned PR before deletion happens in the
 corresponding later PR. Until then, the current custom implementation
 remains authoritative.
 
+**PR 3 update:** the custom market-calendar row is now **closed, not
+pending PR 17**. `exchange_calendars` (XNYS) fixture parity is proven (see
+`STATUS.md`), and the custom holiday/session arithmetic
+(`_nth_weekday_of_month`, `_last_weekday_of_month`, `_easter_sunday`,
+`_observed`, `_federal_holidays`, the fixed 16:00 close assumption) was
+removed in place from `src/trading_research/evaluation/market_calendar.py`
+in PR 3 itself, rather than left as a parallel legacy implementation for
+PR 17 to delete later. The table row is retained for history only.
+
 Do not add `paper_books/*`, `backtesting/engine.py`, `external_broker.py`,
 `paper_books/config.py`, or `storage/*` to this manifest — see
 `PRESERVATION_MANIFEST.md` and `DECISIONS.md` D1/D3 for why.
 
 | Component | File(s) | Eligible for removal after | Not eligible until | Removal PR |
 |---|---|---|---|---|
-| Custom market calendar | `src/trading_research/evaluation/market_calendar.py` | `exchange_calendars` fixture parity | All session/holiday/weekend/DST/pre-market/intraday/after-hours/previous-and-next-session/session-count fixture cases pass | PR 17 (parity proven in PR 3) |
+| Custom market calendar | `src/trading_research/evaluation/market_calendar.py` | `exchange_calendars` fixture parity | **Done in PR 3** — all session/holiday/weekend/DST/pre-market/intraday/after-hours/previous-and-next-session/session-count fixture cases pass | Removed in PR 3 (not deferred to PR 17) |
 | Custom indicators | `scripts/indicators.py` | TA-Lib fixture parity | Warm-up, null, and rounding semantics documented and matched for EMA/RSI/MACD/TRIX/Bollinger | PR 17 (parity proven in PR 4) |
 | Custom analytics formulas | `src/trading_research/evaluation/metrics.py` — `sharpe_ratio`, `sortino_ratio`, `max_drawdown`, `calmar_ratio`, `cumulative_return` only | quantstats-lumi / empyrical-reloaded fixture parity | Annualization convention and insufficient-data status semantics matched | PR 17 (parity proven in PR 11) |
 | Custom logging formatter | `src/trading_research/logging_config.py` — `RedactingFormatter`, `JsonRedactingFormatter` | Structlog processor parity | Redaction and secret-registration behavior matched exactly (no secret ever logged during the transition) | PR 17 (parity proven in PR 15) |
