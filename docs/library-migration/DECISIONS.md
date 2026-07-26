@@ -132,6 +132,15 @@ Adopt only where it produces a clear reduction in custom boundary-validation
 code. See the single ADR rule recorded above (corrected 2026-07-26, PR 1)
 for when an ADR is required.
 
+**PR 2 outcome (2026-07-26): do not adopt.** Full inventory and comparison
+in `docs/library-migration/pr2/EVALUATION.md`. No boundary showed a clear
+reduction in custom validation code — safety-critical business-rule
+validators relocate into Pydantic `field_validator` methods of equal size
+rather than shrinking; the one mechanical win (`extra="forbid"` unknown-field
+rejection) is already implemented by hand at every safety-critical boundary.
+No `pydantic` dependency added; no ADR required, per the single ADR rule
+above.
+
 ---
 
 ## D3 — Hard safety layer: preserved regardless of any library adoption
@@ -175,7 +184,8 @@ diverge from `plan.md`'s literal library list:
 | QuantStats | "QuantStats" | Use **quantstats-lumi** (Lumiwealth fork), not original `quantstats` | Same maintainer as already-adopted LumiBot; more consistent release cadence |
 | Indicators | "VectorBT indicators or TA-Lib" | **TA-Lib** primary; **pandas-ta-classic** evaluated only as a fallback if TA-Lib's native C-library requirement blocks a target environment | Original `pandas-ta` is functionally abandoned (beta-only, facing archival) |
 | Time control (new, not in original plan.md) | — | Adopt **time-machine** over freezegun for test suites | freezegun's monkeypatch approach misses C-extension/pandas datetime internals; no Python 3.14 support |
-| Python floor | Not specified in plan.md | Raise from `>=3.10` to `>=3.11` | VectorBT 1.1.0 requires `>=3.11`; nothing else in the adopted set requires more |
+| Python floor | Not specified in plan.md | Remain >=3.10. Reconsider >=3.11 only if PR 5 selects a library requiring it. | BLOCKED_PENDING_LICENSE_DECISION. Not approved until the owner explicitly
+accepts the Commons Clause or PR 5 chooses an OSI-approved alternative. |
 | Pandera, PyArrow | PR 2 / dataset storage | **Defer** — no concrete DataFrame-contract or bulk-storage need exists yet | Adding either speculatively increases install weight (PyArrow wheel 28–53MB) with no current consumer |
 
 ### VectorBT status (corrected 2026-07-26, PR 1)

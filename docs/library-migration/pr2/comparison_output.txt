@@ -1,0 +1,28 @@
+=== Valid config ===
+Pydantic: accepted -> alpaca
+
+=== Unknown top-level key ===
+[unknown-top-key] Pydantic error:
+  Extra inputs are not permitted (loc=('bogus',))
+
+=== Unknown nested key ===
+[unknown-nested-key] Pydantic error:
+  Extra inputs are not permitted (loc=('paper_broker', 'bogus'))
+
+=== real_money_enabled=true (safety invariant) ===
+[real-money-enabled] Pydantic error:
+  Value error, real_money_enabled=true is not permitted — fail closed (loc=('paper_broker', 'real_money_enabled'))
+
+=== wrong type (startup_timeout_seconds as string) ===
+[wrong-type] Pydantic error:
+  Input should be a valid number, unable to parse string as a number (loc=('paper_runtime', 'startup_timeout_seconds'))
+
+=== missing required key ===
+[missing-key] Pydantic error:
+  Field required (loc=('evaluation', 'benchmark'))
+
+=== JSONL protocol boundary ===
+Pydantic: accepted valid request
+Pydantic error (extra field): Extra inputs are not permitted extra_forbidden
+
+Pydantic model_validate: 20000 iterations in 0.0742s (3.71 us/call)
