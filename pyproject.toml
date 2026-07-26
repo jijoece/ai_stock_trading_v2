@@ -17,12 +17,40 @@ dependencies = [
     "pandas>=2.2.0",
     "streamlit>=1.36.0",
     "vaderSentiment>=3.3.2",
+    # PR 3 will replace evaluation/market_calendar.py with this library; it is
+    # base application infrastructure, not an optional extra, once that
+    # migration lands. See docs/library-migration/DECISIONS.md.
+    "exchange_calendars>=4.13,<5",
 ]
 
 [project.optional-dependencies]
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.24",
+    "hypothesis>=6.161,<7",
+    "time-machine>=3.2,<4",
+]
+# PR 4 candidate: technical-indicator library replacing scripts/indicators.py.
+# TA-Lib ships prebuilt binary wheels for supported CPython/OS/arch
+# combinations (see docs/library-migration/DEPENDENCY_MATRIX.md); a system
+# package/source install is only a documented fallback if a target platform
+# lacks a compatible wheel, never an unconditional prerequisite.
+indicators = [
+    "TA-Lib>=0.7.1,<0.8",
+]
+# PR 11 candidate: empyrical-reloaded is the authoritative primitive-metrics
+# library (returns/annualization/Sharpe/Sortino/drawdown/alpha-beta);
+# quantstats-lumi is reporting/presentation only (tear sheets, tables,
+# charts) and must not become a second authority over the same primitives.
+analytics = [
+    "empyrical-reloaded>=0.5.12,<0.6",
+    "quantstats-lumi>=1.1.5,<2",
+]
+# PR 15/16 candidates: structured logging and additive tracing/metrics.
+observability = [
+    "structlog>=26.1,<27",
+    "opentelemetry-api>=1.44,<2",
+    "opentelemetry-sdk>=1.44,<2",
 ]
 # Milestone 3: LumiBot paper-execution runtime adapter, isolated behind
 # src/trading_research/runtime/lumibot/ (see docs/milestone3-lumibot-paper-integration.md).
@@ -33,7 +61,7 @@ dev = [
 # suite never requires this extra (lumibot-specific tests use
 # pytest.importorskip).
 paper = [
-    "lumibot==4.5.74",
+    "lumibot==4.5.78",
 ]
 
 [tool.setuptools.packages.find]

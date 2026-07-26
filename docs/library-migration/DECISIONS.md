@@ -77,8 +77,25 @@ exact replacement semantics.
 **Original plan.md item:** PR 2 "Canonical data contracts" (introduce
 Pydantic models broadly, per the original migration sequence).
 
-**Status:** Narrowed, not superseded. No new ADR required unless a later PR
-proposes expanding Pydantic beyond the boundary scope below.
+**Status:** Narrowed, not superseded.
+
+**Corrected 2026-07-26 (PR 1) — single ADR rule.** This document previously
+stated two inconsistent rules: "no ADR unless Pydantic expands beyond
+boundary use" and, separately, "an ADR is required if limited Pydantic
+adoption is implemented." Those two statements conflict once PR 2 actually
+implements boundary-only adoption. They are replaced by one rule:
+
+```text
+PR 2 is an evaluation PR and adds no Pydantic dependency by default.
+
+If PR 2 recommends adopting Pydantic at any boundary, it must create an ADR
+that explicitly supplements/narrows ADR 0001 before adding Pydantic to the
+application dependencies.
+
+Expansion beyond the approved trust-boundary scope requires another ADR.
+```
+
+PR 1 does not add `pydantic` to any dependency declaration.
 
 **Reasoning:** ADR 0001 Decision 3 rejected `pydantic.BaseModel` for internal
 contracts specifically because the repository had no other pydantic
@@ -112,8 +129,8 @@ domain models**, comparing current hand-written validation against a
 Pydantic boundary implementation on: dependency/performance impact,
 error-message behavior, unknown-field rejection, secret-field handling.
 Adopt only where it produces a clear reduction in custom boundary-validation
-code. A new ADR documenting limited Pydantic adoption is required **only if**
-PR 2 is actually implemented.
+code. See the single ADR rule recorded above (corrected 2026-07-26, PR 1)
+for when an ADR is required.
 
 ---
 
@@ -160,6 +177,37 @@ diverge from `plan.md`'s literal library list:
 | Time control (new, not in original plan.md) | — | Adopt **time-machine** over freezegun for test suites | freezegun's monkeypatch approach misses C-extension/pandas datetime internals; no Python 3.14 support |
 | Python floor | Not specified in plan.md | Raise from `>=3.10` to `>=3.11` | VectorBT 1.1.0 requires `>=3.11`; nothing else in the adopted set requires more |
 | Pandera, PyArrow | PR 2 / dataset storage | **Defer** — no concrete DataFrame-contract or bulk-storage need exists yet | Adding either speculatively increases install weight (PyArrow wheel 28–53MB) with no current consumer |
+
+### VectorBT status (corrected 2026-07-26, PR 1)
+
+```text
+VectorBT status: BLOCKED_PENDING_LICENSE_DECISION
+```
+
+The open-source `vectorbt` package (1.1.0) is licensed Apache-2.0 **with
+Commons Clause** — a fair-code restriction on selling a product whose value
+derives substantially from the software, not a restriction on internal
+research or paper-trading use. That makes it **source-available/fair-code,
+not conventional OSI-approved open source**. Internal, non-commercial use
+inside this repository may be permitted by its terms, but this repository
+has not obtained or recorded an explicit owner-approved exception to a
+strict "OSI-approved open-source libraries only" posture, and commercial or
+hosted use would require separate review regardless.
+
+Consequently:
+
+- PR 1 does not add `vectorbt` to any dependency declaration.
+- PR 1 does not raise the Python floor solely to satisfy VectorBT's
+  `>=3.11` requirement.
+- PR 1 does not create a populated `research` extra.
+- **PR 5** (retitled from "VectorBT research adapter" to "Vectorized
+  research library selection and adapter" — see `MASTER_PLAN.md`) must
+  either evaluate an OSI-approved alternative or obtain explicit owner
+  approval of the VectorBT license terms, and record that decision here,
+  before adding any vectorized-research dependency.
+
+This is a licensing-classification and project-decision record, not a legal
+conclusion.
 
 ### Open items requiring resolution before implementation (not before PR 0)
 
