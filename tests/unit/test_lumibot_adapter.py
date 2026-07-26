@@ -2,12 +2,14 @@
 `PaperOrderIntent` into a genuine `lumibot.entities.order.Order` and maps a
 scripted broker-callback stream into internal `PaperExecutionEvent`s.
 
-Guarded with `pytest.importorskip("lumibot")` — LumiBot is the optional
-`paper` extra (see pyproject.toml), not a base dependency (see
-docs/milestone3-lumibot-paper-integration.md "Known limitations": lumibot
-pulls ~140 unrelated transitive packages and downgrades this repo's pinned
-jsonschema/python-dotenv floor). The default 169+N test baseline must pass
-whether or not this extra is installed; only this file (and nothing it
+Guarded with `pytest.importorskip("lumibot")` — LumiBot is not a base
+dependency and, as of docs/adr/0002-isolated-lumibot-runtime.md's Amendment,
+is not installable via any `pyproject.toml`-declared extra either: LumiBot's
+`google-adk[extensions]` requirement pulls in `litellm`, which pins
+`jsonschema==4.23.0` exactly, conflicting unconditionally with this repo's
+`jsonschema>=4.26.0` floor. A developer who wants to run this file installs
+`lumibot` into a scratch virtualenv by hand. The default test baseline must
+pass whether or not lumibot is importable; only this file (and nothing it
 imports transitively at module scope) is skipped without it.
 
 The `broker_gateway` here is a hand-written fake — see
@@ -22,7 +24,7 @@ from decimal import Decimal
 
 import pytest
 
-lumibot = pytest.importorskip("lumibot", reason="lumibot is an optional 'paper' extra — see pyproject.toml")
+lumibot = pytest.importorskip("lumibot", reason="lumibot is optional and not installable via any pyproject.toml extra — see docs/adr/0002-isolated-lumibot-runtime.md")
 
 from trading_research.execution.config import load_execution_config  # noqa: E402
 from trading_research.execution.intent_builder import build_paper_order_intent  # noqa: E402

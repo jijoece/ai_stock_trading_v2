@@ -22,10 +22,15 @@
 
 ## Completed work (PR 1)
 
-**Scope:** `pyproject.toml`, `paper_runtime/pyproject.toml`, and the
-`docs/library-migration/*` documentation set — not `pyproject.toml` only, and
-not limited to dependency declarations; PR 1 also corrected inaccurate
-planning guidance recorded during PR 0.
+**Scope:** `pyproject.toml`, `paper_runtime/pyproject.toml`,
+`.github/workflows/ci.yml`, `docs/adr/0002-isolated-lumibot-runtime.md`
+(one amendment section), one doc-comment-only edit in
+`tests/unit/test_lumibot_adapter.py` (no behavior change — see "Root
+`paper` extra removed" below), and the `docs/library-migration/*`
+documentation set — not `pyproject.toml` only, and not limited to
+dependency declarations; PR 1 also corrected inaccurate planning guidance
+recorded during PR 0 and, after review, removed an unresolvable install
+target and added CI coverage for the new extras and the Python floor.
 
 ### Dependencies added
 
@@ -63,10 +68,11 @@ hypothesis>=6.161,<7
 time-machine>=3.2,<4
 ```
 
-`paper` extra (both `pyproject.toml` and `paper_runtime/pyproject.toml`):
+`paper_runtime/pyproject.toml` (the root `pyproject.toml` no longer declares
+a `paper` extra — see "Root `paper` extra removed" below):
 
 ```text
-lumibot==4.5.78   (bumped from 4.5.74, identical in both distributions)
+lumibot==4.5.78   (bumped from 4.5.74)
 ```
 
 ### Verified resolved versions (PyPI JSON API, 2026-07-26)
@@ -120,7 +126,34 @@ cp39–cp314. `pip install -e ".[indicators]"` resolved a compatible wheel on
 this machine (macOS arm64, Python 3.11) with no compilation and
 `import talib` succeeded (`talib.__version__ == "0.7.1"`). `DEPENDENCY_MATRIX.md`
 and `MASTER_PLAN.md` corrected to require a wheel first, with system
-installation only as an explicit fallback (PR 4 scope).
+installation only as an explicit fallback (PR 4 scope). This is now also a
+blocking CI check (`dependency-extras-smoke` / `indicators` in `ci.yml`, on
+`ubuntu-latest`), so the wheel result is a reproducible merge gate, not only
+a local scratch-environment observation.
+
+### Root `paper` extra removed (`DECISIONS.md` D5)
+
+The root `pyproject.toml`'s `paper` extra was **removed**, not merely
+version-bumped. `pip install -e ".[paper]"` cannot resolve for any
+published `lumibot==4.5.x` release: LumiBot's `google-adk[extensions]`
+requirement pulls in `litellm`, which pins `jsonschema==4.23.0` **exactly**
+across every compatible release, unconditionally conflicting with this
+repository's `jsonschema>=4.26.0` base floor. (An earlier diagnosis in this
+PR incorrectly attributed the failure to a `google-genai` version-floor
+mismatch between `lumibot` and `google-adk`; that mismatch is real but is
+not the blocking constraint — bisecting each base dependency individually
+against `lumibot==4.5.78` isolated `jsonschema>=4.26.0` as the actual
+unsatisfiable constraint, confirmed by inspecting `litellm`'s wheel metadata
+directly.) `docs/adr/0002-isolated-lumibot-runtime.md`'s Context section
+already flagged this exact risk as a *silent downgrade* motivating the
+`paper_runtime` process-boundary architecture; it has since become an
+unconditional resolution failure now that `jsonschema>=4.26.0` is a hard
+floor. `paper_runtime/pyproject.toml` is now the sole LumiBot dependency
+declaration in the repository. `runtime/lumibot/adapter.py` (ADR 0001) and
+its test (`tests/unit/test_lumibot_adapter.py`) are unaffected in behavior —
+the test still guards itself with `pytest.importorskip("lumibot")` and a
+developer who wants to exercise it installs `lumibot` into a scratch
+virtualenv by hand, not via any declared extra.
 
 ### Environments tested
 
@@ -141,21 +174,22 @@ compatible with the unchanged `>=3.10` floor.
 - **Environment D (`.[observability]`):** installed cleanly; `import
   structlog; import opentelemetry.sdk` succeeded (`structlog 26.1.0`); `pip
   check` clean. No exporter configured.
-- **Environment E1 (root `.[paper]` extra, standalone):** `pip install -e
-  ".[paper]"` fails with `ResolutionImpossible` — lumibot's
-  `google-genai<2.0.0,>=1.72.0` constraint conflicts with newer `google-adk`
-  releases (`>=2.2.0`) that require `google-genai>=2.4`/`2.8`/`2.9`. **This
-  is a pre-existing condition, not introduced by this PR**: it reproduces
-  identically with the previous `lumibot==4.5.74` pin on unmodified `main`.
-  Recorded as a remaining blocker below.
-- **Environment E2 (isolated `paper_runtime[dev]`):** installed cleanly;
-  `pip check` clean; resolved `lumibot==4.5.78`; paper_runtime suite —
-  **59 passed, 0 failed**.
-- **LumiBot version assertion:** programmatically confirmed both
-  `pyproject.toml` and `paper_runtime/pyproject.toml` pin the identical
-  exact version, `lumibot==4.5.78`.
-- Indicators/analytics/observability/paper were never installed together in
-  one combined environment, consistent with the isolation requirement.
+- **Environment E (isolated `paper_runtime[dev]` — the only LumiBot install
+  target that exists after this PR):** installed cleanly; `pip check`
+  clean; resolved `lumibot==4.5.78`; paper_runtime suite —
+  **59 passed, 0 failed**. The root `pyproject.toml` no longer declares a
+  `paper` extra (see "Root `paper` extra removed" above), so there is no
+  root-package LumiBot install path to validate separately, and no
+  cross-distribution version assertion to make — `lumibot==4.5.78` is
+  declared in exactly one place.
+- Indicators/analytics/observability were never installed together in one
+  combined environment, consistent with the isolation requirement. Each is
+  now also independently re-verified on every PR by the
+  `dependency-extras-smoke` CI matrix (`ci.yml`).
+- A blocking `python-3-10-floor` CI job (`ci.yml`) now installs `.[dev]` and
+  runs the full offline suite under the declared minimum Python version on
+  every PR; no Python 3.10 interpreter was available on this development
+  machine, so this substantiates the floor that local validation could not.
 
 ### Documentation corrections applied
 
@@ -185,11 +219,28 @@ compatible with the unchanged `>=3.10` floor.
 - The "21 proposed libraries" count in this file, which did not match
   `DEPENDENCY_MATRIX.md`'s 23 table entries, corrected above.
 - This file no longer states the PR is `pyproject.toml only`.
+- `DEPENDENCY_MATRIX.md` Section 1's VectorBT, TA-Lib, and LumiBot rows were
+  edited in place to state the current decision directly, rather than
+  leaving the superseded PR 0 proposal to contradict the corrections
+  recorded later in the same document (a future read of only Section 1
+  could otherwise reach the wrong conclusion).
+- Root `paper` extra removed from `pyproject.toml` after review identified
+  it as a declared, unresolvable install target (`DECISIONS.md` D5;
+  `docs/adr/0002-isolated-lumibot-runtime.md` Amendment).
+- `ci.yml` gained a blocking `dependency-extras-smoke` matrix (one job per
+  new extra: `indicators`, `analytics`, `observability`, each installed
+  alone) and a blocking `python-3-10-floor` job, so the new dependency
+  groups and the declared Python floor are reproducible merge gates, not
+  only local scratch-environment observations.
 
 ## Custom code removed
 
-None. PR 1 changed no file under `src/`, `scripts/`, `paper_runtime/src/`,
-`tests/`, or `config/`.
+None. PR 1 changed no behavior under `src/`, `scripts/`,
+`paper_runtime/src/`, `tests/`, or `config/`. The one edit under `tests/`
+(`tests/unit/test_lumibot_adapter.py`) is a docstring/skip-reason text
+update reflecting the removed `paper` extra — the test's guard
+(`pytest.importorskip("lumibot")`) and its pass/skip behavior are
+unchanged.
 
 ## Library authority established
 
@@ -204,23 +255,17 @@ dependency; PR 3/4/11/15/16 wire the respective libraries into code.
 
 ## Remaining blockers
 
-1. **Root `.[paper]` extra dependency resolution (`pip install -e
-   ".[paper]"`) is currently `ResolutionImpossible`** due to a conflict
-   between lumibot's `google-genai<2.0.0,>=1.72.0` pin and newer
-   `google-adk` releases' higher `google-genai` floors. Confirmed
-   pre-existing (reproduces at `lumibot==4.5.74` on unmodified `main`), not
-   introduced by this PR's version bump. The isolated `paper_runtime`
-   distribution (the actual production install path) is unaffected and
-   installs cleanly with `lumibot==4.5.78`. Not fixed in PR 1 — resolving
-   it would require touching base dependency floors (`anthropic`, `mcp`,
-   `jsonschema`) outside this PR's approved corrections, or an upstream
-   lumibot fix. Flagged for owner decision; does not block PR 1 or PR 2.
-2. **LumiBot-backtest-mode import-boundary question** (`DECISIONS.md` D4,
+1. **LumiBot-backtest-mode import-boundary question** (`DECISIONS.md` D4,
    open item 1) must be resolved before PR 6 starts. Not a blocker for
    PR 1 or PR 2.
-3. **PR 13/14 feasibility outcomes** (SQLAlchemy/Alembic trigger-safety,
+2. **PR 13/14 feasibility outcomes** (SQLAlchemy/Alembic trigger-safety,
    APScheduler lease-coexistence) are unknown until those PRs run — PR 1
    does not depend on them.
+
+The root `.[paper]` extra `ResolutionImpossible` finding from an earlier
+draft of this PR is resolved, not deferred: the extra was removed (see
+"Root `paper` extra removed" above and `DECISIONS.md` D5), so there is no
+outstanding blocker to track for it.
 
 ## Next PR
 

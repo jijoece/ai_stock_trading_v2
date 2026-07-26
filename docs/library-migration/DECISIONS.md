@@ -226,3 +226,51 @@ conclusion.
    This is compatible with this repository's MIT-licensed, non-commercial
    internal use, but must be recorded explicitly here rather than silently
    assumed. No blocker; documentation only.
+
+---
+
+## D5 — Root `paper` extra removed: `paper_runtime` is the sole LumiBot dependency authority
+
+**Discovered 2026-07-26, during PR 1 dependency-resolution validation.**
+
+`pip install -e ".[paper]"` in the root `pyproject.toml` fails with a hard
+`ResolutionImpossible`, not a soft version downgrade: LumiBot's
+`google-adk[extensions]` requirement pulls in `litellm`, which pins
+`jsonschema==4.23.0` **exactly** across every `litellm` release compatible
+with LumiBot's `4.5.x` series, while this repository's base dependencies
+require `jsonschema>=4.26.0`. No version combination satisfies both
+constraints. This is confirmed true for every published `lumibot==4.5.x`
+release (`4.5.0` through the current `4.5.78`), not a regression introduced
+by this PR's patch bump — it reproduces identically against the previous
+`4.5.74` pin.
+
+`docs/adr/0002-isolated-lumibot-runtime.md`'s Context section already
+flagged this exact risk ("downgrades this repository's own pinned
+dependency floor `jsonschema>=4.26.0` → `4.23.0`") as one motivation for
+moving LumiBot behind the `paper_runtime` process boundary. At that time it
+was a silent downgrade pip's resolver could still complete; it has since
+become an unconditional failure now that `jsonschema>=4.26.0` is a hard
+floor with no lower ceiling.
+
+**Decision:** remove the `paper` extra from the root `pyproject.toml`
+entirely rather than retain a declared, publicly-advertised install target
+that cannot resolve. `paper_runtime/pyproject.toml` becomes the sole
+LumiBot dependency declaration in the repository. This does not contradict
+ADR 0001 or ADR 0002:
+
+- ADR 0001 constrains where LumiBot may be *imported* (`runtime/lumibot/`
+  only, AST-enforced) — it does not require the root project to declare an
+  installable extra for that import to be legal.
+- ADR 0002 Decision 1 already states "the main trading-desk process's
+  `pyproject.toml` gains zero new dependencies from this milestone" and
+  isolates LumiBot's ~140-package transitive footprint to `paper_runtime/`.
+  Removing the root `paper` extra is a direct continuation of that decision,
+  not a reversal of it.
+
+`src/trading_research/runtime/lumibot/adapter.py` and
+`tests/unit/test_lumibot_adapter.py` are unchanged in behavior: the test
+still guards itself with `pytest.importorskip("lumibot")` and skips cleanly
+when lumibot is not importable. A developer who wants to exercise that file
+locally installs `lumibot` into a scratch virtualenv by hand; this is no
+longer offered as a `pyproject.toml`-declared extra since it cannot resolve
+against this repository's own floor.

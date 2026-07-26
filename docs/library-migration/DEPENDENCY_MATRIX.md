@@ -37,8 +37,8 @@ end of this file.
 | Library | Version | Python | License | Maintenance | macOS | Offline tests | Dependency weight | Conflicts | Decision |
 |---|---|---|---|---|---|---|---|---|---|
 | exchange_calendars | 4.13.2 (2026-03) | `>=3.10,<4` | Apache-2.0 | Active | No native deps | Yes | Light (~5 deps) | None | **Adopt** |
-| VectorBT (OSS `vectorbt`) | 1.1.0 (2026-07) | `>=3.11,<3.15` | Apache-2.0 + Commons Clause | Active, secondary to commercial vectorbt.pro | No native deps | Yes | Heavy (numpy/pandas/numba) | `pandas>=3.0.3,<4.0`, `numpy>=2.4.6` conflicts with LumiBot's `numpy<2.5.0` | **Adopt, isolated group** |
-| TA-Lib | 0.7.1 (2026-07) | `>=3.9` | BSD-2-Clause | Active | Requires `brew install ta-lib` (native C library) | Yes, once C lib installed | Light wrapper, native footprint | numpy>=2 compatible | **Adopt** |
+| VectorBT (OSS `vectorbt`) | 1.1.0 (2026-07) | `>=3.11,<3.15` | Apache-2.0 + Commons Clause | Active, secondary to commercial vectorbt.pro | No native deps | Yes | Heavy (numpy/pandas/numba) | `pandas>=3.0.3,<4.0`, `numpy>=2.4.6` conflicts with LumiBot's `numpy<2.5.0` | **Blocked pending license decision** (`DECISIONS.md` D4 — not conventional OSI-approved open source; PR 5 evaluates an alternative or an explicit owner exception) |
+| TA-Lib | 0.7.1 (2026-07) | `>=3.9` | BSD-2-Clause | Active | Prebuilt wheels for manylinux2014/musllinux, macOS 13/14, Windows, cp39-cp314 — no native install required on any CI-relevant platform | Yes | Light wrapper, native footprint | numpy>=2 compatible | **Adopt** — wheel first; native/system installation is an explicit fallback only if a target platform lacks a compatible wheel |
 | pandas-ta (original) | 0.4.71b0 (2025-09, never left beta) | — | MIT | Facing archival past its own 2026-07-01 deadline | — | — | — | — | **Reject** |
 | pandas-ta-classic (fork) | 0.6.52 (2026-06) | `>=3.10` | MIT | Active fork | No native deps | Yes | Moderate | numpy>=2.0, pandas>=2.0 | **Evaluate as fallback only** |
 | QuantStats (original) | 0.0.81 (2026-01, revived after long gap) | — | Apache-2.0 | Historically stagnant | — | — | — | — | **Reject as primary** |
@@ -48,7 +48,7 @@ end of this file.
 | Pydantic v2 | 2.13.4 (2026-05) | 3.9-3.14 | MIT | Very active | Prebuilt wheels (Rust core) | Yes | Light | None | **Evaluate** (boundary-only, PR 2) |
 | Pandera | 0.32.1 (2026-06) | 3.10-3.14 | MIT | Active | No issues | Yes | Light with `[pandas]` extra only | None known | **Defer** |
 | PyArrow | 25.0.0 (2026-07) | 3.10-3.14 | Apache-2.0 | Very active | Prebuilt wheels both arches | Yes | Heavy (28-53MB wheel) | Watch numpy pin vs. numba (VectorBT dep) | **Defer** |
-| LumiBot | 4.5.78 current (repo pins 4.5.74) | 3.10-3.12 declared | MIT | Active | No native deps | Yes | Heavy, already isolated | `numpy<2.5.0,>=1.20.0`, `pandas>=2.2.0` conflicts with VectorBT | **No change** — bump patch pin |
+| LumiBot | 4.5.78 (repository pins 4.5.78 in `paper_runtime/pyproject.toml`; no `paper` extra exists in the root `pyproject.toml` — see `DECISIONS.md` D5) | 3.10-3.12 declared | MIT | Active | No native deps | Yes | Heavy, already isolated | `numpy<2.5.0,>=1.20.0`, `pandas>=2.2.0` conflicts with VectorBT; `google-adk[extensions]`→`litellm` pins `jsonschema==4.23.0` exactly, unconditionally conflicting with this repo's `jsonschema>=4.26.0` base floor | **Bumped to 4.5.78** in `paper_runtime`; root `paper` extra removed, not "no change" |
 | Riskfolio-Lib | 7.3.0 | `>=3.10` | BSD-3-Clause | Active | No native issues, heavy deps | Yes | Very heavy (cvxpy, matplotlib, sklearn, statsmodels, astropy) + hard-depends on `vectorbt>=0.28.0` | Transitively pulls VectorBT's pandas/numpy chain | **Evaluate** (PR 12, advisory only) |
 | SQLAlchemy | 2.0.51 (2026-06) | `>=3.7` | MIT | Very active | No issues | Yes | Light core (`typing-extensions`, `greenlet`) | None with sqlite3 | **Evaluate** (PR 13) |
 | Alembic | 1.18.5 | `>=3.10` | MIT | Active (SQLAlchemy team) | No issues | Yes | Light | None | **Evaluate** (PR 13/14) |
@@ -116,8 +116,12 @@ backtest:
   question in DECISIONS.md D4 is resolved
 
 paper:
-  lumibot==4.5.78              (existing, isolated — bump patch pin,
-                                 aligned with paper_runtime/pyproject.toml)
+  removed (PR 1) — `pip install -e ".[paper]"` cannot resolve for any
+  published lumibot==4.5.x release (litellm's exact jsonschema==4.23.0 pin,
+  pulled in via google-adk[extensions], unconditionally conflicts with this
+  repo's jsonschema>=4.26.0 floor). `paper_runtime/pyproject.toml` is the
+  sole LumiBot dependency authority (lumibot==4.5.78). See `DECISIONS.md`
+  D5 and `docs/adr/0002-isolated-lumibot-runtime.md` (Amendment).
 
 analytics:
   empyrical-reloaded            (PR 1 — added; authoritative primitive
@@ -212,9 +216,11 @@ its own later PR before any dependency addition.
 
 ## 6. PR 1 correction record (2026-07-26)
 
-PR 1 corrected several inaccuracies in the PR 0 proposal above before any
-dependency was added. Historical Sections 1-5 are left in place for
-provenance; this section is the authoritative summary of what changed:
+PR 1 corrected several inaccuracies in the PR 0 proposal. The stale cells
+in Section 1's compatibility table (VectorBT, TA-Lib, and LumiBot rows) were
+edited in place to state the current decision directly, rather than left
+to contradict the corrections below; this section remains the authoritative
+summary of what changed and why:
 
 | Item | PR 0 proposal | PR 1 correction | Reason |
 |---|---|---|---|
@@ -225,3 +231,4 @@ provenance; this section is the authoritative summary of what changed:
 | TA-Lib install guidance | Unconditional `brew install ta-lib` / apt package | Prebuilt wheel required first; system install is a documented fallback only if wheel resolution fails on a supported target | TA-Lib 0.7.1 ships prebuilt wheels for all CI-relevant platform/interpreter combinations |
 | Analytics authority | Ambiguous overlap between empyrical-reloaded and quantstats-lumi | empyrical-reloaded = authoritative primitives; quantstats-lumi = reporting/presentation only | Two independent authorities over the same metrics is a defect, not a feature |
 | PR 5 title | "VectorBT research adapter" | "Vectorized research library selection and adapter" | PR 5 may select VectorBT only after the license decision is explicitly approved and recorded |
+| Root `paper` extra | Bump `lumibot` patch pin in place, keep the extra | **Removed entirely.** `paper_runtime/pyproject.toml` is the sole LumiBot dependency authority (`DECISIONS.md` D5) | `pip install -e ".[paper]"` cannot resolve for any published `lumibot==4.5.x` release — `litellm`'s exact `jsonschema==4.23.0` pin (pulled in via `google-adk[extensions]`) unconditionally conflicts with this repo's `jsonschema>=4.26.0` floor |

@@ -19,7 +19,7 @@ invariants a library does not provide).
 | Strategy signals/scoring | `analysis/scorer.py`, `analysis/screener.py`, `strategies/*` | Domain-specific | None | Preserve | N/A | No |
 | Vectorized research/parameter sweeps | None today | New capability | VectorBT (`BLOCKED_PENDING_LICENSE_DECISION`, `DECISIONS.md` D4) or OSI-approved alternative | Evaluate (PR 5 — "Vectorized research library selection and adapter"), additive | New adapter, isolated group | No removal — new code |
 | Event-driven backtesting | `backtesting/engine.py` | Evaluate (Category B) | LumiBot backtest mode | Evaluate (PR 6/7/8) | Adapter beside existing engine, no deletion yet | Decision gated on PR 7 parity report |
-| Alpaca paper execution | `paper_runtime/.../lumibot_gateway.py`, `runtime/lumibot/adapter.py` | Already library-based | LumiBot (unchanged) | No change | Existing `runtime/lumibot/` boundary | No |
+| Alpaca paper execution | `paper_runtime/.../lumibot_gateway.py`, `runtime/lumibot/adapter.py` | Already library-based | LumiBot (unchanged) | No change to import boundary; PR 1 removed the root `paper` extra (unresolvable `jsonschema` conflict, `DECISIONS.md` D5) — `paper_runtime/pyproject.toml` is now the sole LumiBot dependency declaration | Existing `runtime/lumibot/` boundary | No |
 | Cash ledger | `paper_books/cash_ledger.py` | **Domain-specific (ADR 0006)** | None | Preserve | N/A | No |
 | Position/lot accounting | `paper_books/positions.py` | **Domain-specific (ADR 0006)** | None | Preserve | N/A | No |
 | Portfolio valuation | `paper_books/valuation.py` | **Domain-specific (ADR 0006)** | None | Preserve | N/A | No |

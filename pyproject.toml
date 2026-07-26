@@ -52,17 +52,17 @@ observability = [
     "opentelemetry-api>=1.44,<2",
     "opentelemetry-sdk>=1.44,<2",
 ]
-# Milestone 3: LumiBot paper-execution runtime adapter, isolated behind
-# src/trading_research/runtime/lumibot/ (see docs/milestone3-lumibot-paper-integration.md).
-# Deliberately NOT a base dependency: lumibot pulls ~140 transitive packages
-# unrelated to this project (langchain, google-adk, kubernetes client,
-# openai, ...) and its own pins downgrade jsonschema/python-dotenv below the
-# floor declared above. Install in an isolated environment; the full test
-# suite never requires this extra (lumibot-specific tests use
-# pytest.importorskip).
-paper = [
-    "lumibot==4.5.78",
-]
+# No `paper` extra: `lumibot`'s `google-adk[extensions]` requirement pulls in
+# `litellm`, which pins `jsonschema==4.23.0` exactly across every release
+# LumiBot's 4.5.x series accepts, conflicting unconditionally with this
+# project's `jsonschema>=4.26.0` floor above — `pip install -e ".[paper]"`
+# cannot resolve for any published lumibot==4.5.x release, not just the
+# currently pinned one. See docs/adr/0002-isolated-lumibot-runtime.md
+# (Amendment) and docs/library-migration/DECISIONS.md D5.
+# `paper_runtime/pyproject.toml` is the sole LumiBot dependency authority;
+# `src/trading_research/runtime/lumibot/` (ADR 0001) is import-boundary-only
+# and its tests skip via `pytest.importorskip("lumibot")` unless a developer
+# installs `lumibot` into a scratch virtualenv by hand.
 
 [tool.setuptools.packages.find]
 where = ["src"]
