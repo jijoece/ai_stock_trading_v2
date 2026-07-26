@@ -4,6 +4,11 @@ __pycache__/
 .pytest_cache/
 *.egg-info/
 
+# Local Serena MCP tool config/cache — machine-specific, not a shared
+# repository asset (docs/milestones/rebuild/5.md flagged the analogous
+# .claude/settings.json pattern; this follows the same removal decision).
+.serena/
+
 # Secrets — never commit
 .env
 

@@ -376,23 +376,77 @@ how it is constructed, what happens outside it, and that future one-off
 emergency closures cannot be known before `exchange_calendars` itself is
 upgraded.
 
+**Correction (2026-07-26, follow-up to PR #10 review):**
+`regular_session_close()`'s range pre-check used
+`cal.first_session`/`cal.last_session` as the range boundary, not
+`_CALENDAR_START`/`_CALENDAR_END` directly. Those differ whenever XNYS's
+own actual first/last session falls a few days inside the configured range
+— concretely, `_CALENDAR_START` (1990-01-01) is itself New Year's Day, a
+holiday, so `cal.first_session` is 1990-01-02, one day later. A date in
+that one-day gap (1990-01-01 itself) was misclassified as "outside the
+supported range" instead of "inside the supported range but not a trading
+session." The pre-check now compares directly against
+`_CALENDAR_START`/`_CALENDAR_END`, and the exception handling for
+`cal.session_close()` now classifies `NotSessionError`,
+`DateOutOfBounds`, and `RequestedSessionOutOfBounds` identically as
+"not a trading session" once a date has already passed that pre-check —
+since exchange_calendars raises the bounds-style exceptions (not
+`NotSessionError`) for a date in that gap, even though, from this module's
+configured range, it is not an out-of-range date.
+
+A maintenance guard was also added: `_calendar_end_margin_ok(as_of)` is a
+deterministic, injectable-date helper asserting `_CALENDAR_END` remains at
+least `_CALENDAR_END_MINIMUM_MARGIN_YEARS` (5) beyond `as_of`. A dedicated
+test calls it with the real current date, so that test starts failing for
+real once fewer than five years remain before `_CALENDAR_END`, forcing a
+deliberate range extension rather than a silent lapse; separate tests call
+it with injected fixed dates to verify the helper's own logic
+deterministically, independent of when the suite runs.
+
+The module docstring was corrected: it previously claimed every public
+function in this module enforces the configured range. `is_weekend` is
+pure weekday arithmetic — it does not consult XNYS at all, accepts any
+date in or out of range, and never raises `MarketCalendarError`.
+`is_market_holiday` short-circuits to `False` for weekend dates without
+consulting XNYS, but is otherwise range-enforcing for non-weekend dates.
+The docstring now scopes the range-enforcement claim to the XNYS-dependent
+functions (`is_trading_day`, `next_trading_session`, `add_trading_days`,
+`is_market_open`, `regular_session_close`) and states `is_weekend`'s
+exception explicitly.
+
+**Known remaining gap (not fixed in this correction, out of scope):**
+`is_trading_day`, `next_trading_session`, `add_trading_days`, and
+`is_market_open` still fail closed (raise `MarketCalendarError`) for a
+date in the narrow gap between `_CALENDAR_START`/`_CALENDAR_END` and
+XNYS's own actual first/last session, but via the existing generic
+"could not resolve XNYS session status" message rather than a dedicated
+non-session classification like `regular_session_close` now has. This is
+a message-precision gap, not a correctness gap — the docstring's
+"correct result or `MarketCalendarError`" contract still holds.
+
 **Tests run:**
 - `pytest tests/unit/test_market_calendar.py -q --tb=short` —
-  **60 passed** (28 original fixtures plus the 13 added during PR 3, all
-  re-verified against the corrected implementation, plus 19 new cases added
-  during the PR #9 review correction: a historical date before the
-  library's own moving-default lookback, `regular_session_close` for that
-  historical session, a future date beyond the library's own
-  moving-default lookahead, `next_trading_session` and `add_trading_days`
-  at/past the configured upper boundary, `regular_session_close` outside
-  the configured range in both directions, and `add_trading_days`/
+  **67 passed** (28 original fixtures plus the 13 added during PR 3, all
+  re-verified against the corrected implementation; 19 cases added during
+  the PR #9 review correction — a historical date before the library's own
+  moving-default lookback, `regular_session_close` for that historical
+  session, a future date beyond the library's own moving-default
+  lookahead, `next_trading_session` and `add_trading_days` at/past the
+  configured upper boundary, `regular_session_close` outside the
+  configured range in both directions, and `add_trading_days`/
   `next_trading_session` from non-session starts — Saturday, Sunday, a
-  fixed-rule holiday, a one-off exchange closure, and (for symmetry) an
-  early-close session that is itself a valid trading session). Expected
-  values were computed independently (well-known market-hours facts and
-  manually verified calendar dates), not derived by calling the same
-  `exchange_calendars` API the implementation calls.
-- `pytest tests/ -q --tb=short` — **2788 passed, 17 skipped, 0 failed**
+  fixed-rule holiday, a one-off exchange closure, and an early-close
+  session; plus 7 new cases added during this follow-up correction —
+  `regular_session_close(1990-01-01)` raising the non-session error, not
+  the out-of-range error, `regular_session_close(1989-12-31)` raising the
+  out-of-range error, `regular_session_close(1990-01-02)` (the first valid
+  1990 session) still resolving correctly, and four `_calendar_end_margin_ok`
+  cases — two with injected dates proving sufficient/insufficient headroom,
+  one at `_CALENDAR_END` itself, and one live guard using the real current
+  date). Expected values were computed independently (well-known
+  market-hours facts and manually verified calendar dates), not derived by
+  calling the same `exchange_calendars` API the implementation calls.
+- `pytest tests/ -q --tb=short` — **2795 passed, 17 skipped, 0 failed**
   (full offline suite; no test outside `test_market_calendar.py` was
   modified).
 

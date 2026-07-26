@@ -83,6 +83,8 @@ Use runbooks for operator procedures; use code and tests for exact behavior.
 | Trading-desk requirements | [`trading_desk_requirement.md`](trading_desk_requirement.md) | Original requirements; verify against current code |
 | Design and safety pitfalls | [`codebase-analysis-pitfalls.md`](codebase-analysis-pitfalls.md) | Canonical copy of the audit notes |
 | Duplicate audit notes | [`pitfalls_and_improvements.md`](pitfalls_and_improvements.md) | Exact duplicate; do not read |
+| Library-first migration status (current authority, dependencies, decisions) | [`library-migration/STATUS.md`](library-migration/STATUS.md) | Canonical; see also `MASTER_PLAN.md`, `COMPONENT_MATRIX.md`, `DECISIONS.md` in the same directory |
+| Library-migration execution-prompt archive | [`milestones/rebuild/README.md`](milestones/rebuild/README.md) | Historical/instructional prompts, not current behavior |
 
 ## Milestone history
 
