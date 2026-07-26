@@ -5,6 +5,8 @@ import pytest
 
 from trading_research.evaluation.market_calendar import (
     MarketCalendarError,
+    _CALENDAR_END,
+    _calendar_end_margin_ok,
     add_trading_days,
     is_market_holiday,
     is_market_open,
@@ -337,3 +339,63 @@ def test_next_trading_session_from_early_close_session_start():
     early_close_session = date(2026, 11, 27)
     assert next_trading_session(early_close_session, inclusive=False) == date(2026, 11, 30)
     assert next_trading_session(early_close_session, inclusive=True) == early_close_session
+
+
+# --- regular_session_close range classification (follow-up correction to
+# PR #10): classify using _CALENDAR_START/_CALENDAR_END directly, not
+# cal.first_session/cal.last_session, since XNYS's own actual first/last
+# session can fall a few days inside the configured range. ---
+
+
+def test_regular_session_close_on_calendar_start_edge_is_non_session_not_out_of_range():
+    # 1990-01-01 (`_CALENDAR_START` itself, a Monday) is New Year's Day, a
+    # holiday — inside the configured range but not an XNYS session.
+    # XNYS's own actual first session is 1990-01-02, one day later, so this
+    # specifically exercises the gap between the configured range and the
+    # library's own session-bound checking.
+    with pytest.raises(MarketCalendarError, match="not a trading session"):
+        regular_session_close(date(1990, 1, 1))
+
+
+def test_regular_session_close_before_calendar_start_raises_out_of_range():
+    with pytest.raises(MarketCalendarError, match="outside the supported"):
+        regular_session_close(date(1989, 12, 31))
+
+
+def test_regular_session_close_first_valid_1990_session_still_resolves():
+    # January 2, 1990 is XNYS's actual first session at/after
+    # `_CALENDAR_START` (January 1, 1990 was a holiday).
+    close = regular_session_close(date(1990, 1, 2))
+    assert close == datetime(1990, 1, 2, 16, 0, tzinfo=NY)
+
+
+# --- _CALENDAR_END maintenance-margin guard ---
+#
+# `_calendar_end_margin_ok` is deterministic (it takes `as_of` as a plain
+# argument rather than reading the clock itself), so its own correctness is
+# tested here with injected dates, independent of when this suite runs.
+
+
+def test_calendar_end_margin_ok_with_sufficient_headroom():
+    # 2030-06-01 is comfortably more than five years before `_CALENDAR_END`
+    # (2035-12-31).
+    assert _calendar_end_margin_ok(date(2030, 6, 1)) is True
+
+
+def test_calendar_end_margin_ok_false_with_insufficient_headroom():
+    # 2032-01-01 is less than five years before `_CALENDAR_END`
+    # (2035-12-31): 2032-01-01 + 5 years = 2037-01-01, past `_CALENDAR_END`.
+    assert _calendar_end_margin_ok(date(2032, 1, 1)) is False
+
+
+def test_calendar_end_margin_ok_false_once_calendar_end_itself_is_reached():
+    assert _calendar_end_margin_ok(_CALENDAR_END) is False
+
+
+def test_calendar_end_has_sufficient_margin_today():
+    # The live maintenance guard: uses the real current date, not an
+    # injected one, so this test starts failing for real once fewer than
+    # five years remain before `_CALENDAR_END` — forcing a deliberate
+    # extension of `_CALENDAR_END` (see the module docstring) rather than
+    # letting the supported range silently approach its edge.
+    assert _calendar_end_margin_ok(date.today())

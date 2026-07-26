@@ -19,12 +19,24 @@ current the first time this process called `_calendar()` — silently
 narrowing over the life of a long-running process. A fixed range that is
 extended deliberately is used instead.
 
-Every public function in this module either returns a correct result for a
-`day`/`moment` within `[_CALENDAR_START, _CALENDAR_END]`, or raises
-`MarketCalendarError` for a date outside that range — it never silently
-clamps, extrapolates, or falls back to a different calendar. `_CALENDAR_END`
-must be extended (and this module re-released) before the current date
-reaches it; this module does not extend itself automatically.
+The XNYS-dependent functions — `is_trading_day`, `next_trading_session`,
+`add_trading_days`, `is_market_open`, and `regular_session_close` — either
+return a correct result for a `day`/`moment` within `[_CALENDAR_START,
+_CALENDAR_END]`, or raise `MarketCalendarError` for a date outside that
+range; they never silently clamp, extrapolate, or fall back to a different
+calendar. `is_weekend` is pure weekday arithmetic: it does not consult
+XNYS at all, accepts any date in or out of the configured range, and never
+raises `MarketCalendarError`. `is_market_holiday` calls `is_weekend` first
+and short-circuits to `False` for weekend dates without consulting XNYS,
+but is otherwise XNYS-dependent (and therefore range-enforcing) for
+non-weekend dates.
+
+`_CALENDAR_END` must be extended (and this module re-released) before the
+current date reaches it; this module does not extend itself automatically.
+A test (`_calendar_end_margin_ok`, guarded in
+`tests/unit/test_market_calendar.py`) fails once fewer than
+`_CALENDAR_END_MINIMUM_MARGIN_YEARS` remain, forcing a deliberate range
+extension rather than a silent lapse.
 
 Because one-off emergency closures (e.g. a national day of mourning) are
 recorded in `exchange_calendars`' packaged data only as of the installed
@@ -36,7 +48,7 @@ advance by any calendar library.
 """
 from __future__ import annotations
 
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from functools import lru_cache
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -53,9 +65,20 @@ MARKET_TIMEZONE_NAME = "America/New_York"
 _XNYS_CALENDAR_NAME = "XNYS"
 
 # Fixed, explicit range for `_calendar()` — see the module docstring for why
-# this must not be the library's moving default window.
+# this must not be the library's moving default window. Note: XNYS's own
+# actual first/last session can fall a few days inside this range (e.g.
+# `_CALENDAR_START` landing on a holiday) — `regular_session_close` accounts
+# for that gap explicitly; `is_trading_day`/`next_trading_session`/
+# `add_trading_days`/`is_market_open` still fail closed for a date in that
+# gap, but via a less specific "could not resolve" message rather than a
+# dedicated non-session classification (out of scope for this correction).
 _CALENDAR_START = date(1990, 1, 1)
 _CALENDAR_END = date(2035, 12, 31)
+
+# `regular_session_close`'s range pre-check classifies a date as "outside
+# the supported range" using these constants directly, not
+# `cal.first_session`/`cal.last_session` — see the note above.
+_CALENDAR_END_MINIMUM_MARGIN_YEARS = 5
 
 
 class MarketCalendarError(RuntimeError):
@@ -72,6 +95,16 @@ def _calendar():
         raise MarketCalendarError(
             "the XNYS exchange calendar could not be resolved — refusing to guess"
         ) from exc
+
+
+def _calendar_end_margin_ok(as_of: date) -> bool:
+    """True if `_CALENDAR_END` is still at least
+    `_CALENDAR_END_MINIMUM_MARGIN_YEARS` beyond `as_of`. False signals
+    `_CALENDAR_END` must be extended deliberately (see the module
+    docstring); this function does not raise or extend the range itself —
+    it exists to be asserted against in a test that fails once the margin
+    has eroded, rather than letting the range silently approach its edge."""
+    return _CALENDAR_END - as_of >= timedelta(days=365 * _CALENDAR_END_MINIMUM_MARGIN_YEARS)
 
 
 def is_weekend(day: date) -> bool:
@@ -165,26 +198,32 @@ def regular_session_close(day: date) -> datetime:
 
     Raises `MarketCalendarError`, distinguishing the cause: `day` is a
     weekend/exchange holiday (not a trading session); `day` is outside the
-    supported calendar range (see module docstring); XNYS itself could not
-    be constructed or queried; or the timezone database is unavailable."""
-    cal = _calendar()
-    first = cal.first_session.date()
-    last = cal.last_session.date()
-    if day < first or day > last:
+    supported calendar range (`_CALENDAR_START`/`_CALENDAR_END`, see module
+    docstring); XNYS itself could not be constructed or queried; or the
+    timezone database is unavailable. Range membership is classified using
+    `_CALENDAR_START`/`_CALENDAR_END` directly, not
+    `cal.first_session`/`cal.last_session` — XNYS's own actual first/last
+    session can fall a few days inside the configured range (e.g.
+    `_CALENDAR_START` itself landing on a holiday), and a date in that gap
+    is still "inside the supported range but not a session", not "outside
+    the supported range"."""
+    if day < _CALENDAR_START or day > _CALENDAR_END:
         raise MarketCalendarError(
             f"{day.isoformat()} is outside the supported XNYS calendar range "
-            f"({first.isoformat()} to {last.isoformat()})"
+            f"({_CALENDAR_START.isoformat()} to {_CALENDAR_END.isoformat()})"
         )
+    cal = _calendar()
     try:
         close = cal.session_close(pd.Timestamp(day))
-    except NotSessionError as exc:
+    except (NotSessionError, DateOutOfBounds, RequestedSessionOutOfBounds) as exc:
+        # `day` has already been confirmed inside [_CALENDAR_START,
+        # _CALENDAR_END] above. exchange_calendars still raises
+        # DateOutOfBounds/RequestedSessionOutOfBounds (not NotSessionError)
+        # for a date inside that range but outside its own actual
+        # first/last session — from this module's perspective that is the
+        # same outcome as an ordinary weekend/holiday non-session.
         raise MarketCalendarError(
             f"{day.isoformat()} is not a trading session (weekend or exchange holiday)"
-        ) from exc
-    except (DateOutOfBounds, RequestedSessionOutOfBounds) as exc:
-        raise MarketCalendarError(
-            f"{day.isoformat()} is outside the supported XNYS calendar range "
-            f"({first.isoformat()} to {last.isoformat()})"
         ) from exc
     except Exception as exc:
         raise MarketCalendarError(
