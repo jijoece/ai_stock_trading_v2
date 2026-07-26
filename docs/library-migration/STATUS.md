@@ -1,7 +1,7 @@
 # Migration Status
 
-**Current phase: PR 1 — complete.**
-**Next phase: PR 2 — Boundary validation evaluation.**
+**Current phase: PR 2 — complete.**
+**Next phase: PR 3 — exchange_calendars migration.**
 
 ## Completed work (PR 0)
 
@@ -267,66 +267,40 @@ draft of this PR is resolved, not deferred: the extra was removed (see
 "Root `paper` extra removed" above and `DECISIONS.md` D5), so there is no
 outstanding blocker to track for it.
 
+## Completed work (PR 2)
+
+**Scope:** evaluation only — `docs/library-migration/pr2/EVALUATION.md`
+(full inventory, comparison, and recommendation),
+`docs/library-migration/pr2/boundary_comparison_scratch.py` and
+`comparison_output.txt` (scratch Pydantic v2 comparison implementation, not
+merged into `src/`), and this file. No file under `src/`, `scripts/`,
+`paper_runtime/src/`, or `tests/` was modified.
+
+**Outcome: do not adopt.** Every untrusted-input boundary (YAML config
+loading across 9 modules, CLI argument parsing, the JSONL broker protocol,
+and external provider response parsing) was inventoried in
+`docs/library-migration/pr2/EVALUATION.md`. A scratch Pydantic v2
+implementation of the two highest-stakes boundaries
+(`runtime/paper_runtime_config.py`, `paper_runtime/.../protocol.py`) showed:
+dependency/performance impact is low (4 lightweight transitive packages,
+~3.7us/call, no material perf difference); Pydantic's `extra="forbid"` gives
+unknown-field rejection for free, but every safety-critical boundary already
+implements this by hand; the safety-critical business-rule validators
+(`real_money_enabled` must be false, pinned base URL, exact allowed-sides/
+order-types) do not shrink under Pydantic — they relocate into
+`field_validator` methods of equal size, producing a longer implementation
+overall. No boundary showed the "clear reduction in custom
+boundary-validation code" required by `DECISIONS.md` D2's adoption bar.
+**No `pydantic` dependency was added to `pyproject.toml`. No ADR was
+required or drafted**, per the single ADR rule in `DECISIONS.md` D2 (an ADR
+is needed only if adoption is recommended).
+
+Non-blocking gaps identified for future cleanup (not part of this PR, no new
+dependency needed): `analysis/scorer.py`, `analysis/screener.py`, and
+`execution/config.py` do not reject unknown YAML keys, unlike most other
+loaders; `scripts/indicators.py` and `scripts/score.py` perform no shape
+validation of their JSON input, unlike `scripts/macro_pillar.py`.
+
 ## Next PR
 
-**PR 2 — Boundary validation evaluation.**
-
-Scope, per `DECISIONS.md` D2 and `MASTER_PLAN.md`:
-
-```text
-inventory untrusted-input boundaries (YAML/env/CLI/JSONL)
-compare current hand-written validation against a Pydantic v2 boundary
-  implementation: dependency/performance impact, error-message behavior,
-  unknown-field rejection, secret-field handling
-make no broad domain-model replacement — frozen dataclasses stay
-  authoritative for internal domain code
-add no Pydantic dependency by default
-prepare an ADR only if adoption at a boundary is recommended, before adding
-  pydantic to any dependency declaration
-```
-
-## Exact next-session prompt
-
-```text
-Implement PR 2 for the library-first migration of ai_stock_trading_v2:
-Boundary validation evaluation.
-
-Read first (bounded context only):
-  docs/library-migration/STATUS.md
-  docs/library-migration/DECISIONS.md (D2, and the VectorBT/Pydantic
-    corrections recorded in PR 1)
-  docs/library-migration/MASTER_PLAN.md (PR 2 row)
-  docs/library-migration/COMPONENT_MATRIX.md (the boundary-parsing row)
-
-Scope: evaluation only.
-
-1. Inventory every untrusted-input boundary currently validated by hand:
-   YAML/environment configuration loading, CLI request validation, external
-   provider response parsing, broker/runtime JSONL message validation, and
-   API/serialized DTO validation. Cite exact files and functions.
-2. For each boundary, compare current hand-written validation against a
-   Pydantic v2 boundary-model implementation on: dependency/performance
-   impact, error-message behavior, unknown-field rejection, secret-field
-   handling. A throwaway/scratch comparison implementation is acceptable;
-   it does not need to be merged into src/.
-3. Do not replace any frozen dataclass domain model
-   (models/trading_models.py, analysis/screener.py::ScreeningConfig,
-   analysis/scorer.py::ScoringConfig,
-   recommendations/builder.py::FrozenRecommendation,
-   paper_books/models.py, or any other @dataclass(frozen=True) domain type).
-4. Do not add pydantic to pyproject.toml unless the comparison recommends
-   adoption at one or more boundaries.
-5. If adoption is recommended, draft (do not necessarily finalize) an ADR
-   that explicitly supplements/narrows ADR 0001 before any pydantic
-   dependency is added, per the single rule recorded in DECISIONS.md D2.
-6. Do not modify any file under src/, scripts/, paper_runtime/src/, or
-   tests/ unless the recommendation is adoption and the ADR is approved
-   within the same session — if so, keep the change scoped to one boundary
-   as a proof of concept, not a broad rollout.
-7. Update docs/library-migration/STATUS.md at the end: record the
-   evaluation outcome (adopt-at-boundary / do not adopt), and set the next
-   PR to PR 3 (exchange_calendars migration) regardless of the Pydantic
-   outcome, since PR 3 does not depend on PR 2.
-8. Open one PR. Do not begin PR 3 in the same session. Do not merge
-   automatically.
-```
+**PR 3 — exchange_calendars migration.**

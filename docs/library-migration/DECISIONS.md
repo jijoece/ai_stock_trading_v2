@@ -132,6 +132,15 @@ Adopt only where it produces a clear reduction in custom boundary-validation
 code. See the single ADR rule recorded above (corrected 2026-07-26, PR 1)
 for when an ADR is required.
 
+**PR 2 outcome (2026-07-26): do not adopt.** Full inventory and comparison
+in `docs/library-migration/pr2/EVALUATION.md`. No boundary showed a clear
+reduction in custom validation code — safety-critical business-rule
+validators relocate into Pydantic `field_validator` methods of equal size
+rather than shrinking; the one mechanical win (`extra="forbid"` unknown-field
+rejection) is already implemented by hand at every safety-critical boundary.
+No `pydantic` dependency added; no ADR required, per the single ADR rule
+above.
+
 ---
 
 ## D3 — Hard safety layer: preserved regardless of any library adoption
