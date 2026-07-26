@@ -1,7 +1,7 @@
 # Migration Status
 
-**Current phase: PR 3 — complete.**
-**Next phase: PR 4 — generic indicator parity and TA-Lib migration.**
+**Current phase: PR 4 — complete.**
+**Next phase: PR 5 — vectorized research library selection and adapter.**
 
 ## Completed work (PR 0)
 
@@ -458,52 +458,223 @@ calendar data is the only session-authority code path in this module.
 code, or scheduling behavior was touched; no broker, provider, model, or
 market-data service was called; no live calendar data was fetched.
 
+## Completed work (PR 4)
+
+**Scope:** `scripts/indicators.py` and `tests/unit/test_indicators.py`
+only, plus this file, `COMPONENT_MATRIX.md`, `REMOVAL_MANIFEST.md`, and a
+new blocking `indicators-tests` CI job in `.github/workflows/ci.yml`. No
+other file under `src/`, `scripts/`, `paper_runtime/src/`, or `config/`
+was modified. `analysis/indicators.py`'s `Decimal`-based ATR was **not**
+touched — it was not already in the tracked PR 4 scope and no parity
+tests were added for it in this PR, so per the bounded prompt it is left
+for a separate change.
+
+**Outcome: TA-Lib is now the sole calculation authority** for
+`ema_series`, `rsi_wilder`, `macd`, `trix`, and `bollinger`. All public
+function names, signatures, return shapes (`list[Optional[float]]` /
+tuples), and dictionary keys of `compute()` are unchanged — caller
+analysis (`scripts/score.py`'s `import indicators as I`,
+`.claude/skills/run-agentic-trading-desk/driver.py`'s subprocess and
+direct-import exercises) found no caller that safely allowed or required a
+signature change.
+
+**Custom formulas removed** (deleted in place, not left for a later PR):
+the hand-written recursive EMA loop, the Wilder gain/loss smoothing loop,
+the manual MACD/TRIX EMA composition, and the `statistics.pstdev`-based
+Bollinger calculation. `ema_series` now calls `talib.EMA`; `rsi_wilder`
+calls `talib.RSI`; `bollinger` calls `talib.BBANDS` (`matype=0`, population
+stddev). `macd` and `trix` are built from `talib.EMA` primitives rather
+than `talib.MACD()`/`talib.TRIX()` directly — see "Intentional semantic
+differences and reconciliations" below for why. `tests/unit/
+test_talib_is_sole_authority_no_custom_formulas_remain` guards against a
+custom formula (or a `statistics.pstdev` import) being reintroduced.
+
+**Dependency behavior:** `scripts/indicators.py` now does `import talib`
+at module scope inside a `try`/`except ImportError` that re-raises with
+`"scripts/indicators.py requires TA-Lib. Install the indicators extra:
+pip install -e \".[indicators]\""` — a concise, actionable message, not a
+silent fallback to the old formulas (there are none left to fall back
+to). `tests/unit/test_indicators.py::test_missing_talib_raises_actionable_
+import_error` simulates the missing-package case via `sys.modules["talib"]
+= None` and asserts this exact message, so it passes in *every*
+environment regardless of whether TA-Lib happens to be installed.
+
+**Warm-up, null/NaN, and rounding parity** — established by capturing
+reviewed golden outputs from the pre-migration implementation *before*
+editing it (recorded as literals in `tests/unit/test_indicators.py`, never
+re-derived by calling the removed implementation), then verifying the
+TA-Lib-backed implementation against those literals:
+
+* `ema_series`: `talib.EMA`'s SMA-seeded warm-up and `NaN` boundary are
+  bit-for-bit equivalent to the pre-migration seed-then-recurse formula
+  (verified for period 12 and 20 across increasing/oscillating fixtures);
+  `NaN` is converted to `None` at the boundary via the new `_nan_to_none`
+  helper, preserving list length exactly.
+* `rsi_wilder`: numerically identical to the pre-migration Wilder
+  smoothing for every non-degenerate fixture (increasing, decreasing,
+  oscillating, the 250-bar realistic series) — **with one documented,
+  deliberately preserved intentional difference**, see below.
+* `bollinger`: `talib.BBANDS(matype=0)` uses population standard deviation
+  (its `nbdevup`/`nbdevdn` multiply the population stddev), matching the
+  pre-migration `statistics.pstdev`-based formula's semantics and, for
+  exactly-representable prices, its exact values too (verified: a flat
+  100.0 series over 20 bars gives `upper == mid == lower == 100.0`
+  bit-exactly, both before and after migration).
+* `macd` / `trix`: rebuilt from chained `talib.EMA` calls (not
+  `talib.MACD()`/`talib.TRIX()`), reproducing the pre-migration warm-up
+  index, signal-line alignment, and (for TRIX) percent scaling and
+  zero-denominator convention exactly — see below.
+
+**Intentional semantic differences and reconciliations** (all covered by
+a dedicated test in `tests/unit/test_indicators.py`):
+
+1. **Flat-price RSI (`rsi_wilder`).** `talib.RSI` returns `0.0`, not
+   `100.0`, for the degenerate case where the average gain *and* average
+   loss are both exactly zero (every price from the start of `close`
+   through the current bar is identical). The pre-migration formula
+   treated that zero-loss case as maximally bullish (Wilder's
+   divide-by-zero, `RS -> infinity`, conventionally `RSI = 100`).
+   **Decision: preserve the pre-migration `100.0` semantic**, not
+   TA-Lib's `0.0` — `rsi_wilder` detects the exact condition (the whole
+   `close` prefix through index `i` is constant, equivalent to
+   avg_gain == avg_loss == 0 given Wilder's recursive smoothing can only
+   reach exactly zero on both from an all-zero history) and overrides
+   just that boundary, without reintroducing a competing RSI formula.
+   Verified for a monotonic-increase series (`avg_loss == 0`, `avg_gain >
+   0`) that both implementations already agreed gives `100.0` without any
+   override, and for a "flat then moves" fixture that the override does
+   not leak past the point the price starts actually changing.
+2. **MACD line availability (`macd`).** `talib.MACD()` withholds the MACD
+   line itself until enough bars exist for the *signal* EMA too (verified:
+   for a 40-bar fixture, both the line and signal from `talib.MACD()`
+   first become non-`NaN` at index 33). The pre-migration convention — and
+   this stack's callers — expect the line available `signal - 1` bars
+   earlier, as soon as the fast and slow EMAs both exist (index 25 for the
+   same fixture). `macd` is therefore built from `talib.EMA(fast)` -
+   `talib.EMA(slow)` directly, with the signal computed via `talib.EMA`
+   over the trimmed valid line and re-aligned exactly as the pre-migration
+   formula did.
+3. **TRIX zero-denominator and alignment (`trix`).** Built from three
+   chained `talib.EMA` passes plus an explicit `_pct_change` helper
+   (`(cur - prev) / prev * 100.0 if prev != 0 else 0.0`), rather than
+   `talib.TRIX()` directly, to keep explicit, tested control of the
+   zero-denominator convention and of the signal-line end-alignment,
+   matching the pre-migration formula exactly rather than trusting
+   `talib.TRIX()`'s undocumented internal handling of a degenerate
+   triple-EMA-equals-zero input.
+4. **Bollinger Bands floating-point noise on a non-exactly-representable
+   flat price.** `talib.BBANDS` computes variance via a single-pass
+   sum-of-squares formula that leaves ~1e-6 absolute floating-point noise
+   for a constant window when the price itself is not exactly
+   representable in binary (e.g. `123.45`), whereas the pre-migration
+   `statistics.pstdev` gave exactly `0.0`. Both round identically at the
+   `_round()` CLI boundary (4 decimals), and `%B` still resolves to
+   exactly `0.5` in that case by symmetry (`upper`/`lower` are
+   equidistant from `mid`, which equals `close[-1]`). Proven not to affect
+   the `%B == 0.5` guard's reachability: a flat, exactly-representable
+   price (`100.0`) gives bit-identical `upper == mid == lower` both before
+   and after migration.
+
+**Tests run:**
+- `pytest tests/unit/test_indicators.py -q --tb=short` (TA-Lib installed
+  via `.[indicators]`, verified wheel resolution on this machine, macOS
+  arm64, Python 3.14) — **25 passed**. Covers: increasing, decreasing,
+  flat, and oscillating prices; short inputs below every warm-up
+  threshold; inputs at the exact warm-up threshold for EMA20, RSI14,
+  Bollinger-20, the MACD signal (34 bars), the TRIX line (44 bars), and
+  the TRIX signal (52 bars); a 250-bar long realistic synthetic series
+  (matching the CLI self-test's sin+drift formula); the missing-TA-Lib
+  actionable-error path; and each intentional semantic difference above.
+- `pytest tests/unit/test_indicators.py -q --tb=short` with TA-Lib
+  *uninstalled* (simulating the `main-tests` CI job, which only installs
+  `.[dev]`) — **1 passed** (the missing-dependency guard), **24 skipped**
+  (the `I` fixture's `pytest.importorskip("talib")`), **0 failed** — proves
+  the ordinary default suite stays green without masking a real TA-Lib
+  regression, since the dedicated `indicators-tests` CI job (added to
+  `ci.yml`, installs `.[dev,indicators]`) runs all 25 for real.
+- `python3 .claude/skills/run-agentic-trading-desk/driver.py` (TA-Lib
+  installed) — all checks passed, including the CLI self-test, file-input,
+  short-series-warning, and direct-import (`compute()` callable) paths for
+  `indicators.py`, plus the unaffected `macro_pillar.py`/`score.py` checks.
+- `pytest tests/ -q --tb=short` (full offline suite, TA-Lib installed) —
+  **2820 passed, 17 skipped, 0 failed** (2795 passed in PR 3's baseline +
+  the 25 new tests in this file; the 17 skipped count is unchanged from
+  PR 3, confirming no other test file was affected).
+
+**Wheel installation result:** `pip install -e ".[indicators]"` resolved
+`TA-Lib==0.7.1` from a prebuilt wheel (`ta_lib-0.7.1-cp314-cp314-
+macosx_14_0_arm64.whl`) with no compilation, reconfirming PR 1's finding
+on this machine (macOS arm64) against a newer local Python (3.14, ahead of
+the declared `>=3.10` floor and CI's 3.11). No system package or source
+install fallback was needed or added.
+
+**No fallback authority remains:** the custom EMA/RSI/MACD/TRIX/Bollinger
+formulas are fully deleted from `scripts/indicators.py`; TA-Lib is the
+only calculation code path for these five indicators. No
+`pandas-ta-classic` dependency was added — wheel resolution did not fail
+on any platform this PR could verify (macOS arm64 locally; the new
+`indicators-tests` CI job verifies Linux/`ubuntu-latest`).
+
+**Safety:** no trading limit, authorization rule, `paper_books` accounting
+code, or scheduling behavior was touched; no broker, provider, model, or
+market-data service was called; no live data was fetched; no real
+provider/broker/paper/live order calls were made; the scheduler was not
+enabled.
+
 ## Next PR
 
-**PR 4 — generic indicator parity and TA-Lib migration.**
+**PR 5 — vectorized research library selection and adapter.**
 
 Bounded prompt for the next session:
 
 ```text
-Implement PR 4: replace scripts/indicators.py's custom EMA/RSI/MACD/TRIX/
-Bollinger implementations with TA-Lib, per docs/library-migration/
-MASTER_PLAN.md row 4 and COMPONENT_MATRIX.md's "Technical indicators" row.
+Implement PR 5: evaluate an OSI-approved vectorized-research library, or
+obtain explicit owner approval for VectorBT's Apache-2.0 + Commons Clause
+terms (docs/library-migration/DECISIONS.md D4 — currently
+BLOCKED_PENDING_LICENSE_DECISION), before adding any new dependency; then
+build a new, additive `research` optional-dependency group and adapter for
+signal matrices/parameter sweeps, per docs/library-migration/
+MASTER_PLAN.md row 5 and COMPONENT_MATRIX.md's "Vectorized research/
+parameter sweeps" row.
 
 Read first: docs/library-migration/STATUS.md, MASTER_PLAN.md,
-COMPONENT_MATRIX.md, REMOVAL_MANIFEST.md, scripts/indicators.py, its
-existing tests, and pyproject.toml's `indicators` extra (already declares
-TA-Lib>=0.7.1,<0.8 from PR 1).
+COMPONENT_MATRIX.md, DECISIONS.md (D4), DEPENDENCY_MATRIX.md, and
+pyproject.toml's existing optional-dependency groups (`indicators`,
+`analytics`, `observability`) for the pattern a new `research` group
+should follow.
 
-Require a supported binary TA-Lib wheel first (already verified in PR 1
-for macOS arm64 and Linux CI); use a system package/source install only as
-an explicitly documented fallback if a target platform lacks a compatible
-wheel — never as an unconditional prerequisite.
+If VectorBT's licensing is not resolved (owner approval not obtained),
+evaluate and select an OSI-approved alternative instead (e.g. a
+vectorized backtesting/signal library without a Commons Clause or
+similar non-OSI restriction) and document the comparison and choice in
+this file.
 
-Preserve existing public function names/signatures unless caller analysis
-proves otherwise. Document and match warm-up-period, null/NaN, and
-rounding semantics exactly against the current custom implementation for
-EMA, RSI, MACD, TRIX, and Bollinger Bands — TA-Lib's warm-up and rounding
-conventions differ from hand-written implementations and must be
-reconciled explicitly, not assumed equivalent. The ATR risk indicator in
-analysis/indicators.py may reuse TA-Lib's value calculation but must keep
-its `Decimal` conversion boundary custom (COMPONENT_MATRIX.md: "Decimal
-conversion stays custom").
+This is new, additive capability — no existing file under `src/`,
+`scripts/`, `paper_runtime/src/`, or `config/` is replaced or removed by
+this PR. Add an import-boundary test (the selected library is never
+imported from `paper_runtime` and `paper_runtime` is never imported from
+the new adapter), analogous to the existing LumiBot AST import-boundary
+test. The new adapter has no execution authority — it does not place
+orders, does not touch `paper_books` accounting, and is not wired into any
+scheduled or live code path.
 
-Do not retain the custom EMA/RSI/MACD/TRIX/Bollinger formulas once parity
-is proven; do not add a pandas-ta-classic fallback unless TA-Lib wheel
-resolution actually fails on a required CI platform (it did not in PR 1).
+Do not touch scripts/indicators.py, analysis/indicators.py, or any file
+this PR (PR 4) modified. Do not begin the Riskfolio-Lib evaluation (PR
+12) or any Category-B PR (13/14).
 
 Update docs/library-migration/STATUS.md, COMPONENT_MATRIX.md, and
-REMOVAL_MANIFEST.md recording: TA-Lib as authoritative, warm-up/null/
-rounding parity evidence, tests run and results, no fallback authority
-remaining (or the fallback's exact trigger condition if one was required),
-and an exact bounded PR 5 prompt.
+DECISIONS.md (D4's resolution) recording: the library selected (or the
+approval obtained) and why, the new `research` group's dependencies and
+verified wheel/install result, the import-boundary test result, and an
+exact bounded PR 6 prompt (the LumiBot-backtest-mode import-boundary
+pre-step in MASTER_PLAN.md must be resolved in DECISIONS.md D4 open item 1
+before PR 6 implementation begins, per MASTER_PLAN.md's pre-step row).
 
 Safety: do not change trading limits or authorization rules; do not touch
 paper_books accounting; do not enable scheduling; do not call a broker,
 provider, model, or market-data service; do not fetch live data; do not
-begin PR 5; do not merge automatically.
+begin PR 6; do not merge automatically.
 
-Open one PR titled "PR 4: Replace custom indicators with TA-Lib". Stop
-after opening the PR.
+Open one PR titled "PR 5: Vectorized research library selection and
+adapter". Stop after opening the PR.
 ```

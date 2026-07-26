@@ -10,14 +10,27 @@ The correct flow is: Claude fetches raw bars via Robinhood MCP
 (get_equity_historicals, ~290 daily bars) -> passes them to this module ->
 numbers are computed, not estimated.
 
-stdlib only. Python 3.9+. Input: list of close prices old->new.
+TA-Lib is the sole calculation authority for EMA/RSI/MACD/TRIX/Bollinger
+(see docs/library-migration/STATUS.md for the parity record against the
+former hand-written formulas, including the one documented intentional
+semantic difference: flat-price RSI). Requires the `indicators` extra
+(`pip install -e ".[indicators]"`). Input: list of close prices old->new.
 For Bollinger %B precision, high/low can be passed, but close is enough.
 """
 from __future__ import annotations
 import json
 import sys
-from statistics import pstdev
 from typing import Optional
+
+import numpy as np
+
+try:
+    import talib
+except ImportError as exc:  # pragma: no cover - exercised by dependency-extras-smoke CI
+    raise ImportError(
+        "scripts/indicators.py requires TA-Lib. "
+        'Install the indicators extra: pip install -e ".[indicators]"'
+    ) from exc
 
 
 # --------------------------------------------------------------------------
@@ -30,24 +43,24 @@ def _sma(values: list[float], period: int) -> Optional[float]:
     return sum(values[-period:]) / period
 
 
+def _nan_to_none(arr: np.ndarray) -> list[Optional[float]]:
+    """Convert a TA-Lib/NumPy float array to the project's None-padding convention."""
+    return [None if np.isnan(v) else float(v) for v in arr]
+
+
+def _pct_change(current: float, previous: float) -> float:
+    """Percent change of `current` vs. `previous`, 0.0 (not NaN/inf) at previous == 0."""
+    return (current - previous) / previous * 100.0 if previous != 0 else 0.0
+
+
 def ema_series(values: list[float], period: int) -> list[Optional[float]]:
     """
     EMA with None padding in the warmup. Seed = SMA of the first `period`
     observations (TradingView / ta-lib adjust=False convention).
     Returns list of same length as `values`.
     """
-    n = len(values)
-    out: list[Optional[float]] = [None] * n
-    if n < period:
-        return out
-    k = 2.0 / (period + 1)
-    seed = sum(values[:period]) / period
-    out[period - 1] = seed
-    prev = seed
-    for i in range(period, n):
-        prev = values[i] * k + prev * (1 - k)
-        out[i] = prev
-    return out
+    arr = np.asarray(values, dtype=float)
+    return _nan_to_none(talib.EMA(arr, timeperiod=period))
 
 
 def _strip(values: list[Optional[float]]) -> list[float]:
@@ -55,37 +68,36 @@ def _strip(values: list[Optional[float]]) -> list[float]:
 
 
 def rsi_wilder(close: list[float], period: int = 14) -> list[Optional[float]]:
-    """RSI with Wilder smoothing. None padding in warmup."""
+    """RSI with Wilder smoothing. None padding in warmup.
+
+    TA-Lib's RSI returns 0.0 (not 100.0) for the degenerate case where the
+    average gain and average loss are both exactly zero, i.e. every price
+    from the start of `close` through the current bar is identical. The
+    pre-migration formula treated that zero-loss case as maximally bullish
+    (RSI 100 -- the conventional Wilder divide-by-zero, RS -> infinity,
+    result). This boundary is corrected back to that documented, intentional
+    semantic; see docs/library-migration/STATUS.md for the comparison that
+    surfaced the difference.
+    """
     n = len(close)
-    out: list[Optional[float]] = [None] * n
-    if n < period + 1:
-        return out
-    gains, losses = [], []
-    for i in range(1, n):
-        ch = close[i] - close[i - 1]
-        gains.append(max(ch, 0.0))
-        losses.append(max(-ch, 0.0))
-    # First simple average over the first `period` changes
-    avg_gain = sum(gains[:period]) / period
-    avg_loss = sum(losses[:period]) / period
-
-    def rsi_val(ag: float, al: float) -> float:
-        if al == 0:
-            return 100.0
-        rs = ag / al
-        return 100.0 - 100.0 / (1.0 + rs)
-
-    out[period] = rsi_val(avg_gain, avg_loss)
-    for i in range(period + 1, n):
-        g, l = gains[i - 1], losses[i - 1]
-        avg_gain = (avg_gain * (period - 1) + g) / period
-        avg_loss = (avg_loss * (period - 1) + l) / period
-        out[i] = rsi_val(avg_gain, avg_loss)
+    arr = np.asarray(close, dtype=float)
+    out = _nan_to_none(talib.RSI(arr, timeperiod=period))
+    first_change = next((i for i in range(1, n) if close[i] != close[i - 1]), n)
+    for i in range(period, n):
+        if out[i] is not None and i < first_change:
+            out[i] = 100.0
     return out
 
 
 def macd(close: list[float], fast: int = 12, slow: int = 26, signal: int = 9):
-    """Returns (macd_line, signal_line, histogram), all None-padded."""
+    """Returns (macd_line, signal_line, histogram), all None-padded.
+
+    Built from TA-Lib's EMA primitive rather than `talib.MACD()` directly:
+    `talib.MACD()` withholds the MACD line itself until enough bars exist
+    for the *signal* EMA too, whereas this stack's convention (matched here)
+    makes the line available `signal`-1 bars earlier, as soon as both the
+    fast and slow EMAs exist -- callers depend on that earlier availability.
+    """
     ef = ema_series(close, fast)
     es = ema_series(close, slow)
     line: list[Optional[float]] = [
@@ -106,15 +118,19 @@ def macd(close: list[float], fast: int = 12, slow: int = 26, signal: int = 9):
 
 
 def trix(close: list[float], period: int = 15, signal: int = 9):
-    """TRIX (% ROC of triple EMA) and its signal. None-padded to original length."""
+    """TRIX (% ROC of triple EMA) and its signal. None-padded to original length.
+
+    Built from three chained TA-Lib EMA passes rather than `talib.TRIX()`
+    directly, to keep explicit control of the zero-denominator convention
+    (0.0, not NaN/inf, when the triple-smoothed EMA is itself exactly zero)
+    and of the signal-line alignment, matching the pre-migration formula
+    exactly (see `_pct_change` and docs/library-migration/STATUS.md).
+    """
     n = len(close)
     e1 = _strip(ema_series(close, period))
     e2 = _strip(ema_series(e1, period))
     e3 = _strip(ema_series(e2, period))
-    trix_valid: list[float] = []
-    for i in range(1, len(e3)):
-        prev = e3[i - 1]
-        trix_valid.append((e3[i] - prev) / prev * 100.0 if prev != 0 else 0.0)
+    trix_valid: list[float] = [_pct_change(e3[i], e3[i - 1]) for i in range(1, len(e3))]
     sig_valid = _strip(ema_series(trix_valid, signal))
     # align to end (TRIX is one of the most lagging)
     t: list[Optional[float]] = [None] * n
@@ -131,17 +147,21 @@ def trix(close: list[float], period: int = 15, signal: int = 9):
 
 
 def bollinger(close: list[float], period: int = 20, mult: float = 2.0):
-    """Returns (mid, upper, lower, percent_b) for the last bar."""
+    """Returns (mid, upper, lower, percent_b) for the last bar.
+
+    TA-Lib's BBANDS uses population standard deviation for `matype=0`
+    (SMA; its `nbdevup`/`nbdevdn` multiply the population stddev),
+    matching the pre-migration `statistics.pstdev`-based formula, like
+    TradingView.
+    """
     if len(close) < period:
         return None, None, None, None
-    window = close[-period:]
-    mid = sum(window) / period
-    sd = pstdev(window)  # population, like TradingView
-    upper = mid + mult * sd
-    lower = mid - mult * sd
-    rng = upper - lower
-    pct_b = (close[-1] - lower) / rng if rng != 0 else 0.5
-    return mid, upper, lower, pct_b
+    arr = np.asarray(close, dtype=float)
+    upper, mid, lower = talib.BBANDS(arr, timeperiod=period, nbdevup=mult, nbdevdn=mult, matype=0)
+    mid_v, upper_v, lower_v = float(mid[-1]), float(upper[-1]), float(lower[-1])
+    rng = upper_v - lower_v
+    pct_b = (close[-1] - lower_v) / rng if rng != 0 else 0.5
+    return mid_v, upper_v, lower_v, pct_b
 
 
 # --------------------------------------------------------------------------
