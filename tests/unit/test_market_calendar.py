@@ -221,3 +221,119 @@ def test_add_trading_days_across_year_boundary():
     # Dec 31, 2025 (Wednesday) lands on Jan 2, 2026 (Friday), not Jan 1.
     new_years_eve = date(2025, 12, 31)
     assert add_trading_days(new_years_eve, 1) == date(2026, 1, 2)
+
+
+# --- Explicit calendar range (docs/milestones/rebuild/5.md, PR #9) ---
+#
+# `exchange_calendars.get_calendar("XNYS")` called with no explicit start/end
+# defaults to a *moving* window of roughly "now minus 20 years" to "now plus
+# 1 year". These fixtures use dates deliberately outside that historical
+# moving-default window (but inside this module's fixed, explicit
+# `_CALENDAR_START`/`_CALENDAR_END` range) to prove the calendar is no
+# longer silently bounded by wall-clock time.
+
+
+def test_valid_historical_date_before_library_default_window():
+    # 1995-06-01 predates exchange_calendars' own moving 20-year-lookback
+    # default; it must still resolve correctly under the fixed explicit range.
+    assert is_trading_day(date(1995, 6, 1)) is True
+
+
+def test_regular_session_close_for_older_historical_session():
+    close = regular_session_close(date(1995, 6, 1))
+    assert close == datetime(1995, 6, 1, 16, 0, tzinfo=NY)
+
+
+def test_valid_future_date_after_library_default_window():
+    # 2030-06-03 is beyond exchange_calendars' own moving 1-year-lookahead
+    # default; it must still resolve correctly under the fixed explicit range.
+    assert is_trading_day(date(2030, 6, 3)) is True
+
+
+def test_next_trading_session_near_configured_upper_boundary():
+    # 2035-12-31 is this module's configured last supported session.
+    sunday_before_boundary = date(2035, 12, 30)
+    assert next_trading_session(sunday_before_boundary) == date(2035, 12, 31)
+
+
+def test_next_trading_session_at_upper_boundary_inclusive_returns_last_session():
+    last_supported_session = date(2035, 12, 31)
+    assert (
+        next_trading_session(last_supported_session, inclusive=True)
+        == last_supported_session
+    )
+
+
+def test_next_trading_session_past_upper_boundary_raises():
+    # No supported session exists strictly after the configured last session.
+    last_supported_session = date(2035, 12, 31)
+    with pytest.raises(MarketCalendarError):
+        next_trading_session(last_supported_session, inclusive=False)
+
+
+def test_add_trading_days_crossing_upper_boundary_raises():
+    near_boundary = date(2035, 12, 20)
+    with pytest.raises(MarketCalendarError):
+        add_trading_days(near_boundary, 20)
+
+
+def test_regular_session_close_before_supported_range_raises():
+    with pytest.raises(MarketCalendarError):
+        regular_session_close(date(1985, 1, 2))
+
+
+def test_regular_session_close_after_supported_range_raises():
+    with pytest.raises(MarketCalendarError):
+        regular_session_close(date(2036, 1, 2))
+
+
+# --- Non-session start-date fixtures for add_trading_days/next_trading_session
+# (docs/milestones/rebuild/5.md, PR #9) ---
+#
+# `start` must remain day zero even when it is not itself a trading session,
+# and positive `n` must count only subsequent XNYS sessions, for every kind
+# of non-session start: weekend days, a fixed-rule holiday, a one-off
+# exchange closure, and (for symmetry) an early-close session that *is*
+# itself a valid trading session.
+
+
+@pytest.mark.parametrize(
+    ("label", "start", "first_session_after"),
+    [
+        ("saturday", date(2026, 7, 11), date(2026, 7, 13)),
+        ("sunday", date(2026, 7, 12), date(2026, 7, 13)),
+        ("exchange_holiday", date(2026, 1, 1), date(2026, 1, 2)),
+        ("one_off_closure", date(2018, 12, 5), date(2018, 12, 6)),
+    ],
+)
+def test_add_trading_days_one_from_non_session_start(label, start, first_session_after):
+    assert add_trading_days(start, 1) == first_session_after
+
+
+@pytest.mark.parametrize(
+    ("label", "start", "first_session_after"),
+    [
+        ("saturday", date(2026, 7, 11), date(2026, 7, 13)),
+        ("sunday", date(2026, 7, 12), date(2026, 7, 13)),
+        ("exchange_holiday", date(2026, 1, 1), date(2026, 1, 2)),
+        ("one_off_closure", date(2018, 12, 5), date(2018, 12, 6)),
+    ],
+)
+def test_next_trading_session_from_non_session_start(label, start, first_session_after):
+    # A non-session start behaves identically under inclusive=True and
+    # inclusive=False, since `start` itself is never a candidate session.
+    assert next_trading_session(start, inclusive=False) == first_session_after
+    assert next_trading_session(start, inclusive=True) == first_session_after
+
+
+def test_add_trading_days_one_from_early_close_session_start():
+    # 2026-11-27 (day after Thanksgiving) is itself a valid, early-close
+    # trading session — `start` is still treated as day zero, not counted.
+    early_close_session = date(2026, 11, 27)
+    assert add_trading_days(early_close_session, 1) == date(2026, 11, 30)
+
+
+def test_next_trading_session_from_early_close_session_start():
+    early_close_session = date(2026, 11, 27)
+    assert next_trading_session(early_close_session, inclusive=False) == date(2026, 11, 30)
+    assert next_trading_session(early_close_session, inclusive=True) == early_close_session

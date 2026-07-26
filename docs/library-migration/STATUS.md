@@ -354,19 +354,45 @@ only AST-scans the file for `lumibot` imports and is unaffected.
 process-lifetime `functools.lru_cache(maxsize=1)`-wrapped accessor, not
 reconstructed on every call.
 
+**Correction (2026-07-26, docs/milestones/rebuild/5.md PR #9 review):** the
+initial PR 3 implementation called `get_calendar("XNYS")` with no explicit
+`start`/`end`, which resolves to `exchange_calendars`' own moving default
+window ("now minus ~20 years" to "now plus ~1 year" at construction time).
+Combined with the process-lifetime `lru_cache`, that window would have
+frozen at whatever range happened to be current the first time a process
+called `_calendar()`, silently narrowing the supported range over the life
+of a long-running process. `_calendar()` now passes an explicit, fixed
+range — `_CALENDAR_START = 1990-01-01`, `_CALENDAR_END = 2035-12-31` — so
+the supported range no longer depends on wall-clock time at construction.
+`regular_session_close()` was also narrowed to distinguish, via
+`cal.first_session`/`cal.last_session` bounds-checking and catching
+`NotSessionError` vs. `DateOutOfBounds`/`RequestedSessionOutOfBounds`
+separately: an actual weekend/exchange holiday, a date outside the
+supported range, a failure to construct/query XNYS, and a timezone-database
+failure now each raise `MarketCalendarError` with a distinct message
+instead of the previous blanket "`<date>` is not a trading session" for
+every case. The module docstring now documents the exact supported range,
+how it is constructed, what happens outside it, and that future one-off
+emergency closures cannot be known before `exchange_calendars` itself is
+upgraded.
+
 **Tests run:**
 - `pytest tests/unit/test_market_calendar.py -q --tb=short` —
-  **41 passed** (28 pre-existing fixtures retained and re-verified against
-  the new implementation, 13 new cases added: EDT/EST UTC-offset
-  distinction, exact open/close minute boundaries, pre-market/after-hours,
-  one known early-close session and its `regular_session_close` value, a
-  non-session `regular_session_close` failure, a historical one-off
-  exchange closure, inclusive `next_trading_session` skipping a holiday,
-  and `add_trading_days` across a year boundary). Expected values were
-  computed independently (well-known market-hours facts and manually
-  verified calendar dates), not derived by calling the same
+  **60 passed** (28 original fixtures plus the 13 added during PR 3, all
+  re-verified against the corrected implementation, plus 19 new cases added
+  during the PR #9 review correction: a historical date before the
+  library's own moving-default lookback, `regular_session_close` for that
+  historical session, a future date beyond the library's own
+  moving-default lookahead, `next_trading_session` and `add_trading_days`
+  at/past the configured upper boundary, `regular_session_close` outside
+  the configured range in both directions, and `add_trading_days`/
+  `next_trading_session` from non-session starts — Saturday, Sunday, a
+  fixed-rule holiday, a one-off exchange closure, and (for symmetry) an
+  early-close session that is itself a valid trading session). Expected
+  values were computed independently (well-known market-hours facts and
+  manually verified calendar dates), not derived by calling the same
   `exchange_calendars` API the implementation calls.
-- `pytest tests/ -q --tb=short` — **2769 passed, 17 skipped, 0 failed**
+- `pytest tests/ -q --tb=short` — **2788 passed, 17 skipped, 0 failed**
   (full offline suite; no test outside `test_market_calendar.py` was
   modified).
 
