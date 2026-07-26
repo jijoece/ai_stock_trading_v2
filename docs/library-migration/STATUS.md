@@ -1,15 +1,17 @@
 # Migration Status
 
-**Current phase: PR 0 — complete.**
-**Next phase: PR 1 — Dependency compatibility and optional groups.**
+**Current phase: PR 1 — complete.**
+**Next phase: PR 2 — Boundary validation evaluation.**
 
 ## Completed work (PR 0)
 
 - Targeted repository inventory across infra, backtesting/accounting, and
   trading/signals/safety (three parallel read-only agents; see
   `ARCHITECTURE.md` and `COMPONENT_MATRIX.md` for the consolidated result).
-- Dependency-compatibility research against live PyPI/GitHub data for all 21
-  proposed libraries (see `DEPENDENCY_MATRIX.md`).
+- Dependency-compatibility research against live PyPI/GitHub data for the
+  library candidates evaluated (see `DEPENDENCY_MATRIX.md` Section 1, 23
+  table entries — the earlier "21 proposed libraries" figure did not match
+  the table and has been corrected here rather than repeated).
 - ADR reconciliation for the two direct conflicts between the original
   `docs/milestones/rebuild/plan.md` and accepted ADRs 0001 and 0006 (see
   `DECISIONS.md` D1/D2). Neither required a superseding ADR — both were
@@ -18,85 +20,313 @@
   (`REMOVAL_MANIFEST.md`), and preservation manifest
   (`PRESERVATION_MANIFEST.md`).
 
+## Completed work (PR 1)
+
+**Scope:** `pyproject.toml`, `paper_runtime/pyproject.toml`,
+`.github/workflows/ci.yml`, `docs/adr/0002-isolated-lumibot-runtime.md`
+(one amendment section), one doc-comment-only edit in
+`tests/unit/test_lumibot_adapter.py` (no behavior change — see "Root
+`paper` extra removed" below), and the `docs/library-migration/*`
+documentation set — not `pyproject.toml` only, and not limited to
+dependency declarations; PR 1 also corrected inaccurate planning guidance
+recorded during PR 0 and, after review, removed an unresolvable install
+target and added CI coverage for the new extras and the Python floor.
+
+### Dependencies added
+
+Base dependencies (`pyproject.toml`, not an extra):
+
+```text
+exchange_calendars>=4.13,<5
+```
+
+New `indicators` extra:
+
+```text
+TA-Lib>=0.7.1,<0.8
+```
+
+New `analytics` extra:
+
+```text
+empyrical-reloaded>=0.5.12,<0.6
+quantstats-lumi>=1.1.5,<2
+```
+
+New `observability` extra:
+
+```text
+structlog>=26.1,<27
+opentelemetry-api>=1.44,<2
+opentelemetry-sdk>=1.44,<2
+```
+
+`dev` extra additions:
+
+```text
+hypothesis>=6.161,<7
+time-machine>=3.2,<4
+```
+
+`paper_runtime/pyproject.toml` (the root `pyproject.toml` no longer declares
+a `paper` extra — see "Root `paper` extra removed" below):
+
+```text
+lumibot==4.5.78   (bumped from 4.5.74)
+```
+
+### Verified resolved versions (PyPI JSON API, 2026-07-26)
+
+| Package | Verified version | Requires-Python |
+|---|---|---|
+| exchange_calendars | 4.13.2 | `>=3.10,<4` |
+| TA-Lib | 0.7.1 | `>=3.9` |
+| quantstats-lumi | 1.1.5 | `>=3.6` |
+| empyrical-reloaded | 0.5.12 | `>=3.9` |
+| structlog | 26.1.0 | `>=3.10` |
+| opentelemetry-api | 1.44.0 | `>=3.10` |
+| opentelemetry-sdk | 1.44.0 | `>=3.10` |
+| hypothesis | 6.161.5 | `>=3.10` |
+| time-machine | 3.2.0 | `>=3.10` |
+| lumibot | 4.5.78 | `>=3.10` |
+
+Full detail in `DEPENDENCY_MATRIX.md` ("PR 1 re-verification" section) and
+Section 6 ("PR 1 correction record").
+
+### Python floor decision
+
+**Unchanged, `>=3.10`,** in both `pyproject.toml` and
+`paper_runtime/pyproject.toml`. The `>=3.11` floor proposed during PR 0 was
+contingent solely on adding VectorBT; PR 1 does not add VectorBT, and every
+package verified above supports `>=3.10`. Pyright's `pythonVersion` in both
+`[tool.pyright]` blocks is unchanged (`3.10`). CI continues running on
+Python 3.11, which is compatible with a `>=3.10` package floor.
+
+### VectorBT licensing status
+
+`BLOCKED_PENDING_LICENSE_DECISION` (recorded in `DECISIONS.md`). VectorBT
+1.1.0 is Apache-2.0 with Commons Clause — source-available/fair-code, not
+conventional OSI-approved open source, without an explicit owner-approved
+exception. Not added to any dependency declaration in PR 1. PR 5 (retitled
+"Vectorized research library selection and adapter") must evaluate an
+OSI-approved alternative or obtain explicit owner approval before adding a
+vectorized-research dependency.
+
+### Riskfolio-Lib deferral
+
+Not added in PR 1. Remains PR 12 evaluation-only. Its `vectorbt>=0.28.0`
+hard dependency was re-verified against current PyPI metadata and confirmed
+accurate (not a documentation error) — see `DEPENDENCY_MATRIX.md` Section 6.
+
+### TA-Lib wheel result
+
+Confirmed: TA-Lib 0.7.1 provides prebuilt wheels for manylinux2014/
+musllinux (x86_64/aarch64), macOS 13/14 (x86_64/arm64), and Windows across
+cp39–cp314. `pip install -e ".[indicators]"` resolved a compatible wheel on
+this machine (macOS arm64, Python 3.11) with no compilation and
+`import talib` succeeded (`talib.__version__ == "0.7.1"`). `DEPENDENCY_MATRIX.md`
+and `MASTER_PLAN.md` corrected to require a wheel first, with system
+installation only as an explicit fallback (PR 4 scope). This is now also a
+blocking CI check (`dependency-extras-smoke` / `indicators` in `ci.yml`, on
+`ubuntu-latest`), so the wheel result is a reproducible merge gate, not only
+a local scratch-environment observation.
+
+### Root `paper` extra removed (`DECISIONS.md` D5)
+
+The root `pyproject.toml`'s `paper` extra was **removed**, not merely
+version-bumped. `pip install -e ".[paper]"` cannot resolve for any
+published `lumibot==4.5.x` release: LumiBot's `google-adk[extensions]`
+requirement pulls in `litellm`, which pins `jsonschema==4.23.0` **exactly**
+across every compatible release, unconditionally conflicting with this
+repository's `jsonschema>=4.26.0` base floor. (An earlier diagnosis in this
+PR incorrectly attributed the failure to a `google-genai` version-floor
+mismatch between `lumibot` and `google-adk`; that mismatch is real but is
+not the blocking constraint — bisecting each base dependency individually
+against `lumibot==4.5.78` isolated `jsonschema>=4.26.0` as the actual
+unsatisfiable constraint, confirmed by inspecting `litellm`'s wheel metadata
+directly.) `docs/adr/0002-isolated-lumibot-runtime.md`'s Context section
+already flagged this exact risk as a *silent downgrade* motivating the
+`paper_runtime` process-boundary architecture; it has since become an
+unconditional resolution failure now that `jsonschema>=4.26.0` is a hard
+floor. `paper_runtime/pyproject.toml` is now the sole LumiBot dependency
+declaration in the repository. `runtime/lumibot/adapter.py` (ADR 0001) and
+its test (`tests/unit/test_lumibot_adapter.py`) are unaffected in behavior —
+the test still guards itself with `pytest.importorskip("lumibot")` and a
+developer who wants to exercise it installs `lumibot` into a scratch
+virtualenv by hand, not via any declared extra.
+
+### Environments tested
+
+No Python 3.10 interpreter was available on this machine; all scratch
+environments used Python 3.11 (the interpreter CI already uses), which is
+compatible with the unchanged `>=3.10` floor.
+
+- **Environment A (standard application, `.[dev]`):** installed cleanly;
+  `import exchange_calendars, hypothesis, time_machine` succeeded; `pip
+  check` reported no broken requirements; full offline suite —
+  **2746 passed, 18 skipped, 0 failed**.
+- **Environment B (`.[indicators]`):** installed cleanly; `import talib`
+  succeeded (`0.7.1`); `pip check` clean.
+- **Environment C (`.[analytics]`):** installed cleanly; `import empyrical,
+  quantstats_lumi` succeeded (`0.5.12`, `1.1.5` — note the importable module
+  is `quantstats_lumi`, not `quantstats`); `pip check` clean. No network
+  calls or benchmark data were fetched.
+- **Environment D (`.[observability]`):** installed cleanly; `import
+  structlog; import opentelemetry.sdk` succeeded (`structlog 26.1.0`); `pip
+  check` clean. No exporter configured.
+- **Environment E (isolated `paper_runtime[dev]` — the only LumiBot install
+  target that exists after this PR):** installed cleanly; `pip check`
+  clean; resolved `lumibot==4.5.78`; paper_runtime suite —
+  **59 passed, 0 failed**. The root `pyproject.toml` no longer declares a
+  `paper` extra (see "Root `paper` extra removed" above), so there is no
+  root-package LumiBot install path to validate separately, and no
+  cross-distribution version assertion to make — `lumibot==4.5.78` is
+  declared in exactly one place.
+- Indicators/analytics/observability were never installed together in one
+  combined environment, consistent with the isolation requirement. Each is
+  now also independently re-verified on every PR by the
+  `dependency-extras-smoke` CI matrix (`ci.yml`).
+- A blocking `python-3-10-floor` CI job (`ci.yml`) now installs `.[dev]` and
+  runs the full offline suite under the declared minimum Python version on
+  every PR; no Python 3.10 interpreter was available on this development
+  machine, so this substantiates the floor that local validation could not.
+
+### Documentation corrections applied
+
+- `exchange_calendars` corrected from a proposed optional `core` extra to a
+  base application dependency (`DEPENDENCY_MATRIX.md`, `pyproject.toml`).
+- VectorBT reclassified `BLOCKED_PENDING_LICENSE_DECISION`; not added.
+  PR 5 retitled from "VectorBT research adapter" to "Vectorized research
+  library selection and adapter" (`MASTER_PLAN.md`, `DECISIONS.md`,
+  `COMPONENT_MATRIX.md`).
+- Riskfolio-Lib removed from the proposed PR 1 `analytics` group; remains
+  PR 12 evaluation-only. Its VectorBT hard-dependency claim was re-verified
+  and confirmed accurate, not corrected.
+- TA-Lib installation guidance corrected from unconditional
+  `brew install`/`apt install` to wheel-first with a documented,
+  explicitly-triggered fallback (`DEPENDENCY_MATRIX.md`, `MASTER_PLAN.md`).
+- Analytics authority boundary made unambiguous: empyrical-reloaded is
+  authoritative for primitive metrics; quantstats-lumi is reporting/
+  presentation only.
+- LumiBot version aligned to `4.5.78` in both `pyproject.toml` and
+  `paper_runtime/pyproject.toml`.
+- Python floor documentation corrected from "raise to `>=3.11`" to "remains
+  `>=3.10` until an approved dependency requires a raise."
+- The Pydantic ADR contradiction in `DECISIONS.md` (two inconsistent
+  statements about when an ADR is required) replaced with one rule: PR 2
+  adds no Pydantic dependency by default; an ADR is required only if PR 2
+  recommends adopting Pydantic at a boundary, before adding the dependency.
+- The "21 proposed libraries" count in this file, which did not match
+  `DEPENDENCY_MATRIX.md`'s 23 table entries, corrected above.
+- This file no longer states the PR is `pyproject.toml only`.
+- `DEPENDENCY_MATRIX.md` Section 1's VectorBT, TA-Lib, and LumiBot rows were
+  edited in place to state the current decision directly, rather than
+  leaving the superseded PR 0 proposal to contradict the corrections
+  recorded later in the same document (a future read of only Section 1
+  could otherwise reach the wrong conclusion).
+- Root `paper` extra removed from `pyproject.toml` after review identified
+  it as a declared, unresolvable install target (`DECISIONS.md` D5;
+  `docs/adr/0002-isolated-lumibot-runtime.md` Amendment).
+- `ci.yml` gained a blocking `dependency-extras-smoke` matrix (one job per
+  new extra: `indicators`, `analytics`, `observability`, each installed
+  alone) and a blocking `python-3-10-floor` job, so the new dependency
+  groups and the declared Python floor are reproducible merge gates, not
+  only local scratch-environment observations.
+
 ## Custom code removed
 
-None. PR 0 is documentation only.
+None. PR 1 changed no behavior under `src/`, `scripts/`,
+`paper_runtime/src/`, `tests/`, or `config/`. The one edit under `tests/`
+(`tests/unit/test_lumibot_adapter.py`) is a docstring/skip-reason text
+update reflecting the removed `paper` extra — the test's guard
+(`pytest.importorskip("lumibot")`) and its pass/skip behavior are
+unchanged.
 
 ## Library authority established
 
-None yet. `DEPENDENCY_MATRIX.md` records Adopt/Evaluate/Defer/Reject
-decisions but no dependency has been installed and no code has been written.
+None yet beyond dependency declaration. No production code imports any PR 1
+dependency; PR 3/4/11/15/16 wire the respective libraries into code.
 
 ## Tests run
 
-None — no code changed.
+- Main offline suite (Environment A): **2746 passed, 18 skipped, 0 failed.**
+- `paper_runtime` suite (Environment E2): **59 passed, 0 failed.**
+- No test file under `tests/` or `paper_runtime/tests/` was modified.
 
 ## Remaining blockers
 
 1. **LumiBot-backtest-mode import-boundary question** (`DECISIONS.md` D4,
-   open item 1) must be resolved before PR 6 starts. Not a blocker for PR 1.
+   open item 1) must be resolved before PR 6 starts. Not a blocker for
+   PR 1 or PR 2.
 2. **PR 13/14 feasibility outcomes** (SQLAlchemy/Alembic trigger-safety,
-   APScheduler lease-coexistence) are unknown until those PRs run — `PR 1`
+   APScheduler lease-coexistence) are unknown until those PRs run — PR 1
    does not depend on them.
+
+The root `.[paper]` extra `ResolutionImpossible` finding from an earlier
+draft of this PR is resolved, not deferred: the extra was removed (see
+"Root `paper` extra removed" above and `DECISIONS.md` D5), so there is no
+outstanding blocker to track for it.
 
 ## Next PR
 
-**PR 1 — Dependency compatibility and optional groups.**
+**PR 2 — Boundary validation evaluation.**
 
-Scope: `pyproject.toml` only.
+Scope, per `DECISIONS.md` D2 and `MASTER_PLAN.md`:
 
-- Raise the Python floor from `>=3.10` to `>=3.11`.
-- Add the eight dependency groups exactly as specified in
-  `DEPENDENCY_MATRIX.md` Section 3 (`core`, `research`, `indicators`,
-  `backtest` [reserved, empty], `paper`, `analytics`, `observability`,
-  `dev`).
-- Add `exchange_calendars` to `core`.
-- Add `hypothesis` and `time-machine` to `dev` now (low risk, useful
-  immediately for PR 3/4/6/7 parity tests).
-- Bump the `paper` extra's `lumibot` pin from `4.5.74` to `4.5.78`.
-- Do not add `pydantic`, `tenacity`, `sqlalchemy`, `alembic`, or
-  `apscheduler` yet — each is Category B, evaluated in its own later PR.
-- No production behavior changes; no new imports in `src/` yet (the groups
-  exist as installable extras, PR 3/4/5/11/15 wire them into code).
+```text
+inventory untrusted-input boundaries (YAML/env/CLI/JSONL)
+compare current hand-written validation against a Pydantic v2 boundary
+  implementation: dependency/performance impact, error-message behavior,
+  unknown-field rejection, secret-field handling
+make no broad domain-model replacement — frozen dataclasses stay
+  authoritative for internal domain code
+add no Pydantic dependency by default
+prepare an ADR only if adoption at a boundary is recommended, before adding
+  pydantic to any dependency declaration
+```
 
 ## Exact next-session prompt
 
 ```text
-Implement PR 1 for the library-first migration of ai_stock_trading_v2.
+Implement PR 2 for the library-first migration of ai_stock_trading_v2:
+Boundary validation evaluation.
 
 Read first (bounded context only):
   docs/library-migration/STATUS.md
-  docs/library-migration/DEPENDENCY_MATRIX.md (Sections 2 and 3)
-  docs/library-migration/MASTER_PLAN.md (PR 1 row)
-  pyproject.toml
+  docs/library-migration/DECISIONS.md (D2, and the VectorBT/Pydantic
+    corrections recorded in PR 1)
+  docs/library-migration/MASTER_PLAN.md (PR 2 row)
+  docs/library-migration/COMPONENT_MATRIX.md (the boundary-parsing row)
 
-Scope: pyproject.toml only.
+Scope: evaluation only.
 
-1. Raise requires-python from >=3.10 to >=3.11.
-2. Add optional-dependency groups: core (add exchange_calendars>=4.13,
-   alongside existing base deps), research (vectorbt>=1.1.0), indicators
-   (TA-Lib>=0.7.1), backtest (empty, reserved), paper (bump lumibot to
-   ==4.5.78), analytics (quantstats-lumi, empyrical-reloaded>=0.5.12,
-   riskfolio-lib>=7.3.0), observability (structlog>=26.1.0,
-   opentelemetry-sdk>=1.44.0, opentelemetry-api>=1.44.0), dev (add
-   hypothesis>=6.161.5, time-machine>=3.2.0 to the existing dev group).
-3. Do not add pydantic, tenacity, sqlalchemy, alembic, or apscheduler.
-4. Do not modify any file under src/, scripts/, paper_runtime/src/, or
-   tests/.
-5. Do not install any dependency in this session unless verifying the
-   dependency resolver succeeds (pip install -e ".[dev,core,research,
-   indicators,analytics,observability]" in a scratch venv is acceptable to
-   confirm resolution; do not commit a populated .venv).
-6. Confirm the `research`/`analytics` groups (which pull VectorBT
-   transitively via Riskfolio-Lib) resolve independently of the `paper`
-   group (LumiBot) — they are never installed together, matching
-   DEPENDENCY_MATRIX.md's isolation finding.
-7. Update docs/library-migration/STATUS.md at the end: mark PR 1 complete,
-   record actual resolved versions, and set next PR to PR 2 (boundary
-   validation evaluation) or PR 3 (exchange_calendars migration) — no
-   production behavior changes, so tests are unaffected; run the full
-   offline suite once to confirm zero regressions from the pyproject.toml
-   change alone.
-8. Open one PR. Do not begin PR 2 in the same session. Do not merge
+1. Inventory every untrusted-input boundary currently validated by hand:
+   YAML/environment configuration loading, CLI request validation, external
+   provider response parsing, broker/runtime JSONL message validation, and
+   API/serialized DTO validation. Cite exact files and functions.
+2. For each boundary, compare current hand-written validation against a
+   Pydantic v2 boundary-model implementation on: dependency/performance
+   impact, error-message behavior, unknown-field rejection, secret-field
+   handling. A throwaway/scratch comparison implementation is acceptable;
+   it does not need to be merged into src/.
+3. Do not replace any frozen dataclass domain model
+   (models/trading_models.py, analysis/screener.py::ScreeningConfig,
+   analysis/scorer.py::ScoringConfig,
+   recommendations/builder.py::FrozenRecommendation,
+   paper_books/models.py, or any other @dataclass(frozen=True) domain type).
+4. Do not add pydantic to pyproject.toml unless the comparison recommends
+   adoption at one or more boundaries.
+5. If adoption is recommended, draft (do not necessarily finalize) an ADR
+   that explicitly supplements/narrows ADR 0001 before any pydantic
+   dependency is added, per the single rule recorded in DECISIONS.md D2.
+6. Do not modify any file under src/, scripts/, paper_runtime/src/, or
+   tests/ unless the recommendation is adoption and the ADR is approved
+   within the same session — if so, keep the change scoped to one boundary
+   as a proof of concept, not a broad rollout.
+7. Update docs/library-migration/STATUS.md at the end: record the
+   evaluation outcome (adopt-at-boundary / do not adopt), and set the next
+   PR to PR 3 (exchange_calendars migration) regardless of the Pydantic
+   outcome, since PR 3 does not depend on PR 2.
+8. Open one PR. Do not begin PR 3 in the same session. Do not merge
    automatically.
 ```

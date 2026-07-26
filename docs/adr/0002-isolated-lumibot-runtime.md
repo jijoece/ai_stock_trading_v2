@@ -146,3 +146,21 @@ against a real, verified point-in-time data source without changing `evaluation_
   process-isolation shape if a similarly heavy dependency were required, but nothing in this
   milestone brings that path any closer — `execution/live_gateway.py::DisabledLiveExecutionGateway`
   is untouched and still the only `LiveExecutionGateway` implementation in the codebase.
+
+## Amendment (2026-07-26, library-migration PR 1)
+
+The jsonschema-downgrade risk flagged in "Context" above stopped being a soft downgrade and became
+a hard, unconditional `ResolutionImpossible`: LumiBot's `google-adk[extensions]` requirement pulls
+in `litellm`, which pins `jsonschema==4.23.0` exactly across every `litellm` release LumiBot's
+`4.5.x` series accepts, while this repository's base dependencies require `jsonschema>=4.26.0`. No
+version combination satisfies both simultaneously, and this is true for every `lumibot==4.5.x`
+release currently published (all declare the `google-adk[extensions]` requirement), not a
+version-specific regression. The root `pyproject.toml` therefore no longer declares a `paper`
+extra — `pip install -e ".[paper]"` was a public install target this repository advertised as
+working while it could not actually resolve. `paper_runtime/pyproject.toml` is now the sole
+LumiBot dependency authority, consistent with Decision 1 above ("the main trading-desk process's
+`pyproject.toml` gains zero new dependencies"). `runtime/lumibot/adapter.py` and
+`tests/unit/test_lumibot_adapter.py` are unchanged: the import boundary from ADR 0001 still holds,
+and the test still guards itself with `pytest.importorskip("lumibot")` — a developer who wants to
+exercise it locally installs `lumibot` into a scratch virtualenv by hand (not via any
+`pyproject.toml`-declared extra). See `docs/library-migration/DECISIONS.md` D5 for the full record.

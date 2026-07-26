@@ -77,8 +77,25 @@ exact replacement semantics.
 **Original plan.md item:** PR 2 "Canonical data contracts" (introduce
 Pydantic models broadly, per the original migration sequence).
 
-**Status:** Narrowed, not superseded. No new ADR required unless a later PR
-proposes expanding Pydantic beyond the boundary scope below.
+**Status:** Narrowed, not superseded.
+
+**Corrected 2026-07-26 (PR 1) — single ADR rule.** This document previously
+stated two inconsistent rules: "no ADR unless Pydantic expands beyond
+boundary use" and, separately, "an ADR is required if limited Pydantic
+adoption is implemented." Those two statements conflict once PR 2 actually
+implements boundary-only adoption. They are replaced by one rule:
+
+```text
+PR 2 is an evaluation PR and adds no Pydantic dependency by default.
+
+If PR 2 recommends adopting Pydantic at any boundary, it must create an ADR
+that explicitly supplements/narrows ADR 0001 before adding Pydantic to the
+application dependencies.
+
+Expansion beyond the approved trust-boundary scope requires another ADR.
+```
+
+PR 1 does not add `pydantic` to any dependency declaration.
 
 **Reasoning:** ADR 0001 Decision 3 rejected `pydantic.BaseModel` for internal
 contracts specifically because the repository had no other pydantic
@@ -112,8 +129,8 @@ domain models**, comparing current hand-written validation against a
 Pydantic boundary implementation on: dependency/performance impact,
 error-message behavior, unknown-field rejection, secret-field handling.
 Adopt only where it produces a clear reduction in custom boundary-validation
-code. A new ADR documenting limited Pydantic adoption is required **only if**
-PR 2 is actually implemented.
+code. See the single ADR rule recorded above (corrected 2026-07-26, PR 1)
+for when an ADR is required.
 
 ---
 
@@ -161,6 +178,37 @@ diverge from `plan.md`'s literal library list:
 | Python floor | Not specified in plan.md | Raise from `>=3.10` to `>=3.11` | VectorBT 1.1.0 requires `>=3.11`; nothing else in the adopted set requires more |
 | Pandera, PyArrow | PR 2 / dataset storage | **Defer** — no concrete DataFrame-contract or bulk-storage need exists yet | Adding either speculatively increases install weight (PyArrow wheel 28–53MB) with no current consumer |
 
+### VectorBT status (corrected 2026-07-26, PR 1)
+
+```text
+VectorBT status: BLOCKED_PENDING_LICENSE_DECISION
+```
+
+The open-source `vectorbt` package (1.1.0) is licensed Apache-2.0 **with
+Commons Clause** — a fair-code restriction on selling a product whose value
+derives substantially from the software, not a restriction on internal
+research or paper-trading use. That makes it **source-available/fair-code,
+not conventional OSI-approved open source**. Internal, non-commercial use
+inside this repository may be permitted by its terms, but this repository
+has not obtained or recorded an explicit owner-approved exception to a
+strict "OSI-approved open-source libraries only" posture, and commercial or
+hosted use would require separate review regardless.
+
+Consequently:
+
+- PR 1 does not add `vectorbt` to any dependency declaration.
+- PR 1 does not raise the Python floor solely to satisfy VectorBT's
+  `>=3.11` requirement.
+- PR 1 does not create a populated `research` extra.
+- **PR 5** (retitled from "VectorBT research adapter" to "Vectorized
+  research library selection and adapter" — see `MASTER_PLAN.md`) must
+  either evaluate an OSI-approved alternative or obtain explicit owner
+  approval of the VectorBT license terms, and record that decision here,
+  before adding any vectorized-research dependency.
+
+This is a licensing-classification and project-decision record, not a legal
+conclusion.
+
 ### Open items requiring resolution before implementation (not before PR 0)
 
 1. **LumiBot backtest-mode import boundary (blocks PR 6 start, not PR 0).**
@@ -178,3 +226,51 @@ diverge from `plan.md`'s literal library list:
    This is compatible with this repository's MIT-licensed, non-commercial
    internal use, but must be recorded explicitly here rather than silently
    assumed. No blocker; documentation only.
+
+---
+
+## D5 — Root `paper` extra removed: `paper_runtime` is the sole LumiBot dependency authority
+
+**Discovered 2026-07-26, during PR 1 dependency-resolution validation.**
+
+`pip install -e ".[paper]"` in the root `pyproject.toml` fails with a hard
+`ResolutionImpossible`, not a soft version downgrade: LumiBot's
+`google-adk[extensions]` requirement pulls in `litellm`, which pins
+`jsonschema==4.23.0` **exactly** across every `litellm` release compatible
+with LumiBot's `4.5.x` series, while this repository's base dependencies
+require `jsonschema>=4.26.0`. No version combination satisfies both
+constraints. This is confirmed true for every published `lumibot==4.5.x`
+release (`4.5.0` through the current `4.5.78`), not a regression introduced
+by this PR's patch bump — it reproduces identically against the previous
+`4.5.74` pin.
+
+`docs/adr/0002-isolated-lumibot-runtime.md`'s Context section already
+flagged this exact risk ("downgrades this repository's own pinned
+dependency floor `jsonschema>=4.26.0` → `4.23.0`") as one motivation for
+moving LumiBot behind the `paper_runtime` process boundary. At that time it
+was a silent downgrade pip's resolver could still complete; it has since
+become an unconditional failure now that `jsonschema>=4.26.0` is a hard
+floor with no lower ceiling.
+
+**Decision:** remove the `paper` extra from the root `pyproject.toml`
+entirely rather than retain a declared, publicly-advertised install target
+that cannot resolve. `paper_runtime/pyproject.toml` becomes the sole
+LumiBot dependency declaration in the repository. This does not contradict
+ADR 0001 or ADR 0002:
+
+- ADR 0001 constrains where LumiBot may be *imported* (`runtime/lumibot/`
+  only, AST-enforced) — it does not require the root project to declare an
+  installable extra for that import to be legal.
+- ADR 0002 Decision 1 already states "the main trading-desk process's
+  `pyproject.toml` gains zero new dependencies from this milestone" and
+  isolates LumiBot's ~140-package transitive footprint to `paper_runtime/`.
+  Removing the root `paper` extra is a direct continuation of that decision,
+  not a reversal of it.
+
+`src/trading_research/runtime/lumibot/adapter.py` and
+`tests/unit/test_lumibot_adapter.py` are unchanged in behavior: the test
+still guards itself with `pytest.importorskip("lumibot")` and skips cleanly
+when lumibot is not importable. A developer who wants to exercise that file
+locally installs `lumibot` into a scratch virtualenv by hand; this is no
+longer offered as a `pyproject.toml`-declared extra since it cannot resolve
+against this repository's own floor.
