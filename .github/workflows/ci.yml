@@ -87,7 +87,7 @@ jobs:
         run: pytest tests/ -q --tb=short
 
   indicators-tests:
-    name: indicators-tests
+    name: indicators-tests (Python ${{ matrix.python-version }})
     runs-on: ubuntu-latest
     # Blocking job proving TA-Lib parity for real (library-migration PR 4):
     # main-tests above only installs `.[dev]`, so tests/unit/test_indicators.py
@@ -95,12 +95,19 @@ jobs:
     # job installs the `indicators` extra and asserts it resolves cleanly,
     # then runs the same file with TA-Lib actually present, so a real
     # regression in scripts/indicators.py cannot be masked by the skip in
-    # main-tests.
+    # main-tests. Matrixed over the declared `requires-python = ">=3.10"`
+    # floor and CI's historical 3.11 choice -- the separate
+    # `python-3-10-floor` job below only installs `.[dev]` (no `indicators`
+    # extra), so it does not actually exercise TA-Lib on 3.10; this job does.
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11"]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: ${{ matrix.python-version }}
       - name: Install dependencies + indicators extra
         run: pip install -e ".[dev,indicators]"
       - name: pip check

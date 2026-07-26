@@ -469,8 +469,14 @@ touched — it was not already in the tracked PR 4 scope and no parity
 tests were added for it in this PR, so per the bounded prompt it is left
 for a separate change.
 
-**Outcome: TA-Lib is now the sole calculation authority** for
-`ema_series`, `rsi_wilder`, `macd`, `trix`, and `bollinger`. All public
+**Outcome: TA-Lib is authoritative for the EMA, RSI, and BBANDS
+primitives.** `macd` and `trix` are composed from TA-Lib's EMA primitive
+in a thin custom adapter that also implements this stack's documented
+compatibility semantics (flat-price RSI override, MACD/TRIX signal
+alignment, %B, zero-denominator handling) — TA-Lib is **not** the sole
+authority for every calculation end-to-end. See "Correction (PR #12
+review): authority boundary" below for the exact boundary and why an
+earlier draft of this section overstated it. All public
 function names, signatures, return shapes (`list[Optional[float]]` /
 tuples), and dictionary keys of `compute()` are unchanged — caller
 analysis (`scripts/score.py`'s `import indicators as I`,
@@ -485,9 +491,15 @@ Bollinger calculation. `ema_series` now calls `talib.EMA`; `rsi_wilder`
 calls `talib.RSI`; `bollinger` calls `talib.BBANDS` (`matype=0`, population
 stddev). `macd` and `trix` are built from `talib.EMA` primitives rather
 than `talib.MACD()`/`talib.TRIX()` directly — see "Intentional semantic
-differences and reconciliations" below for why. `tests/unit/
-test_talib_is_sole_authority_no_custom_formulas_remain` guards against a
-custom formula (or a `statistics.pstdev` import) being reintroduced.
+differences and reconciliations" below for why. Five behavioral spy tests
+in `tests/unit/test_indicators.py` (`test_ema_series_invokes_talib_ema`,
+`test_rsi_wilder_invokes_talib_rsi`, `test_bollinger_invokes_talib_bbands`,
+`test_macd_is_composed_from_talib_ema_and_never_calls_talib_macd`,
+`test_trix_is_composed_from_talib_ema_and_never_calls_talib_trix`) prove
+this behaviorally — they spy on the real `talib.*` functions and assert
+each is actually called (and, for MACD/TRIX, that the corresponding
+single-shot `talib.MACD()`/`talib.TRIX()` is never called) — rather than
+the weaker source-text substring check an earlier draft of this PR used.
 
 **Dependency behavior:** `scripts/indicators.py` now does `import talib`
 at module scope inside a `try`/`except ImportError` that re-raises with
@@ -575,30 +587,41 @@ a dedicated test in `tests/unit/test_indicators.py`):
    price (`100.0`) gives bit-identical `upper == mid == lower` both before
    and after migration.
 
-**Tests run:**
+**Tests run** (updated counts after the PR #12 review round — see the
+correction section below; the original submission's counts were 25/1+24
+skipped/2820 before the fail-closed validation and behavioral-spy tests
+were added):
 - `pytest tests/unit/test_indicators.py -q --tb=short` (TA-Lib installed
   via `.[indicators]`, verified wheel resolution on this machine, macOS
-  arm64, Python 3.14) — **25 passed**. Covers: increasing, decreasing,
+  arm64, Python 3.14) — **48 passed**. Covers: increasing, decreasing,
   flat, and oscillating prices; short inputs below every warm-up
   threshold; inputs at the exact warm-up threshold for EMA20, RSI14,
   Bollinger-20, the MACD signal (34 bars), the TRIX line (44 bars), and
   the TRIX signal (52 bars); a 250-bar long realistic synthetic series
   (matching the CLI self-test's sin+drift formula); the missing-TA-Lib
-  actionable-error path; and each intentional semantic difference above.
+  actionable-error path; each intentional semantic difference; five
+  behavioral spy tests proving TA-Lib invocation; the fail-closed
+  input-validation boundary (NaN at the first/middle/final bar,
+  +/-infinity, empty input, nested arrays, booleans, numeric strings,
+  invalid periods, MACD `fast >= slow`, a non-warm-up NaN injected via a
+  mocked `talib.EMA`/`talib.BBANDS` call); and CLI input-shape validation
+  (missing `"close"` key, a non-list/non-dict JSON root, a malformed price
+  element, and the `allow_nan=False` JSON-output guard).
 - `pytest tests/unit/test_indicators.py -q --tb=short` with TA-Lib
   *uninstalled* (simulating the `main-tests` CI job, which only installs
-  `.[dev]`) — **1 passed** (the missing-dependency guard), **24 skipped**
+  `.[dev]`) — **1 passed** (the missing-dependency guard), **47 skipped**
   (the `I` fixture's `pytest.importorskip("talib")`), **0 failed** — proves
   the ordinary default suite stays green without masking a real TA-Lib
   regression, since the dedicated `indicators-tests` CI job (added to
-  `ci.yml`, installs `.[dev,indicators]`) runs all 25 for real.
+  `ci.yml`, installs `.[dev,indicators]`, and now runs on both Python 3.10
+  and 3.11 — see the CI correction below) runs all 48 for real.
 - `python3 .claude/skills/run-agentic-trading-desk/driver.py` (TA-Lib
   installed) — all checks passed, including the CLI self-test, file-input,
   short-series-warning, and direct-import (`compute()` callable) paths for
   `indicators.py`, plus the unaffected `macro_pillar.py`/`score.py` checks.
 - `pytest tests/ -q --tb=short` (full offline suite, TA-Lib installed) —
-  **2820 passed, 17 skipped, 0 failed** (2795 passed in PR 3's baseline +
-  the 25 new tests in this file; the 17 skipped count is unchanged from
+  **2843 passed, 17 skipped, 0 failed** (2795 passed in PR 3's baseline +
+  the 48 tests now in this file; the 17 skipped count is unchanged from
   PR 3, confirming no other test file was affected).
 
 **Wheel installation result:** `pip install -e ".[indicators]"` resolved
@@ -608,18 +631,108 @@ on this machine (macOS arm64) against a newer local Python (3.14, ahead of
 the declared `>=3.10` floor and CI's 3.11). No system package or source
 install fallback was needed or added.
 
-**No fallback authority remains:** the custom EMA/RSI/MACD/TRIX/Bollinger
-formulas are fully deleted from `scripts/indicators.py`; TA-Lib is the
-only calculation code path for these five indicators. No
-`pandas-ta-classic` dependency was added — wheel resolution did not fail
-on any platform this PR could verify (macOS arm64 locally; the new
-`indicators-tests` CI job verifies Linux/`ubuntu-latest`).
+**No legacy fallback path remains:** the hand-written EMA/RSI/MACD/TRIX/
+Bollinger formulas are fully deleted from `scripts/indicators.py` — there
+is no code path that computes these values without going through
+`talib.EMA`/`talib.RSI`/`talib.BBANDS` (proven behaviorally by the spy
+tests above, not just by their absence from the source). The thin custom
+adapter described in "Correction (PR #12 review): authority boundary"
+below is retained *on top of* those TA-Lib primitives, not as an
+alternative to them — it is not a fallback, since it never runs instead
+of TA-Lib, only in composition with it. No `pandas-ta-classic` dependency
+was added — wheel resolution did not fail on any platform this PR could
+verify (macOS arm64 locally; the `indicators-tests` CI job verifies
+Linux/`ubuntu-latest` on both Python 3.10 and 3.11 — see the CI correction
+below).
 
 **Safety:** no trading limit, authorization rule, `paper_books` accounting
 code, or scheduling behavior was touched; no broker, provider, model, or
 market-data service was called; no live data was fetched; no real
 provider/broker/paper/live order calls were made; the scheduler was not
 enabled.
+
+**Correction (2026-07-26, PR #12 review): authority boundary, fail-closed
+input validation, and CI matrix.** Three issues from the initial PR 4
+submission were fixed on the same branch, without starting PR 5:
+
+1. **Authority claim was overstated.** The original text above claimed
+   "TA-Lib is now the sole calculation authority" and "the custom EMA/
+   RSI/MACD/TRIX/Bollinger formulas are fully deleted ... TA-Lib is the
+   only calculation code path" without qualification. That is not
+   accurate: `macd` and `trix` compose `talib.EMA` calls with custom
+   subtraction/alignment/percent-change/zero-denominator logic, `%B` is a
+   custom division on top of `talib.BBANDS`'s bands, and the flat-price
+   RSI override is a custom boundary correction on top of `talib.RSI`.
+   These adapters are justified (documented above, under "Intentional
+   semantic differences and reconciliations") and are not from-scratch
+   competing formulas, but the docs should not have implied no custom
+   calculation logic remains. **Corrected boundary:** TA-Lib is
+   authoritative for the EMA, RSI, and BBANDS *primitives*; MACD/TRIX
+   composition and this stack's compatibility semantics remain in a thin
+   custom adapter, retained indefinitely (not pending further removal).
+   `COMPONENT_MATRIX.md` and `REMOVAL_MANIFEST.md` are corrected to match
+   — the removal-manifest row is no longer described as a full closure.
+   `tests/unit/test_talib_is_sole_authority_no_custom_formulas_remain`
+   (a source-text substring check, which cannot prove the claim its name
+   made) is removed and replaced by five behavioral spy tests (listed
+   above) that patch the real `talib.*` functions with `wraps=` and
+   assert each primitive is actually invoked, and that `talib.MACD()`/
+   `talib.TRIX()` are never called.
+2. **`_nan_to_none` could mask stale/corrupted data as warm-up.**
+   Converting every TA-Lib `NaN` to `None` unconditionally meant a `NaN`
+   caused by malformed upstream data — not just the documented warm-up —
+   would be indistinguishable from warm-up, get discarded by `_strip()`,
+   and let `compute()` silently return an older, stale indicator value.
+   Fixed by: (a) a new shared validation boundary, `_validate_prices`
+   (one-dimensional, non-nested, real int/float only — explicitly
+   rejecting booleans, strings, `None`, `NaN`, and +/-infinity) and
+   `_validate_period` (positive integers only), called at the top of
+   every public function (`ema_series`, `rsi_wilder`, `macd` — which also
+   now requires `fast < slow` — `trix`, `bollinger`, `compute`) before any
+   TA-Lib call, raising the new `IndicatorInputError(ValueError)` with a
+   specific, indexed message rather than silently coercing anything; (b)
+   `_nan_to_none` now takes an `expected_warmup` bound (computed per call
+   site from the documented lookback, e.g. `min(period - 1, n)` for EMA)
+   and only converts a `NaN` within that window to `None` — a `NaN` at or
+   after it raises `IndicatorInputError` instead, including one injected
+   by mocking `talib.EMA`/`talib.BBANDS` directly in a test, proving the
+   check fires even when TA-Lib itself is the (simulated) source of the
+   unexpected `NaN`, not only when caught upstream at the validation
+   boundary; (c) the CLI (`main()`) no longer does a blind
+   `raw["close"]` (a raw `KeyError` for a malformed shape) or
+   `[float(x) for x in close]` (which silently coerced numeric strings);
+   a new `_extract_close_from_cli_input` gives an actionable
+   `IndicatorInputError` for a missing `"close"` key or a non-list/
+   non-dict JSON root, and `json.dumps(..., allow_nan=False)` is now the
+   CLI's own last-line defense against ever writing `NaN`/`Infinity`
+   tokens into JSON output, independent of whether `compute()` itself
+   stays well-behaved. 23 new tests in `tests/unit/test_indicators.py`
+   cover every category from the review: NaN at the first/middle/final
+   bar, +infinity, -infinity, empty input, a nested array, booleans, a
+   numeric string, an invalid (zero/negative/non-integer) period, MACD
+   `fast >= slow`, a non-warm-up NaN from a mocked `talib.EMA` call, a
+   non-warm-up NaN from a mocked `talib.BBANDS` call, and four CLI-shape
+   cases (missing key, wrong root type, malformed element with no stdout
+   leaked, and the `allow_nan=False` guard exercised end-to-end by
+   monkeypatching `compute` itself).
+3. **CI only ran the indicators-focused tests on Python 3.11**, even
+   though the project declares `requires-python = ">=3.10"` and the
+   separate `python-3-10-floor` job installs only `.[dev]` (no
+   `indicators` extra), so the TA-Lib-backed tests silently skipped on
+   3.10 rather than actually running. `indicators-tests` in `ci.yml` is
+   now a matrix over Python 3.10 and 3.11; both legs install
+   `.[dev,indicators]`, run `pip check`, and run
+   `pytest tests/unit/test_indicators.py -q --tb=short` as a blocking
+   step — confirmed locally to actually execute (not skip) all 48 tests
+   on 3.10-equivalent behavior via the same `.[dev,indicators]` install
+   path the 3.11 leg uses (this development machine only has Python 3.14
+   available; both CI legs are verified via their explicit
+   `actions/setup-python` version pin, not a local floor check).
+
+Re-run after these fixes: `pytest tests/unit/test_indicators.py -q
+--tb=short` — **48 passed**; `pytest tests/ -q --tb=short` — **2843
+passed, 17 skipped, 0 failed**. All three findings addressed on the
+existing `migration/04-talib-indicators` branch; PR 5 was not started.
 
 ## Next PR
 
