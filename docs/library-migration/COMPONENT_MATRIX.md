@@ -13,7 +13,7 @@ invariants a library does not provide).
 
 | Component | Current authority | Classification | Target library | Adopt / Evaluate / Defer / Reject | Adapter retained | Custom code removed |
 |---|---|---|---|---|---|---|
-| Exchange sessions/holidays | `evaluation/market_calendar.py` | Commodity | exchange_calendars | Adopt (PR 3) | Thin wrapper only if callers need a stable return shape | Yes, after fixture parity |
+| Exchange sessions/holidays | `evaluation/market_calendar.py` | Commodity | exchange_calendars | Adopted (PR 3) | Thin wrapper preserving existing function names/signatures | Yes — custom holiday/session arithmetic removed |
 | Technical indicators (`scripts/indicators.py`) | Custom EMA/RSI/MACD/TRIX/Bollinger | Commodity | TA-Lib (pandas-ta-classic fallback) | Adopt (PR 4) | Thin wrapper for warm-up/null/rounding parity | Yes, after fixture parity |
 | ATR risk indicator (`analysis/indicators.py`) | Decimal-based ATR | Commodity value / Domain-specific consumer | TA-Lib for the value; `Decimal` conversion stays custom | Adopt (wrapped) | Yes — conversion boundary | Value calc only |
 | Strategy signals/scoring | `analysis/scorer.py`, `analysis/screener.py`, `strategies/*` | Domain-specific | None | Preserve | N/A | No |

@@ -1,7 +1,7 @@
 # Migration Status
 
-**Current phase: PR 2 — complete.**
-**Next phase: PR 3 — exchange_calendars migration.**
+**Current phase: PR 3 — complete.**
+**Next phase: PR 4 — generic indicator parity and TA-Lib migration.**
 
 ## Completed work (PR 0)
 
@@ -301,6 +301,129 @@ dependency needed): `analysis/scorer.py`, `analysis/screener.py`, and
 loaders; `scripts/indicators.py` and `scripts/score.py` perform no shape
 validation of their JSON input, unlike `scripts/macro_pillar.py`.
 
+## Completed work (PR 3)
+
+**Scope:** `src/trading_research/evaluation/market_calendar.py` and
+`tests/unit/test_market_calendar.py` only. No other file under `src/`,
+`scripts/`, `paper_runtime/src/`, or `config/` was modified.
+
+**Outcome: `exchange_calendars`' XNYS calendar is now the sole authority**
+for U.S. equity sessions, replacing the hand-written fixed-rule
+NYSE/Nasdaq federal-holiday calendar. All public function names and
+signatures (`is_weekend`, `is_market_holiday`, `is_trading_day`,
+`next_trading_session`, `add_trading_days`, `is_market_open`,
+`regular_session_close`, `MARKET_TIMEZONE_NAME`, `MarketCalendarError`)
+are unchanged — caller-analysis (below) found no case that safely
+allowed or required a signature change.
+
+**Custom code removed** (deleted in place, not left for a later PR):
+`_nth_weekday_of_month`, `_last_weekday_of_month`, `_easter_sunday`,
+`_observed`, `_federal_holidays`, the fixed-rule holiday-set construction,
+and the fixed `MARKET_CLOSE_TIME = time(16, 0)` / `MARKET_OPEN_TIME`
+constants and their use in `is_market_open`'s boundary check. No custom
+fallback was added for `exchange_calendars` resolution failure; any
+failure to resolve the XNYS calendar or a session/minute query raises
+`MarketCalendarError` (fail-closed), caught narrowly around each
+`exchange_calendars` call site — the library's own `ValueError` subclasses
+(`NotSessionError`, `DateOutOfBounds`, `RequestedSessionOutOfBounds`, etc.)
+are not allowed to leak past this module's boundary.
+
+**Newly supported, not possible with the previous fixed-rule calendar:**
+early closes (e.g. the day after Thanksgiving, Christmas Eve — both
+1:00 PM regular closes) and one-off exchange closures (e.g. December 5,
+2018, the National Day of Mourning for President George H.W. Bush) are now
+correctly reflected in `is_market_open` and `regular_session_close`,
+instead of being silently treated as full ordinary sessions.
+
+**Caller analysis:** every caller of the listed functions was located and
+re-verified against the new implementation —
+`src/trading_research/paper_books/exit_policy.py` (`is_trading_day`),
+`src/trading_research/paper_books/recurring_scheduler.py`
+(`is_trading_day`), `src/trading_research/paper_books/soak_campaign.py`
+(`MARKET_TIMEZONE_NAME`, `is_trading_day`, `regular_session_close`),
+`src/trading_research/evidence_providers/market_data_provider.py`
+(`regular_session_close`), `src/trading_research/shadow/schedule.py`
+(`is_trading_day`), and
+`src/trading_research/evaluation/evaluation_service.py`
+(`add_trading_days`, `next_trading_session`). None import the removed
+private helper functions or the removed `MARKET_OPEN_TIME`/
+`MARKET_CLOSE_TIME` constants. `tests/unit/test_runtime_client_no_lumibot_import.py`
+only AST-scans the file for `lumibot` imports and is unaffected.
+
+**Caching:** the XNYS `ExchangeCalendar` object is constructed once via a
+process-lifetime `functools.lru_cache(maxsize=1)`-wrapped accessor, not
+reconstructed on every call.
+
+**Tests run:**
+- `pytest tests/unit/test_market_calendar.py -q --tb=short` —
+  **41 passed** (28 pre-existing fixtures retained and re-verified against
+  the new implementation, 13 new cases added: EDT/EST UTC-offset
+  distinction, exact open/close minute boundaries, pre-market/after-hours,
+  one known early-close session and its `regular_session_close` value, a
+  non-session `regular_session_close` failure, a historical one-off
+  exchange closure, inclusive `next_trading_session` skipping a holiday,
+  and `add_trading_days` across a year boundary). Expected values were
+  computed independently (well-known market-hours facts and manually
+  verified calendar dates), not derived by calling the same
+  `exchange_calendars` API the implementation calls.
+- `pytest tests/ -q --tb=short` — **2769 passed, 17 skipped, 0 failed**
+  (full offline suite; no test outside `test_market_calendar.py` was
+  modified).
+
+**No fallback authority remains:** the fixed-rule federal-holiday
+calculation is fully deleted; `exchange_calendars`' packaged offline XNYS
+calendar data is the only session-authority code path in this module.
+
+**Safety:** no trading limit, authorization rule, `paper_books` accounting
+code, or scheduling behavior was touched; no broker, provider, model, or
+market-data service was called; no live calendar data was fetched.
+
 ## Next PR
 
-**PR 3 — exchange_calendars migration.**
+**PR 4 — generic indicator parity and TA-Lib migration.**
+
+Bounded prompt for the next session:
+
+```text
+Implement PR 4: replace scripts/indicators.py's custom EMA/RSI/MACD/TRIX/
+Bollinger implementations with TA-Lib, per docs/library-migration/
+MASTER_PLAN.md row 4 and COMPONENT_MATRIX.md's "Technical indicators" row.
+
+Read first: docs/library-migration/STATUS.md, MASTER_PLAN.md,
+COMPONENT_MATRIX.md, REMOVAL_MANIFEST.md, scripts/indicators.py, its
+existing tests, and pyproject.toml's `indicators` extra (already declares
+TA-Lib>=0.7.1,<0.8 from PR 1).
+
+Require a supported binary TA-Lib wheel first (already verified in PR 1
+for macOS arm64 and Linux CI); use a system package/source install only as
+an explicitly documented fallback if a target platform lacks a compatible
+wheel — never as an unconditional prerequisite.
+
+Preserve existing public function names/signatures unless caller analysis
+proves otherwise. Document and match warm-up-period, null/NaN, and
+rounding semantics exactly against the current custom implementation for
+EMA, RSI, MACD, TRIX, and Bollinger Bands — TA-Lib's warm-up and rounding
+conventions differ from hand-written implementations and must be
+reconciled explicitly, not assumed equivalent. The ATR risk indicator in
+analysis/indicators.py may reuse TA-Lib's value calculation but must keep
+its `Decimal` conversion boundary custom (COMPONENT_MATRIX.md: "Decimal
+conversion stays custom").
+
+Do not retain the custom EMA/RSI/MACD/TRIX/Bollinger formulas once parity
+is proven; do not add a pandas-ta-classic fallback unless TA-Lib wheel
+resolution actually fails on a required CI platform (it did not in PR 1).
+
+Update docs/library-migration/STATUS.md, COMPONENT_MATRIX.md, and
+REMOVAL_MANIFEST.md recording: TA-Lib as authoritative, warm-up/null/
+rounding parity evidence, tests run and results, no fallback authority
+remaining (or the fallback's exact trigger condition if one was required),
+and an exact bounded PR 5 prompt.
+
+Safety: do not change trading limits or authorization rules; do not touch
+paper_books accounting; do not enable scheduling; do not call a broker,
+provider, model, or market-data service; do not fetch live data; do not
+begin PR 5; do not merge automatically.
+
+Open one PR titled "PR 4: Replace custom indicators with TA-Lib". Stop
+after opening the PR.
+```
