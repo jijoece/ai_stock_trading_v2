@@ -37,7 +37,7 @@ end of this file.
 | Library | Version | Python | License | Maintenance | macOS | Offline tests | Dependency weight | Conflicts | Decision |
 |---|---|---|---|---|---|---|---|---|---|
 | exchange_calendars | 4.13.2 (2026-03) | `>=3.10,<4` | Apache-2.0 | Active | No native deps | Yes | Light (~5 deps) | None | **Adopt** |
-| VectorBT (OSS `vectorbt`) | 1.1.0 (2026-07) | `>=3.11,<3.15` | Apache-2.0 + Commons Clause | Active, secondary to commercial vectorbt.pro | No native deps | Yes | Heavy (numpy/pandas/numba) | `pandas>=3.0.3,<4.0`, `numpy>=2.4.6` conflicts with LumiBot's `numpy<2.5.0` | **Blocked pending license decision** (`DECISIONS.md` D4 — not conventional OSI-approved open source; PR 5 evaluates an alternative or an explicit owner exception) |
+| VectorBT (OSS `vectorbt`) | 1.1.0 (2026-07, re-verified PR 5) | `>=3.11,<3.15` | Apache-2.0 + Commons Clause | Active, secondary to commercial vectorbt.pro | No native deps | Yes | Heavy (numpy/pandas/numba) | `pandas>=3.0.3,<4.0`, `numpy>=2.4.6` conflicts with LumiBot's `numpy<2.5.0` (mitigated: `paper_runtime` is a separately installed distribution, never resolved in the same environment as `research`) | **Adopted (PR 5)** — explicit owner-approved exception to the OSI-approved-only posture (`DECISIONS.md` D4); added to a new `research` extra, requiring Python >=3.11 (narrower than this project's own `>=3.10` floor, which PR 5 left unchanged) |
 | TA-Lib | 0.7.1 (2026-07) | `>=3.9` | BSD-2-Clause | Active | Prebuilt wheels for manylinux2014/musllinux, macOS 13/14, Windows, cp39-cp314 — no native install required on any CI-relevant platform | Yes | Light wrapper, native footprint | numpy>=2 compatible | **Adopt** — wheel first; native/system installation is an explicit fallback only if a target platform lacks a compatible wheel |
 | pandas-ta (original) | 0.4.71b0 (2025-09, never left beta) | — | MIT | Facing archival past its own 2026-07-01 deadline | — | — | — | — | **Reject** |
 | pandas-ta-classic (fork) | 0.6.52 (2026-06) | `>=3.10` | MIT | Active fork | No native deps | Yes | Moderate | numpy>=2.0, pandas>=2.0 | **Evaluate as fallback only** |
@@ -62,21 +62,29 @@ end of this file.
 
 ## 2. Recommended Python version
 
-**Corrected 2026-07-26 (PR 1):** the project's Python floor **remains
-`>=3.10`**. The `>=3.11` recommendation below was contingent on adding
-VectorBT in this PR; PR 1 does not add VectorBT (see `DECISIONS.md` D4 —
-VectorBT is `BLOCKED_PENDING_LICENSE_DECISION`), so there is no dependency in
-this PR's approved set that requires raising the floor. Every package
-verified for PR 1 (Section "PR 1 re-verification" above) supports `>=3.10`.
+**Corrected 2026-07-26 (PR 1), re-confirmed with a narrower scope 2026-07-26
+(PR 5):** the project's Python floor **remains `>=3.10`** project-wide.
+PR 5 adopted VectorBT (see `DECISIONS.md` D4 — explicit owner-approved
+exception), which does require `>=3.11`, but scoped that requirement to the
+new `research` optional-dependency group alone rather than raising the
+global floor — see `DECISIONS.md` D4 for why (raising the global floor
+would require editing PR 4's `indicators-tests` CI matrix, which PR 5's
+bounded scope excludes). Every package verified for PR 1 (Section "PR 1
+re-verification" above) still supports `>=3.10`; only the `research` extra
+now diverges.
 
-The paragraph immediately below is retained as the historical PR 0 finding
-for when VectorBT is later evaluated (PR 5), not as PR 1's active decision:
+The paragraph immediately below is retained as the historical PR 0 finding;
+PR 5 evaluated it and deliberately did not follow it (see above and
+`DECISIONS.md` D4):
 
 > **Python 3.11**, raised from the repository's then-current `>=3.10` floor.
 > Binding constraint: VectorBT 1.1.0 requires `>=3.11`. Nothing else in the
 > Adopt/Evaluate set requires more than 3.10. If PR 5 (or a future owner
 > decision) approves VectorBT under an OSI-compatible license path, raising
 > the floor to `>=3.11` at that time — not before — remains the correct call.
+> **PR 5 outcome:** approved VectorBT but chose not to raise the floor this
+> PR, for the CI-scope reason above; a future PR without that constraint can
+> still make this call.
 
 `paper_runtime` is a **separately installable distribution** (existing
 pattern, not new) and can independently target whatever Python/numpy/pandas
@@ -99,10 +107,12 @@ base dependencies (not an extra):
                                calendar)
 
 research:
-  not created yet — VectorBT is BLOCKED_PENDING_LICENSE_DECISION
-  (DECISIONS.md D4); PR 5 evaluates an OSI-approved vectorized-research
-  library or an explicit owner-approved VectorBT exception before this
-  group is populated
+  vectorbt>=1.1.0,<1.2         (PR 5 — added; explicit owner-approved
+                               exception to the OSI-approved-only posture,
+                               DECISIONS.md D4; requires Python >=3.11,
+                               narrower than this project's own >=3.10
+                               floor, which PR 5 left unchanged; wired into
+                               src/trading_research/vector_research/)
 
 indicators:
   TA-Lib                      (PR 1 — added as an optional extra;
@@ -145,10 +155,13 @@ dev:
   time-machine                  (PR 1 — added)
 ```
 
-`pydantic`, `tenacity`, `sqlalchemy`, `alembic`, `apscheduler`, `vectorbt`,
+`pydantic`, `tenacity`, `sqlalchemy`, `alembic`, `apscheduler`,
 `riskfolio-lib`, `pandera`, `pyarrow`, `pandas-ta`, `pandas-ta-classic` are
 intentionally not placed in any group by PR 1 — each remains evaluated in
-its own later PR before any dependency addition.
+its own later PR before any dependency addition. `vectorbt` was PR 1's
+remaining item in this list; it was added in PR 5 (`research` group), not
+by PR 1 itself — see the "PR 1 correction record" note below and
+`DECISIONS.md` D4.
 
 ## 4. Rejected or deferred libraries
 

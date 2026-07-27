@@ -115,17 +115,42 @@ jobs:
       - name: Run indicator-focused tests
         run: pytest tests/unit/test_indicators.py -q --tb=short
 
+  research-tests:
+    name: research-tests
+    runs-on: ubuntu-latest
+    # Blocking job proving VectorBT parity for real (library-migration PR 5):
+    # main-tests above only installs `.[dev]`, so the behavioral tests in
+    # tests/unit/test_vector_research_adapter.py skip there (see its `adapter`
+    # fixture) rather than exercising VectorBT. This job installs the
+    # `research` extra and asserts it resolves cleanly, then runs the same
+    # file with VectorBT actually present. Single Python 3.11 leg only --
+    # unlike `indicators-tests` above, VectorBT's own `Requires-Python:
+    # >=3.11,<3.15` classifier makes a 3.10 leg unresolvable by construction
+    # (this project's own floor stays `>=3.10`; see pyproject.toml's
+    # `research` extra comment and docs/library-migration/DECISIONS.md D4).
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install dependencies + research extra
+        run: pip install -e ".[dev,research]"
+      - name: pip check
+        run: pip check
+      - name: Run vector_research-focused tests
+        run: pytest tests/unit/test_vector_research_adapter.py tests/unit/test_vector_research_import_boundary.py -q --tb=short
+
   dependency-extras-smoke:
     name: dependency-extras-smoke (${{ matrix.extra }})
     runs-on: ubuntu-latest
     # Blocking, credential-free smoke test for each optional dependency
-    # group added by library-migration PR 1. Each extra is installed in its
-    # own job/environment, never combined with another extra, to preserve
-    # the isolation the migration plan requires (see
-    # docs/library-migration/DEPENDENCY_MATRIX.md Section 3). Without this,
-    # the main-tests job (which only installs ".[dev]") never actually
-    # resolves or imports these dependencies, so dependency drift or a
-    # broken wheel would go undetected by CI.
+    # group added by library-migration PR 1 (plus `research`, added by PR 5).
+    # Each extra is installed in its own job/environment, never combined
+    # with another extra, to preserve the isolation the migration plan
+    # requires (see docs/library-migration/DEPENDENCY_MATRIX.md Section 3).
+    # Without this, the main-tests job (which only installs ".[dev]") never
+    # actually resolves or imports these dependencies, so dependency drift
+    # or a broken wheel would go undetected by CI.
     strategy:
       fail-fast: false
       matrix:
@@ -136,6 +161,8 @@ jobs:
             import_check: "import empyrical, quantstats_lumi; print(empyrical.__version__, quantstats_lumi.__version__)"
           - extra: observability
             import_check: "import structlog; import opentelemetry.sdk; print(structlog.__version__)"
+          - extra: research
+            import_check: "import vectorbt; print(vectorbt.__version__)"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

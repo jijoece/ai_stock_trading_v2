@@ -184,37 +184,49 @@ diverge from `plan.md`'s literal library list:
 | QuantStats | "QuantStats" | Use **quantstats-lumi** (Lumiwealth fork), not original `quantstats` | Same maintainer as already-adopted LumiBot; more consistent release cadence |
 | Indicators | "VectorBT indicators or TA-Lib" | **TA-Lib** primary; **pandas-ta-classic** evaluated only as a fallback if TA-Lib's native C-library requirement blocks a target environment | Original `pandas-ta` is functionally abandoned (beta-only, facing archival) |
 | Time control (new, not in original plan.md) | — | Adopt **time-machine** over freezegun for test suites | freezegun's monkeypatch approach misses C-extension/pandas datetime internals; no Python 3.14 support |
-| Python floor | Not specified in plan.md | Remain >=3.10. Reconsider >=3.11 only if PR 5 selects a library requiring it. | BLOCKED_PENDING_LICENSE_DECISION. Not approved until the owner explicitly
-accepts the Commons Clause or PR 5 chooses an OSI-approved alternative. |
+| Python floor | Not specified in plan.md | Remains >=3.10 project-wide (PR 5 correction, 2026-07-26). The `research` extra alone requires Python >=3.11 (VectorBT's own floor), verified by a dedicated CI job rather than a global `requires-python` bump — see "VectorBT status" below. | VectorBT approved via explicit owner exception (PR 5). A global floor bump was rejected to avoid touching PR 4's `indicators-tests` CI matrix, which PR 5's bounded scope excludes. |
 | Pandera, PyArrow | PR 2 / dataset storage | **Defer** — no concrete DataFrame-contract or bulk-storage need exists yet | Adding either speculatively increases install weight (PyArrow wheel 28–53MB) with no current consumer |
 
-### VectorBT status (corrected 2026-07-26, PR 1)
+### VectorBT status (resolved 2026-07-26, PR 5)
 
 ```text
-VectorBT status: BLOCKED_PENDING_LICENSE_DECISION
+VectorBT status: APPROVED (explicit owner exception, 2026-07-26)
 ```
 
-The open-source `vectorbt` package (1.1.0) is licensed Apache-2.0 **with
+The open-source `vectorbt` package (re-verified 2026-07-26 against the PyPI
+JSON API: version 1.1.0, `Requires-Python: >=3.11,<3.15`, `numpy>=2.4.6`,
+`pandas>=3.0.3,<4.0`, prebuilt wheel present) is licensed Apache-2.0 **with
 Commons Clause** — a fair-code restriction on selling a product whose value
 derives substantially from the software, not a restriction on internal
-research or paper-trading use. That makes it **source-available/fair-code,
-not conventional OSI-approved open source**. Internal, non-commercial use
-inside this repository may be permitted by its terms, but this repository
-has not obtained or recorded an explicit owner-approved exception to a
-strict "OSI-approved open-source libraries only" posture, and commercial or
-hosted use would require separate review regardless.
+research or paper-trading use. This makes it **source-available/fair-code,
+not conventional OSI-approved open source**.
+
+**Resolution:** presented with the choice of (a) evaluating an OSI-approved
+alternative or (b) explicitly approving VectorBT's license terms, the
+repository owner chose (b): explicit, recorded approval of VectorBT's
+Apache-2.0 + Commons Clause terms for this repository's internal,
+non-commercial research/paper-trading use. Commercial or hosted use would
+still require separate review; this approval does not extend there.
 
 Consequently:
 
-- PR 1 does not add `vectorbt` to any dependency declaration.
-- PR 1 does not raise the Python floor solely to satisfy VectorBT's
-  `>=3.11` requirement.
-- PR 1 does not create a populated `research` extra.
-- **PR 5** (retitled from "VectorBT research adapter" to "Vectorized
-  research library selection and adapter" — see `MASTER_PLAN.md`) must
-  either evaluate an OSI-approved alternative or obtain explicit owner
-  approval of the VectorBT license terms, and record that decision here,
-  before adding any vectorized-research dependency.
+- PR 5 adds `vectorbt>=1.1.0,<1.2` to a new `research` optional-dependency
+  group in the root `pyproject.toml` (see `DEPENDENCY_MATRIX.md` Section 3).
+- PR 5 does **not** raise the project's `requires-python` floor. VectorBT's
+  own `>=3.11,<3.15` classifier is narrower than this project's `>=3.10`
+  floor, so the `research` extra specifically requires a Python 3.11+
+  interpreter — installing it on Python 3.10 fails to resolve, by design,
+  not silently. Raising the global floor was considered (the historical
+  paragraph in `DEPENDENCY_MATRIX.md` Section 2 anticipated this) but
+  rejected for this PR: it would require editing the `indicators-tests` CI
+  matrix (`indicators-tests` was added in PR 4, and this PR's bounded scope
+  explicitly excludes touching any PR 4 file). A project-wide floor bump
+  remains available to a future PR that isn't constrained that way.
+- A new `src/trading_research/vector_research/` package holds the adapter;
+  a new `research-tests` CI job (Python 3.11 only, since 3.10 cannot resolve
+  VectorBT) and a `research` entry in the `dependency-extras-smoke` matrix
+  verify it. See `STATUS.md`'s "Completed work (PR 5)" section for full
+  detail.
 
 This is a licensing-classification and project-decision record, not a legal
 conclusion.
@@ -229,13 +241,10 @@ conclusion.
    inside the existing `paper_runtime` boundary (preferred, no boundary
    change) or requires extending the enforced import boundary to a second
    package. Must be resolved and recorded here before PR 6 implementation
-   begins.
-2. **VectorBT license note.** The open-source `vectorbt` package is
-   Apache-2.0 **with Commons Clause** (a fair-code restriction on reselling
-   the software, not a restriction on internal research/paper-trading use).
-   This is compatible with this repository's MIT-licensed, non-commercial
-   internal use, but must be recorded explicitly here rather than silently
-   assumed. No blocker; documentation only.
+   begins. **Still open — PR 5 did not touch this item.**
+2. ~~VectorBT license note.~~ **Resolved 2026-07-26 (PR 5)** — see
+   "VectorBT status" above; superseded by the explicit owner approval
+   recorded there.
 
 ---
 

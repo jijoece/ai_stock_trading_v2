@@ -1,7 +1,8 @@
 # Migration Status
 
-**Current phase: PR 4 — complete.**
-**Next phase: PR 5 — vectorized research library selection and adapter.**
+**Current phase: PR 5 — complete.**
+**Next phase: PR 6 — LumiBot backtest evaluation adapter (blocked on the
+pre-step in `DECISIONS.md` D4 open item 1, still unresolved).**
 
 ## Completed work (PR 0)
 
@@ -734,60 +735,216 @@ Re-run after these fixes: `pytest tests/unit/test_indicators.py -q
 passed, 17 skipped, 0 failed**. All three findings addressed on the
 existing `migration/04-talib-indicators` branch; PR 5 was not started.
 
+## Completed work (PR 5)
+
+**Scope:** `pyproject.toml` (new `research` optional-dependency group),
+`.github/workflows/ci.yml` (new `research-tests` job; `research` added to
+the existing `dependency-extras-smoke` matrix — that matrix was added in
+PR 1, not PR 4, so extending it is in scope), a new
+`src/trading_research/vector_research/` package
+(`__init__.py`, `adapter.py`), two new test files
+(`tests/unit/test_vector_research_adapter.py`,
+`tests/unit/test_vector_research_import_boundary.py`), plus this file,
+`COMPONENT_MATRIX.md`, and `DECISIONS.md` (D4 resolution). No file under
+`scripts/`, `analysis/`, `paper_runtime/src/`, or `config/` was modified;
+`scripts/indicators.py`, `analysis/indicators.py`,
+`tests/unit/test_indicators.py`, and the `indicators-tests` /
+`python-3-10-floor` CI jobs (both PR 4/PR 1 files, respectively) were not
+touched.
+
+**License decision:** presented with the choice required by
+`DECISIONS.md` D4 — evaluate an OSI-approved vectorized-research
+alternative, or obtain explicit owner approval for VectorBT's Apache-2.0 +
+Commons Clause terms — the repository owner explicitly approved VectorBT
+for this repository's internal, non-commercial research/paper-trading use.
+No OSI-approved alternative was evaluated as a result (the owner-approval
+branch of the bounded prompt's conditional was taken, not the
+alternative-evaluation branch). Recorded in `DECISIONS.md` D4 with the
+date and scope of the approval (commercial/hosted use is explicitly out of
+scope of this approval and would need separate review).
+
+**Re-verified 2026-07-26 against the PyPI JSON API** (live lookup, not
+recalled — matching PR 1/PR 4 practice): `vectorbt` 1.1.0,
+`Requires-Python: >=3.11,<3.15`, Apache-2.0 + Commons Clause license
+metadata, prebuilt wheel present, `requires_dist` pins `numpy>=2.4.6` and
+`pandas>=3.0.3,<4.0`. Identical to the figures already recorded in
+`DEPENDENCY_MATRIX.md` Section 1 from the PR 0 pass — no drift found.
+
+**New `research` optional-dependency group** (`pyproject.toml`):
+`vectorbt>=1.1.0,<1.2`. Verified wheel-only install (`pip install
+--only-binary=:all:`) on a scratch Python 3.11 macOS arm64 venv, both
+combined with `.[dev]` and alone (matching the "never combine extras"
+isolation convention already used for `indicators`/`analytics`/
+`observability`): `pip check` clean in both cases, `import vectorbt`
+succeeds (`1.1.0`), resolved `numpy==2.4.6`/`pandas==3.0.5` — no conflict
+with this project's `pandas>=2.2.0` base floor or any other base
+dependency. No source compilation was needed on this platform.
+
+**Python floor: left unchanged at `>=3.10` project-wide.** VectorBT's own
+`Requires-Python: >=3.11,<3.15` classifier is narrower than the project
+floor, so `pip install -e ".[research]"` specifically requires a Python
+3.11+ interpreter — this fails to resolve on Python 3.10, by design and
+documented in `pyproject.toml`'s `research` extra comment, not silently.
+`DEPENDENCY_MATRIX.md`'s historical PR 0 paragraph anticipated raising the
+global floor to `>=3.11` once VectorBT was approved; this PR deliberately
+does not, because doing so would also require editing the `indicators-tests`
+CI matrix (added in PR 4) to stop asserting a `python-3-10-floor`-compatible
+install path that would no longer be true — and this PR's bounded prompt
+explicitly excludes touching any PR 4 file. A future PR without that
+constraint remains free to raise the floor project-wide. No Python 3.10
+interpreter was available on this development machine (consistent with
+PR 1/PR 4's note); the floor-mismatch conclusion rests on VectorBT's own
+declared PyPI classifier, not a local reproduction.
+
+**New capability: `src/trading_research/vector_research/`** — a thin
+adapter for vectorized signal-matrix parameter sweeps, built on
+`vectorbt.Portfolio.from_signals`:
+
+* `run_parameter_sweep(close, entries, exits, *, init_cash=100_000.0,
+  fees=0.0) -> ParameterSweepResult` — `entries`/`exits` are boolean
+  signal-matrix DataFrames (one column per parameter combination) sharing
+  `close`'s index; returns per-column `total_return`/`sharpe_ratio`/
+  `max_drawdown` plus the underlying `vectorbt.Portfolio` for deeper
+  inspection.
+* A shared fail-closed validation boundary (`VectorResearchInputError`,
+  a `ValueError` subclass) rejects non-`Series`/non-`DataFrame` input,
+  empty input, NaN or non-positive prices, an index mismatch between
+  `close` and the signal frames, non-boolean signal frames, non-positive
+  `init_cash`, and negative `fees` — all before any VectorBT call,
+  matching the fail-closed pattern already established for TA-Lib in
+  `scripts/indicators.py`.
+* `import vectorbt` happens at module scope inside a `try`/`except
+  ImportError` that re-raises with an actionable
+  `pip install -e ".[research]"` message — no fallback formula, same
+  pattern as `scripts/indicators.py`'s TA-Lib guard.
+* **No execution authority:** `ParameterSweepResult` is a frozen dataclass
+  with no `submit`/`order`/`broker`/`authorize` surface (asserted by a
+  dedicated test); nothing in this package is imported by `paper_books`,
+  `external_broker`, any scheduler, or any service module — it has zero
+  callers today, matching the "New capability" / "no removal" row in
+  `COMPONENT_MATRIX.md`.
+
+**Import-boundary tests** (`tests/unit/test_vector_research_import_boundary.py`,
+AST-based, analogous to
+`test_lumibot_adapter.py::test_no_lumibot_import_outside_runtime_package`,
+not a source-text substring check):
+
+1. `vectorbt` is never imported anywhere under `src/trading_research/`
+   outside `vector_research/`.
+2. `vector_research/` never imports `trading_paper_runtime` (or
+   `paper_runtime`).
+3. `paper_runtime/src/` never imports `vector_research`.
+
+All three passed against the actual new files (verified both in an
+environment without VectorBT installed, where they still run
+unconditionally since they only parse source with `ast`, and in the
+Python 3.11 scratch environment with VectorBT installed).
+
+**Tests run:**
+- `pytest tests/unit/test_vector_research_adapter.py
+  tests/unit/test_vector_research_import_boundary.py -q --tb=short`,
+  VectorBT **not** installed (simulating `main-tests` CI, `.[dev]` only) —
+  **5 passed** (missing-dependency guard plus the 4 import-boundary tests,
+  none of which require VectorBT), **10 skipped** (the `adapter` fixture's
+  `pytest.importorskip("vectorbt")`), **0 failed**.
+- Same command, VectorBT installed via `.[dev,research]` on a scratch
+  Python 3.11 venv (simulating the new `research-tests` CI job) —
+  **15 passed, 0 failed** — every behavioral test (parameter-sweep shape,
+  no-execution-authority surface, and all nine fail-closed input-validation
+  cases: non-Series close, empty close, NaN price, non-positive price,
+  signal-frame index mismatch, non-boolean signal frame, non-positive
+  `init_cash`, negative `fees`) passes for real, not just via the skip
+  path.
+- `pytest tests/ -q --tb=short` (full offline suite, VectorBT **not**
+  installed, matching `main-tests`) — **2848 passed, 27 skipped, 0
+  failed** (2843 passed in PR 4's baseline + 5 new unconditional passes;
+  17 skipped in PR 4's baseline + 10 new VectorBT-gated skips — no other
+  test file's pass/skip count changed).
+- `pytest tests/ -q --tb=short` on the Python 3.11 `.[dev,research]`
+  scratch venv — **2801 passed, 65 skipped, 0 failed** (fewer passes than
+  the `.[dev]`-only run above because `indicators`/`analytics`/
+  `observability` are not installed in this venv, so their tests skip
+  there instead — expected, and consistent with the project's
+  never-combine-extras isolation convention).
+
+**Wheel installation result:** `vectorbt==1.1.0` resolved from a prebuilt
+wheel with `--only-binary=:all:` on a scratch macOS arm64 Python 3.11 venv;
+no compilation, no system package required.
+
+**No legacy fallback path remains — because there was no prior
+implementation to fall back to.** This is wholly new, additive capability;
+no file under `src/`, `scripts/`, `paper_runtime/src/`, or `config/` was
+replaced or removed.
+
+**Safety:** no trading limit, authorization rule, `paper_books` accounting
+code, or scheduling behavior was touched; no broker, provider, model, or
+market-data service was called; no live data was fetched; the scheduler was
+not enabled; the new adapter has zero callers and is not reachable from any
+scheduled or live code path.
+
 ## Next PR
 
-**PR 5 — vectorized research library selection and adapter.**
+**PR 6 — LumiBot backtest evaluation adapter.**
+
+**Blocked, not ready to start:** per `MASTER_PLAN.md`'s "Pre-step before
+PR 6" row, the LumiBot-backtest-mode import-boundary question
+(`DECISIONS.md` D4 open item 1) must be resolved and recorded in
+`DECISIONS.md` before PR 6 implementation begins. PR 5 did not touch this
+item — it remains open exactly as PR 4 left it. The bounded prompt below
+starts with that pre-step, not with PR 6 implementation itself.
 
 Bounded prompt for the next session:
 
 ```text
-Implement PR 5: evaluate an OSI-approved vectorized-research library, or
-obtain explicit owner approval for VectorBT's Apache-2.0 + Commons Clause
-terms (docs/library-migration/DECISIONS.md D4 — currently
-BLOCKED_PENDING_LICENSE_DECISION), before adding any new dependency; then
-build a new, additive `research` optional-dependency group and adapter for
-signal matrices/parameter sweeps, per docs/library-migration/
-MASTER_PLAN.md row 5 and COMPONENT_MATRIX.md's "Vectorized research/
-parameter sweeps" row.
+Before any PR 6 implementation: resolve the LumiBot-backtest-mode
+import-boundary pre-step recorded in docs/library-migration/DECISIONS.md
+D4 open item 1. ADR 0001's AST-enforced constraint
+(test_no_lumibot_import_outside_runtime_package in
+tests/unit/test_lumibot_adapter.py) currently limits LumiBot imports to
+runtime/lumibot/. Decide whether PR 6/7/8's LumiBot-backtest-mode parity
+work happens inside the existing paper_runtime boundary (preferred, no
+import-boundary change) or requires extending the enforced boundary to a
+second package, and record that decision explicitly in DECISIONS.md D4
+before writing any PR 6 adapter code. This is an Opus-review decision
+gate per MASTER_PLAN.md's "Pre-step before PR 6" row, not a Sonnet
+implementation task -- if you are not running under that review mode,
+stop after recording the decision and do not proceed to PR 6
+implementation in the same session.
 
-Read first: docs/library-migration/STATUS.md, MASTER_PLAN.md,
-COMPONENT_MATRIX.md, DECISIONS.md (D4), DEPENDENCY_MATRIX.md, and
-pyproject.toml's existing optional-dependency groups (`indicators`,
-`analytics`, `observability`) for the pattern a new `research` group
-should follow.
+Only once that pre-step is resolved: implement PR 6 per MASTER_PLAN.md
+row 6 -- a new LumiBot backtest evaluation adapter beside the existing
+backtesting/engine.py, within whatever import boundary the pre-step
+resolved. No deletion of backtesting/engine.py or any existing backtest
+code; this is an additive, side-by-side adapter only, feeding PR 7's
+parity report (not yet started).
 
-If VectorBT's licensing is not resolved (owner approval not obtained),
-evaluate and select an OSI-approved alternative instead (e.g. a
-vectorized backtesting/signal library without a Commons Clause or
-similar non-OSI restriction) and document the comparison and choice in
-this file.
+Read first: docs/library-migration/STATUS.md (this PR 5 section and the
+full PR history above it), MASTER_PLAN.md rows 5-8, COMPONENT_MATRIX.md's
+"Event-driven backtesting" row, DECISIONS.md D1 and D4, and the existing
+backtesting/engine.py plus src/trading_research/runtime/lumibot/adapter.py
+for the two boundaries this new adapter sits between.
 
-This is new, additive capability — no existing file under `src/`,
-`scripts/`, `paper_runtime/src/`, or `config/` is replaced or removed by
-this PR. Add an import-boundary test (the selected library is never
-imported from `paper_runtime` and `paper_runtime` is never imported from
-the new adapter), analogous to the existing LumiBot AST import-boundary
-test. The new adapter has no execution authority — it does not place
-orders, does not touch `paper_books` accounting, and is not wired into any
-scheduled or live code path.
-
-Do not touch scripts/indicators.py, analysis/indicators.py, or any file
-this PR (PR 4) modified. Do not begin the Riskfolio-Lib evaluation (PR
-12) or any Category-B PR (13/14).
+Do not touch scripts/indicators.py, analysis/indicators.py,
+src/trading_research/vector_research/ (PR 5's adapter), or any file PR 4
+or PR 5 modified, unless the import-boundary pre-step decision requires a
+narrowly-scoped change to tests/unit/test_lumibot_adapter.py's AST
+constraint itself (in which case, change only that constraint, and update
+every test that depends on it in the same commit).
 
 Update docs/library-migration/STATUS.md, COMPONENT_MATRIX.md, and
-DECISIONS.md (D4's resolution) recording: the library selected (or the
-approval obtained) and why, the new `research` group's dependencies and
-verified wheel/install result, the import-boundary test result, and an
-exact bounded PR 6 prompt (the LumiBot-backtest-mode import-boundary
-pre-step in MASTER_PLAN.md must be resolved in DECISIONS.md D4 open item 1
-before PR 6 implementation begins, per MASTER_PLAN.md's pre-step row).
+DECISIONS.md (D4 open item 1's resolution) recording: the import-boundary
+decision and why, the new adapter's scope and design, its relationship to
+backtesting/engine.py and runtime/lumibot/adapter.py, and an exact bounded
+PR 7 prompt for the backtest parity report (old engine vs. LumiBot
+backtester, per MASTER_PLAN.md row 7).
 
 Safety: do not change trading limits or authorization rules; do not touch
 paper_books accounting; do not enable scheduling; do not call a broker,
 provider, model, or market-data service; do not fetch live data; do not
-begin PR 6; do not merge automatically.
+begin PR 7; do not merge automatically.
 
-Open one PR titled "PR 5: Vectorized research library selection and
-adapter". Stop after opening the PR.
+Open one PR titled "PR 6: LumiBot backtest evaluation adapter" (or, if
+this session only resolves the pre-step and does not implement PR 6,
+title it "Pre-step: resolve LumiBot-backtest-mode import boundary
+(DECISIONS.md D4)" instead and stop there). Stop after opening the PR.
 ```

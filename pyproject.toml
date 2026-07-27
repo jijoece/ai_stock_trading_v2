@@ -38,6 +38,20 @@ dev = [
 indicators = [
     "TA-Lib>=0.7.1,<0.8",
 ]
+# PR 5: vectorized signal-matrix/parameter-sweep research adapter
+# (src/trading_research/vector_research/). VectorBT's OSS package (1.1.0) is
+# Apache-2.0 with a Commons Clause fair-code restriction, not conventional
+# OSI-approved open source -- the repository owner explicitly approved this
+# license for internal, non-commercial research/paper-trading use (recorded
+# in docs/library-migration/DECISIONS.md D4). VectorBT requires Python
+# >=3.11,<3.15, narrower than this project's own `requires-python = ">=3.10"`
+# floor: installing this extra on Python 3.10 will fail to resolve
+# (documented, not silently broken) until a future PR raises the project
+# floor project-wide. Never combine with `indicators`/`analytics` extras in
+# one verification environment -- verified standalone only.
+research = [
+    "vectorbt>=1.1.0,<1.2",
+]
 # PR 11 candidate: empyrical-reloaded is the authoritative primitive-metrics
 # library (returns/annualization/Sharpe/Sortino/drawdown/alpha-beta);
 # quantstats-lumi is reporting/presentation only (tear sheets, tables,
