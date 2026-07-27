@@ -43,10 +43,15 @@ custom authorities (everything except paper execution)
   see DEPENDENCY_MATRIX.md).
 
 external-library integrations already present
-  lumibot==4.5.74 (repo pin; DEPENDENCY_MATRIX.md notes 4.5.78 is current) —
-    isolated to the optional `paper` extra and to runtime/lumibot/ +
-    paper_runtime/, enforced by an AST-walk test
-    (test_no_lumibot_import_outside_runtime_package)
+  lumibot==4.5.78 (repo pin, PR 1; declared only in
+    paper_runtime/pyproject.toml — the root pyproject.toml has no `paper`
+    extra, see DECISIONS.md D5) — imports isolated to runtime/lumibot/ +
+    paper_runtime/. NOTE: the AST-walk test that is supposed to enforce this
+    (test_no_lumibot_import_outside_runtime_package) sits behind a
+    module-level pytest.importorskip("lumibot") and therefore SKIPS in
+    ordinary CI; only tests/unit/test_runtime_client_no_lumibot_import.py
+    (an explicit 17-file list) runs. See DECISIONS.md D4 and ADR 0009
+    Decision 4 — repairing this is a PR 6 requirement.
   alpaca-py — inside paper_runtime only, via lumibot_gateway.py
   streamlit — dashboard only (src/dashboard/)
   vaderSentiment, pandas, httpx, PyYAML, python-dotenv, jsonschema, mcp,

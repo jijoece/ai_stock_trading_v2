@@ -122,8 +122,13 @@ indicators:
                                supported target environment)
 
 backtest:
-  reserved — do not populate until the LumiBot-backtest-mode import-boundary
-  question in DECISIONS.md D4 is resolved
+  WILL NOT BE POPULATED. The pre-step before PR 6 (Opus review + pinned
+  feasibility spike, 2026-07-26) selected a separate distribution,
+  `backtest_runtime/`, over any root extra — see DECISIONS.md D4 and
+  docs/adr/0009-lumibot-backtest-distribution-boundary.md (Proposed).
+  A root `backtest` extra containing lumibot could not resolve anyway, for
+  exactly the reason the `paper` extra was removed below (re-verified against
+  lumibot==4.5.78, not just the older pin).
 
 paper:
   removed (PR 1) — `pip install -e ".[paper]"` cannot resolve for any

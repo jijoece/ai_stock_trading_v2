@@ -1,0 +1,77 @@
+=== LumiBot 4.5.78 backtest feasibility spike ‚Äî raw evidence ===
+date: 2026-07-26
+host: macOS arm64, Python 3.11.15 (the interpreter line CI already uses)
+scripts: guards.py, spike_backtest.py (both committed beside this file)
+
+--- install: isolated venv, 'pip install lumibot==4.5.78' alone ---
+wall time: 40.7s
+packages installed: 309 (+ pip/setuptools/wheel)
+pip check: No broken requirements found.
+  google-adk==2.1.0
+  google-genai==1.75.0
+  jsonschema==4.23.0
+  litellm==1.83.14
+  lumibot==4.5.78
+  numpy==2.4.6
+  pandas==2.3.3
+  python-dotenv==1.2.2
+  installed env size: 1.9G
+
+--- per-run evidence (each run = fresh process) ---
+  label             creds             net_attempts      cred_env_reads    distinct_env_keys ok                total_return     
+  A                 present           177               64                277               True              0.0006500000000000394
+  B1                absent            0                 61                271               True              0.0006500000000000394
+  B2                absent            0                 61                271               True              0.0006500000000000394
+  P1                absent            0                 61                272               True              0.0011499999999999844
+
+  A  = broker credentials present in os.environ (sentinel values)
+  B1 = credentials scrubbed;  B2 = identical repeat of B1 (determinism)
+  P1 = credentials scrubbed, final bar close perturbed +5.00
+
+  B1 == B2 (full result dict): True
+  B1 input digest: abe55fa78bf6d1f4ac412dfd0bdd507d7a487a1105a8a5b277a0d92a49047cfe
+  P1 input digest: fa55cf4f72f340d02dc284c092b10cb0c7be980f8c4070deebee79a41e61cb24
+  P1 result differs from B1: True
+  lumibot version asserted exactly 4.5.78: True
+  backtesting class: lumibot.backtesting.pandas_backtesting.PandasDataBacktesting
+
+--- run A: every blocked outbound target ---
+  177 attempts x ('paper-api.alpaca.markets', 443)
+
+  originating stack (innermost frames):
+    /opt/homebrew/Cellar/python@3.11/3.11.15_1/Frameworks/Python.framework/Versions/3.11/lib/python3.11/threading.py:982 run
+    /opt/homebrew/Cellar/python@3.11/3.11.15_1/Frameworks/Python.framework/Versions/3.11/lib/python3.11/concurrent/futures/thread.py:83 _worker
+    /opt/homebrew/Cellar/python@3.11/3.11.15_1/Frameworks/Python.framework/Versions/3.11/lib/python3.11/concurrent/futures/thread.py:58 run
+    /private/tmp/claude-501/-Users-jijopaul-workspace-ai-stock-trading-v2-backup-ai-stock-trading-v2/55ef8fd5-8644-432a-a334-dbf187c7f971/scratchpad/spike/guards.py:67 blocked_getaddrinfo
+  NOTE: the attempt COUNT varies between runs (177 and 696 observed) because
+  a background retry thread drives it; the FACT of attempting does not vary.
+
+--- credential-named env vars LumiBot read at import (run A) ---
+  64 credential-named of 277 distinct env keys read
+  notable: ALPACA_API_KEY, ALPACA_API_SECRET, ALPACA_IS_PAPER, TRADIER_ACCESS_TOKEN, COINBASE_PRIVATE_KEY, IB_PASSWORD, SCHWAB_APP_SECRET, ANTHROPIC_API_KEY
+
+--- stdout contamination (bytes written to fd 1 by a backtest run) ---
+  stdout_A.txt:      543 bytes
+  stdout_B1.txt:      382 bytes
+  stdout_B1.txt verbatim (note the ESC[K sequences):
+    2026-07-26 18:03:30,523 | INFO | LumiBot v4.5.78 starting
+    ^MProgress |‚M-^VM-^H‚M-^VM-^H----------------------------|   7.14% [Elapsed: 0:00:00 ETA: 0:00:00] | Sim Time: 2024-01-03 00:00 | Val: $100,000^[[K^MProgress |‚M-^VM-^H‚M-^VM-^H‚M-^VM-^H‚M-^VM-^H‚M-^VM-^H‚M-^VM-^H‚M-^VM-^H‚M-^VM-^H‚M-^VM-^H‚M-^VM-^H‚M-^VM-^H‚M-^VM-^H‚M-^VM-^H‚M-^VM-^H‚M-^VM-^H‚M-^VM-^H‚M-^VM-^H‚M-^VM-^H‚M-^VM-^H‚M-^VM-^H‚M-^VM-^H‚M-^VM-^H‚M-^VM-^H‚M-^VM-^H‚M-^VM-^H‚M-^VM-^H‚M-^VM-^H‚M-^VM-^H‚M-^VM-^H‚M-^VM-^H| 100.00% [Elapsed: 0:00:00 ETA: 0:00:00] | Sim Time: 2024-01-16 00:00 | Val: $100,060^[[K
+
+--- Option C: 'pip install -e <root> lumibot==4.5.78' (dry run) ---
+  EXIT 1 ‚Äî ResolutionImpossible. Two independent walls:
+
+  The conflict is caused by:
+      lumibot 4.5.78 depends on google-genai<2.0.0 and >=1.72.0
+      google-adk 2.5.0 depends on google-genai<3 and >=2.9
+      google-adk 2.4.0 depends on google-genai<3 and >=2.9
+      google-adk 2.3.0 depends on google-genai<3 and >=2.8
+      google-adk 2.2.0 depends on google-genai<3 and >=2.4
+  
+
+--- jsonschema wall isolated: 'pip install lumibot==4.5.78 jsonschema>=4.26.0' ---
+  EXIT 1 ‚Äî ResolutionImpossible (confirms DECISIONS.md D5 at the 4.5.78 pin):
+  The conflict is caused by:
+      The user requested jsonschema>=4.26.0
+      litellm 1.83.14 depends on jsonschema==4.23.0
+      litellm 1.83.13 depends on jsonschema==4.23.0
+      litellm 1.83.12 depends on jsonschema==4.23.0

@@ -1,8 +1,20 @@
 # Migration Status
 
-**Current phase: pre-step before PR 6 — complete.**
-**Next phase: PR 6 — LumiBot backtest evaluation adapter (unblocked; not yet
-started).**
+**Current phase: pre-step before PR 6 — IN REVIEW / BLOCKED.**
+**Next phase: PR 6 — LumiBot backtest evaluation adapter (BLOCKED; not
+started, and no implementation prompt is written yet).**
+
+The pre-step is not complete. Two of its four gates are met:
+
+```text
+[x] Opus architecture review complete   (docs/library-migration/pre-step-06/EVALUATION.md)
+[x] feasibility spike passes            (pinned lumibot==4.5.78, same directory)
+[ ] ADR approved                        (docs/adr/0009-... is Proposed, not Accepted)
+[ ] reproducible CI/install path exists (backtest_runtime/ does not exist yet)
+```
+
+PR 6 must not begin, and this file must not carry a PR 6 implementation
+prompt, until all four are met.
 
 ## Completed work (PR 0)
 
@@ -256,9 +268,12 @@ dependency; PR 3/4/11/15/16 wire the respective libraries into code.
 
 ## Remaining blockers
 
-1. **LumiBot-backtest-mode import-boundary question** (`DECISIONS.md` D4,
-   open item 1) must be resolved before PR 6 starts. Not a blocker for
-   PR 1 or PR 2.
+1. **LumiBot-backtest-mode dependency/process-boundary question**
+   (`DECISIONS.md` D4, open item 1) must be resolved before PR 6 starts.
+   **Still open as of 2026-07-26:** the Opus review and feasibility spike are
+   done and a design is selected, but ADR 0009 is Proposed, not Accepted, and
+   `backtest_runtime/` does not exist — see "Work in progress (pre-step
+   before PR 6)" below. Not a blocker for PR 1 or PR 2.
 2. **PR 13/14 feasibility outcomes** (SQLAlchemy/Alembic trigger-safety,
    APScheduler lease-coexistence) are unknown until those PRs run — PR 1
    does not depend on them.
@@ -882,101 +897,129 @@ market-data service was called; no live data was fetched; the scheduler was
 not enabled; the new adapter has zero callers and is not reachable from any
 scheduled or live code path.
 
-## Completed work (pre-step before PR 6)
+## Work in progress (pre-step before PR 6) — IN REVIEW / BLOCKED
 
-**Scope:** `DECISIONS.md` (D4 open item 1's resolution) and this file only.
-No file under `src/`, `scripts/`, `paper_runtime/src/`, `tests/`, or
-`config/` was modified. This session ran as Sonnet, not under the
-Opus-review mode `MASTER_PLAN.md`'s "Pre-step before PR 6" row calls for;
-per the bounded prompt's own conditional, it stopped after recording the
-decision and did **not** proceed to PR 6 implementation.
+**Scope:** `docs/library-migration/pre-step-06/` (new: `EVALUATION.md`,
+`spike_output.txt`, `guards.py`, `spike_backtest.py`),
+`docs/adr/0009-lumibot-backtest-distribution-boundary.md` (new, **Proposed**),
+`DECISIONS.md` (D4 correction and D5 reconciliation), `ARCHITECTURE.md`,
+`MASTER_PLAN.md`, `docs/INDEX.md`, and this file. No file under `src/`,
+`scripts/`, `paper_runtime/src/`, `tests/`, or `config/` was modified.
 
-**Decision:** LumiBot backtest-mode work (PR 6/7/8) gets a second,
-narrowly-scoped in-process import-boundary directory,
-`src/trading_research/backtesting/lumibot_backtest/`, alongside the
-existing `runtime/lumibot/` (ADR 0001) — **not** routed through
-`paper_runtime`'s process-boundary/JSON-protocol architecture, which was
-this pre-step's stated default. Full reasoning recorded in `DECISIONS.md`
-under "LumiBot backtest-mode import-boundary resolution": ADR 0002's async
-protocol solves a live-credentialed-submission problem that offline,
-deterministic backtesting (LumiBot's `PandasDataBacktesting` data source
-needs no network or credentials) does not have; routing through
-`paper_runtime` would force PR 7's old-engine-vs-LumiBot parity comparison
-to extend the deliberately small `paper-runtime.v1` protocol, adding more
-boundary surface than the alternative; and D5's `jsonschema`/`litellm`
-resolution conflict blocks any new root-`pyproject.toml` extra containing
-`lumibot` regardless of which package imports it, so the new package
-follows `runtime/lumibot/adapter.py`'s existing no-declared-extra /
-`pytest.importorskip` / scratch-venv precedent rather than needing
-`paper_runtime`'s isolation for a different reason.
+### First pass withdrawn
 
-This is a decision record only — the AST test in
-`tests/unit/test_lumibot_adapter.py` has **not** been edited yet; narrowing
-it to the two named directories is PR 6 implementation work, not part of
-this pre-step.
+The first pass at this pre-step ran under **Sonnet**, not the **Opus review**
+`MASTER_PLAN.md`'s "Pre-step before PR 6" row requires. It recorded a decision
+— a second in-process import boundary at
+`src/trading_research/backtesting/lumibot_backtest/` — marked the pre-step
+complete, declared PR 6 unblocked, and wrote a PR 6 implementation prompt.
+All four of those are withdrawn. The required Opus review has now run, with
+the pinned-version feasibility spike the first pass did not run, and found the
+earlier proposal's premises false.
+
+### Decision selected (pending ADR acceptance)
+
+LumiBot backtest mode gets its own isolated, credential-free distribution,
+**`backtest_runtime/`** — a third top-level package beside the main project
+and `paper_runtime/`: own `pyproject.toml`, explicitly declared
+`requires-python`, `lumibot==4.5.78` as a base dependency, no broker
+credentials, no live-submission operations, a deterministic file-based
+fixture/result contract, dedicated tests, and a blocking CI job.
+
+Rejected: extending `paper_runtime`'s credentialed protocol (Option A);
+installing LumiBot into the main environment (Option C, still
+`ResolutionImpossible`); and the first pass's in-process package (Option D).
+Decision matrix and full reasoning in
+`docs/library-migration/pre-step-06/EVALUATION.md`.
+
+### Feasibility spike (exactly `lumibot==4.5.78`)
+
+Clean disposable venv, Python 3.11.15, macOS arm64. Network patched to fail
+closed (`getaddrinfo`/`create_connection`/`connect`/`connect_ex`) and every
+`os.environ` read recorded, both installed **before** `lumibot` was imported.
+Raw output: `pre-step-06/spike_output.txt`.
+
+Passed:
+
+- installs alone and `pip check` is clean — 309 packages, 40.7s, ~1.9 GB;
+- installed version asserted **exactly `4.5.78`** in-process;
+- `lumibot.backtesting.pandas_backtesting.PandasDataBacktesting` imports;
+- one minimal caller-supplied 10-bar DataFrame backtest runs to completion;
+- all input bars are caller supplied — perturbing one bar's close moved
+  `total_return` from `0.00065` to `0.00115`, with no other input changed;
+- **deterministic** — two identical runs produced bit-identical results;
+- **zero** outbound network attempts *when the environment holds no broker
+  credentials*.
+
+Failed — and these findings decided the architecture:
+
+1. **`import lumibot` reads broker credentials unconditionally.** 277 distinct
+   environment variables read at import, 64 credential-named, including
+   `ALPACA_API_KEY`, `ALPACA_API_SECRET`, `IB_PASSWORD`, and
+   `ANTHROPIC_API_KEY`.
+2. **With credentials visible, the offline backtest opened a live broker
+   connection** — 177 blocked attempts to `paper-api.alpaca.markets:443` (696
+   in an earlier identical run; a background retry thread drives the count),
+   with LumiBot logging `Waiting for the socket stream connection to be
+   established`. Credentials scrubbed: zero attempts, byte-identical results.
+   The connection contributes nothing to the backtest.
+3. **LumiBot loads `.env` from the current working directory** at import.
+   This repository's `.env.example` documents exactly `ALPACA_API_KEY` and
+   `ALPACA_API_SECRET`, and `.env` is gitignored — so an in-process import
+   from a repo-root `pytest` run would load the operator's real paper-broker
+   credentials and then connect.
+4. **stdout is contaminated** — 382–543 bytes per run (startup banner plus
+   ANSI-escaped progress bars), unchanged from the 4.5.74 behavior ADR 0002
+   already had to work around in `paper_runtime`.
+
+Option C re-verified at the current pin: `pip install -e <root>
+lumibot==4.5.78` fails `ResolutionImpossible` on two independent walls —
+`litellm`'s exact `jsonschema==4.23.0` against this repository's
+`jsonschema>=4.26.0` floor (confirming `DECISIONS.md` D5 at `4.5.78`), plus a
+`google-genai`/`google-adk` conflict.
+
+### Collateral finding: the AST import boundary does not run in CI
+
+`tests/unit/test_lumibot_adapter.py` opens with a module-level
+`pytest.importorskip("lumibot")`, so
+`test_no_lumibot_import_outside_runtime_package` **skips** under `main-tests`
+(`.[dev]` only). The repeated claim that the LumiBot import boundary is
+"AST-enforced, not documentation-only" is not true as things stand; the only
+boundary test that actually runs is
+`tests/unit/test_runtime_client_no_lumibot_import.py`, over an explicit list
+of 17 named files. Repairing this is a PR 6 requirement recorded in ADR 0009.
+Not fixed here — this pre-step touches no test file.
+
+### Figures corrected
+
+`paper-runtime.**v2**`, **19 operations** (not "v1, 9 operations"); LumiBot
+4.5.78 installs **309 packages / ~1.9 GB** (not "~140 transitive packages").
+Both figures had been carried forward unchecked from ADR 0001/0002.
 
 **Safety:** no trading limit, authorization rule, `paper_books` accounting
 code, or scheduling behavior was touched; no broker, provider, model, or
 market-data service was called; no live data was fetched; the scheduler was
-not enabled.
+not enabled. Every network attempt made during the spike was blocked by the
+fail-closed guard and is itemized in `pre-step-06/spike_output.txt`.
 
 ## Next PR
 
-**PR 6 — LumiBot backtest evaluation adapter.**
+**PR 6 — LumiBot backtest evaluation adapter. BLOCKED.**
 
-**Unblocked:** the pre-step above resolved `DECISIONS.md` D4 open item 1.
-The bounded prompt below is PR 6 implementation itself, not another
-pre-step.
+No bounded implementation prompt is written yet, deliberately. Two gates
+remain:
 
-Bounded prompt for the next session:
+1. **ADR 0009 must be accepted by the repository owner.** It is Proposed. It
+   adds a third distribution to the repository — an owner decision, not a
+   review's.
+2. **A reproducible CI/install path must exist.** `backtest_runtime/` does not
+   exist yet; creating it with its blocking CI job is PR 6 implementation
+   work.
 
-```text
-Implement PR 6 per MASTER_PLAN.md row 6: a new LumiBot backtest evaluation
-adapter beside the existing backtesting/engine.py. No deletion of
-backtesting/engine.py or any existing backtest code; this is an additive,
-side-by-side adapter only, feeding PR 7's parity report (not yet started).
-
-Import boundary (already decided, docs/library-migration/DECISIONS.md D4,
-"LumiBot backtest-mode import-boundary resolution", resolved during the
-pre-step before this PR): put the new adapter in
-src/trading_research/backtesting/lumibot_backtest/. Narrow
-test_no_lumibot_import_outside_runtime_package in
-tests/unit/test_lumibot_adapter.py from "any path with a runtime path
-component" to exactly two directories: src/trading_research/runtime/lumibot/
-and src/trading_research/backtesting/lumibot_backtest/. Update every test
-that depends on that constraint in the same commit. Follow
-runtime/lumibot/adapter.py's existing precedent for the new package: no
-declared extra in the root pyproject.toml, import lumibot only inside
-lumibot_backtest/, guard every test with pytest.importorskip("lumibot"),
-and verify only via a hand-installed scratch virtualenv (consistent with
-main-tests CI, which does not and should not install lumibot into the root
-environment). Do not add a new pyproject.toml extra for this package.
-
-Read first: docs/library-migration/STATUS.md (the pre-step and PR 5
-sections and the full PR history above them), MASTER_PLAN.md rows 5-8,
-COMPONENT_MATRIX.md's "Event-driven backtesting" row, DECISIONS.md D1, D4,
-and D5, docs/adr/0001 and 0002, and the existing backtesting/engine.py plus
-src/trading_research/runtime/lumibot/adapter.py for the two boundaries this
-new adapter sits between. Confirm LumiBot's PandasDataBacktesting data
-source (lumibot.backtesting.pandas_backtesting) still accepts a
-caller-supplied historical-bar DataFrame with no network/credentials before
-relying on that as this decision's premise.
-
-Do not touch scripts/indicators.py, analysis/indicators.py,
-src/trading_research/vector_research/ (PR 5's adapter), or any other file
-PR 4 or PR 5 modified.
-
-Update docs/library-migration/STATUS.md and COMPONENT_MATRIX.md recording:
-the new adapter's scope and design, its relationship to
-backtesting/engine.py and runtime/lumibot/adapter.py, and an exact bounded
-PR 7 prompt for the backtest parity report (old engine vs. LumiBot
-backtester, per MASTER_PLAN.md row 7).
-
-Safety: do not change trading limits or authorization rules; do not touch
-paper_books accounting; do not enable scheduling; do not call a broker,
-provider, model, or market-data service; do not fetch live data; do not
-begin PR 7; do not merge automatically.
-
-Open one PR titled "PR 6: LumiBot backtest evaluation adapter". Stop after
-opening the PR.
-```
+When both are met, the PR 6 prompt written at that point must cover, at
+minimum: creating `backtest_runtime/` per ADR 0009 Decisions 1–3; the
+credential-scrub and `.env`-suppression entry point and the stdout redirect,
+both **before** importing `lumibot`; the fail-closed network assertion as a
+blocking test; the blocking `backtest-runtime-tests` CI job per ADR 0009
+Decision 4; moving the tree-walking AST test into a file that runs without
+LumiBot installed; and an exact bounded PR 7 prompt for the parity report.
