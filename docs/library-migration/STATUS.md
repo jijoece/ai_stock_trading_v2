@@ -1,8 +1,8 @@
 # Migration Status
 
-**Current phase: PR 5 — complete.**
-**Next phase: PR 6 — LumiBot backtest evaluation adapter (blocked on the
-pre-step in `DECISIONS.md` D4 open item 1, still unresolved).**
+**Current phase: pre-step before PR 6 — complete.**
+**Next phase: PR 6 — LumiBot backtest evaluation adapter (unblocked; not yet
+started).**
 
 ## Completed work (PR 0)
 
@@ -882,58 +882,92 @@ market-data service was called; no live data was fetched; the scheduler was
 not enabled; the new adapter has zero callers and is not reachable from any
 scheduled or live code path.
 
+## Completed work (pre-step before PR 6)
+
+**Scope:** `DECISIONS.md` (D4 open item 1's resolution) and this file only.
+No file under `src/`, `scripts/`, `paper_runtime/src/`, `tests/`, or
+`config/` was modified. This session ran as Sonnet, not under the
+Opus-review mode `MASTER_PLAN.md`'s "Pre-step before PR 6" row calls for;
+per the bounded prompt's own conditional, it stopped after recording the
+decision and did **not** proceed to PR 6 implementation.
+
+**Decision:** LumiBot backtest-mode work (PR 6/7/8) gets a second,
+narrowly-scoped in-process import-boundary directory,
+`src/trading_research/backtesting/lumibot_backtest/`, alongside the
+existing `runtime/lumibot/` (ADR 0001) — **not** routed through
+`paper_runtime`'s process-boundary/JSON-protocol architecture, which was
+this pre-step's stated default. Full reasoning recorded in `DECISIONS.md`
+under "LumiBot backtest-mode import-boundary resolution": ADR 0002's async
+protocol solves a live-credentialed-submission problem that offline,
+deterministic backtesting (LumiBot's `PandasDataBacktesting` data source
+needs no network or credentials) does not have; routing through
+`paper_runtime` would force PR 7's old-engine-vs-LumiBot parity comparison
+to extend the deliberately small `paper-runtime.v1` protocol, adding more
+boundary surface than the alternative; and D5's `jsonschema`/`litellm`
+resolution conflict blocks any new root-`pyproject.toml` extra containing
+`lumibot` regardless of which package imports it, so the new package
+follows `runtime/lumibot/adapter.py`'s existing no-declared-extra /
+`pytest.importorskip` / scratch-venv precedent rather than needing
+`paper_runtime`'s isolation for a different reason.
+
+This is a decision record only — the AST test in
+`tests/unit/test_lumibot_adapter.py` has **not** been edited yet; narrowing
+it to the two named directories is PR 6 implementation work, not part of
+this pre-step.
+
+**Safety:** no trading limit, authorization rule, `paper_books` accounting
+code, or scheduling behavior was touched; no broker, provider, model, or
+market-data service was called; no live data was fetched; the scheduler was
+not enabled.
+
 ## Next PR
 
 **PR 6 — LumiBot backtest evaluation adapter.**
 
-**Blocked, not ready to start:** per `MASTER_PLAN.md`'s "Pre-step before
-PR 6" row, the LumiBot-backtest-mode import-boundary question
-(`DECISIONS.md` D4 open item 1) must be resolved and recorded in
-`DECISIONS.md` before PR 6 implementation begins. PR 5 did not touch this
-item — it remains open exactly as PR 4 left it. The bounded prompt below
-starts with that pre-step, not with PR 6 implementation itself.
+**Unblocked:** the pre-step above resolved `DECISIONS.md` D4 open item 1.
+The bounded prompt below is PR 6 implementation itself, not another
+pre-step.
 
 Bounded prompt for the next session:
 
 ```text
-Before any PR 6 implementation: resolve the LumiBot-backtest-mode
-import-boundary pre-step recorded in docs/library-migration/DECISIONS.md
-D4 open item 1. ADR 0001's AST-enforced constraint
-(test_no_lumibot_import_outside_runtime_package in
-tests/unit/test_lumibot_adapter.py) currently limits LumiBot imports to
-runtime/lumibot/. Decide whether PR 6/7/8's LumiBot-backtest-mode parity
-work happens inside the existing paper_runtime boundary (preferred, no
-import-boundary change) or requires extending the enforced boundary to a
-second package, and record that decision explicitly in DECISIONS.md D4
-before writing any PR 6 adapter code. This is an Opus-review decision
-gate per MASTER_PLAN.md's "Pre-step before PR 6" row, not a Sonnet
-implementation task -- if you are not running under that review mode,
-stop after recording the decision and do not proceed to PR 6
-implementation in the same session.
+Implement PR 6 per MASTER_PLAN.md row 6: a new LumiBot backtest evaluation
+adapter beside the existing backtesting/engine.py. No deletion of
+backtesting/engine.py or any existing backtest code; this is an additive,
+side-by-side adapter only, feeding PR 7's parity report (not yet started).
 
-Only once that pre-step is resolved: implement PR 6 per MASTER_PLAN.md
-row 6 -- a new LumiBot backtest evaluation adapter beside the existing
-backtesting/engine.py, within whatever import boundary the pre-step
-resolved. No deletion of backtesting/engine.py or any existing backtest
-code; this is an additive, side-by-side adapter only, feeding PR 7's
-parity report (not yet started).
+Import boundary (already decided, docs/library-migration/DECISIONS.md D4,
+"LumiBot backtest-mode import-boundary resolution", resolved during the
+pre-step before this PR): put the new adapter in
+src/trading_research/backtesting/lumibot_backtest/. Narrow
+test_no_lumibot_import_outside_runtime_package in
+tests/unit/test_lumibot_adapter.py from "any path with a runtime path
+component" to exactly two directories: src/trading_research/runtime/lumibot/
+and src/trading_research/backtesting/lumibot_backtest/. Update every test
+that depends on that constraint in the same commit. Follow
+runtime/lumibot/adapter.py's existing precedent for the new package: no
+declared extra in the root pyproject.toml, import lumibot only inside
+lumibot_backtest/, guard every test with pytest.importorskip("lumibot"),
+and verify only via a hand-installed scratch virtualenv (consistent with
+main-tests CI, which does not and should not install lumibot into the root
+environment). Do not add a new pyproject.toml extra for this package.
 
-Read first: docs/library-migration/STATUS.md (this PR 5 section and the
-full PR history above it), MASTER_PLAN.md rows 5-8, COMPONENT_MATRIX.md's
-"Event-driven backtesting" row, DECISIONS.md D1 and D4, and the existing
-backtesting/engine.py plus src/trading_research/runtime/lumibot/adapter.py
-for the two boundaries this new adapter sits between.
+Read first: docs/library-migration/STATUS.md (the pre-step and PR 5
+sections and the full PR history above them), MASTER_PLAN.md rows 5-8,
+COMPONENT_MATRIX.md's "Event-driven backtesting" row, DECISIONS.md D1, D4,
+and D5, docs/adr/0001 and 0002, and the existing backtesting/engine.py plus
+src/trading_research/runtime/lumibot/adapter.py for the two boundaries this
+new adapter sits between. Confirm LumiBot's PandasDataBacktesting data
+source (lumibot.backtesting.pandas_backtesting) still accepts a
+caller-supplied historical-bar DataFrame with no network/credentials before
+relying on that as this decision's premise.
 
 Do not touch scripts/indicators.py, analysis/indicators.py,
-src/trading_research/vector_research/ (PR 5's adapter), or any file PR 4
-or PR 5 modified, unless the import-boundary pre-step decision requires a
-narrowly-scoped change to tests/unit/test_lumibot_adapter.py's AST
-constraint itself (in which case, change only that constraint, and update
-every test that depends on it in the same commit).
+src/trading_research/vector_research/ (PR 5's adapter), or any other file
+PR 4 or PR 5 modified.
 
-Update docs/library-migration/STATUS.md, COMPONENT_MATRIX.md, and
-DECISIONS.md (D4 open item 1's resolution) recording: the import-boundary
-decision and why, the new adapter's scope and design, its relationship to
+Update docs/library-migration/STATUS.md and COMPONENT_MATRIX.md recording:
+the new adapter's scope and design, its relationship to
 backtesting/engine.py and runtime/lumibot/adapter.py, and an exact bounded
 PR 7 prompt for the backtest parity report (old engine vs. LumiBot
 backtester, per MASTER_PLAN.md row 7).
@@ -943,8 +977,6 @@ paper_books accounting; do not enable scheduling; do not call a broker,
 provider, model, or market-data service; do not fetch live data; do not
 begin PR 7; do not merge automatically.
 
-Open one PR titled "PR 6: LumiBot backtest evaluation adapter" (or, if
-this session only resolves the pre-step and does not implement PR 6,
-title it "Pre-step: resolve LumiBot-backtest-mode import boundary
-(DECISIONS.md D4)" instead and stop there). Stop after opening the PR.
+Open one PR titled "PR 6: LumiBot backtest evaluation adapter". Stop after
+opening the PR.
 ```
