@@ -4,17 +4,80 @@ This module has no execution authority. It never places orders, never
 touches `paper_books` accounting, and is not wired into any scheduled or
 live code path -- its output (`ParameterSweepResult`) is advisory research
 data only, analogous to the existing Claude research overlay's
-advisory-only boundary (ADR 0003).
+advisory-only boundary (ADR 0003). No production module outside this
+package may import it (enforced by
+`tests/unit/test_vector_research_import_boundary.py`); a future consumer
+requires an explicit architecture decision and a test update, not a silent
+import.
 
 VectorBT is required for this module and is imported at module scope inside
 a `try`/`except ImportError` that re-raises with an actionable install
 message -- there is no fallback formula, matching the pattern already
 established for TA-Lib in `scripts/indicators.py`.
+
+## Signal timing contract (fail-closed, non-negotiable)
+
+`entry_signals`/`exit_signals` represent the bar on which a signal was
+*generated* -- e.g. `entry_signals.iloc[t]` is `True` because bar `t`'s own
+close crossed some threshold. VectorBT's `Portfolio.from_signals` executes
+a `True` entry/exit at that *same* bar's close (verified directly against
+VectorBT 1.1.0: an entry set at index 5 of a 10-bar series fills at index 5,
+not index 6). Passed straight through, that lets a signal derived from bar
+`t`'s own close trade at that identical close -- look-ahead bias for any
+signal computed from same-bar data.
+
+This module never does that. Before calling VectorBT, `entry_signals`/
+`exit_signals` are shifted forward by exactly one bar
+(`.shift(1, fill_value=False)`), so a signal generated at bar `t` becomes
+eligible for execution no earlier than bar `t + 1`'s close -- matching this
+repository's existing backtest convention that a signal generated during a
+session becomes eligible only on the next session. A signal on the final
+bar of the input has no later bar to execute on and therefore produces no
+fill; this is intentional, not a bug. There is no parameter to disable this
+shift -- a caller with already execution-ready (pre-shifted) signals must
+shift them back by one bar before calling this function, not bypass the
+contract.
+
+## Daily-session, timezone-aware temporal contract
+
+`close.index` must be a timezone-aware, strictly increasing, duplicate-free
+`DatetimeIndex` with daily-session spacing (each gap `>= 1` day and
+`<= 10` days, tolerating weekends/holiday clusters but rejecting intraday,
+weekly, monthly, or otherwise irregular bar spacing). Requiring
+timezone-awareness mirrors `evaluation/market_calendar.py`'s existing
+fail-closed convention (`is_market_open` "requires a timezone-aware
+datetime"); this module does not guess a timezone for tz-naive input.
+`entry_signals`/`exit_signals` must share `close`'s index exactly, including
+timezone -- `pandas.Index.equals` treats two same-instant indexes with
+different timezone labels as unequal, so this boundary also catches a
+timezone mismatch, not only a raw value mismatch.
+
+## Exploratory-only analytics contract
+
+`total_return`/`sharpe_ratio`/`max_drawdown` are VectorBT's own vectorized
+statistics -- fast, useful for coarse relative ranking across a parameter
+sweep, but **not** this repository's authoritative performance-metrics
+implementation. `evaluation/metrics.py` (migrating to `empyrical-reloaded`
+in PR 11) remains authoritative for any reported, compared, or audited
+performance figure; VectorBT's Sharpe uses a `year_freq` annualization
+assumption that need not match empyrical-reloaded's convention. Every
+`ParameterSweepResult` carries `metric_source = "VECTORBT_EXPLORATORY"`
+plus the exact `frequency`/`year_freq` assumption used, so a caller (or a
+future automated check) can never mistake one for the other. Each metric
+is wrapped in an `ExploratoryMetric(value, status)`: `status` is `"ok"`,
+`"no_trades"` (VectorBT reports a column with zero trades), or
+`"zero_variance"`/`"non_finite"` for a non-finite VectorBT-reported result
+attributable to zero return variance or another cause respectively.
+Whenever `status != "ok"`, `value` is `None` -- a raw NaN/inf value is
+never returned for ranking or selection logic.
 """
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
+from typing import Optional
 
+import numpy as np
 import pandas as pd
 
 try:
@@ -35,20 +98,65 @@ class VectorResearchInputError(ValueError):
     """
 
 
+METRIC_SOURCE = "VECTORBT_EXPLORATORY"
+
+_MIN_SESSION_GAP = pd.Timedelta("1D")
+_MAX_SESSION_GAP = pd.Timedelta("10D")
+_MIN_BARS_FOR_SWEEP = 10
+_BAR_FREQ = "1D"
+_YEAR_FREQ = "365 days"
+
+
+@dataclass(frozen=True)
+class ExploratoryMetric:
+    """One exploratory ranking value, explicitly not authoritative.
+
+    `status` is one of `"ok"`, `"no_trades"`, `"zero_variance"`, or
+    `"non_finite"`. `value` is `None` whenever `status != "ok"` -- callers
+    must branch on `status` before using `value` for ranking or selection.
+    """
+
+    value: Optional[float]
+    status: str
+
+
 @dataclass(frozen=True)
 class ParameterSweepResult:
     """Read-only summary of a vectorized parameter sweep.
 
-    Advisory research output only. `portfolio` is the underlying
-    `vectorbt.Portfolio` for callers that need deeper inspection; nothing in
-    this dataclass is consumed by `paper_books`, `external_broker`, or any
-    order-construction path.
+    Advisory, exploratory research output only -- see this module's
+    docstring for the exact analytics-authority boundary. `portfolio` is
+    the underlying `vectorbt.Portfolio`, a raw analysis artifact for
+    deeper inspection; it must never be passed to `paper_books`,
+    `execution`, `runtime`, or any broker/scheduling interface without an
+    explicit, reviewed conversion into a framework-neutral research DTO --
+    no such conversion exists yet because no consumer exists yet.
     """
 
-    total_return: pd.Series
-    sharpe_ratio: pd.Series
-    max_drawdown: pd.Series
+    metric_source: str
+    frequency: str
+    year_freq: str
+    total_return: dict[str, ExploratoryMetric]
+    sharpe_ratio: dict[str, ExploratoryMetric]
+    max_drawdown: dict[str, ExploratoryMetric]
+    trade_count: dict[str, int]
     portfolio: "vbt.Portfolio"
+
+
+def _validate_daily_session_spacing(index: pd.DatetimeIndex) -> None:
+    if len(index) < 2:
+        return
+    diffs = index[1:] - index[:-1]
+    if (diffs < _MIN_SESSION_GAP).any():
+        raise VectorResearchInputError(
+            "close.index spacing is finer than one day -- this adapter supports "
+            "daily-session data only, not intraday bars"
+        )
+    if (diffs > _MAX_SESSION_GAP).any():
+        raise VectorResearchInputError(
+            f"close.index contains a gap larger than {_MAX_SESSION_GAP} -- this adapter "
+            "supports daily-session data only, not weekly/monthly or irregular bars"
+        )
 
 
 def _validate_close(close: pd.Series) -> None:
@@ -56,11 +164,30 @@ def _validate_close(close: pd.Series) -> None:
         raise VectorResearchInputError(f"close must be a pandas Series, got {type(close).__name__}")
     if close.empty:
         raise VectorResearchInputError("close must not be empty")
+    if not isinstance(close.index, pd.DatetimeIndex):
+        raise VectorResearchInputError("close.index must be a pandas DatetimeIndex")
+    if close.index.tz is None:
+        raise VectorResearchInputError(
+            "close.index must be timezone-aware -- this adapter requires an explicit "
+            "timezone policy, matching evaluation/market_calendar.py's tz-aware convention; "
+            "localize the index (e.g. close.tz_localize(...)) before calling run_parameter_sweep"
+        )
+    if not close.index.is_unique:
+        raise VectorResearchInputError("close.index must not contain duplicate timestamps")
+    if not close.index.is_monotonic_increasing:
+        raise VectorResearchInputError("close.index must be strictly increasing (sorted ascending)")
+    _validate_daily_session_spacing(close.index)
+    if len(close) < _MIN_BARS_FOR_SWEEP:
+        raise VectorResearchInputError(
+            f"close must contain at least {_MIN_BARS_FOR_SWEEP} bars for a meaningful "
+            f"parameter sweep, got {len(close)}"
+        )
     if close.isna().any():
         raise VectorResearchInputError("close must not contain NaN values")
-    if not close.map(lambda v: isinstance(v, (int, float)) and not isinstance(v, bool)).all():
-        raise VectorResearchInputError("close must contain only numeric prices")
-    if not (close > 0).all():
+    values = close.to_numpy(dtype=float)
+    if not np.isfinite(values).all():
+        raise VectorResearchInputError("close must contain only finite values (no +/-infinity)")
+    if not (values > 0).all():
         raise VectorResearchInputError("close must contain only positive prices")
 
 
@@ -69,45 +196,117 @@ def _validate_signal_frame(name: str, signals: pd.DataFrame, close: pd.Series) -
         raise VectorResearchInputError(f"{name} must be a pandas DataFrame, got {type(signals).__name__}")
     if signals.empty:
         raise VectorResearchInputError(f"{name} must not be empty")
+    if not signals.columns.is_unique:
+        raise VectorResearchInputError(f"{name} columns must be unique")
     if not signals.index.equals(close.index):
-        raise VectorResearchInputError(f"{name} index must exactly match close's index")
+        raise VectorResearchInputError(
+            f"{name}.index must exactly match close's index, including timezone"
+        )
     if signals.dtypes.astype(str).ne("bool").any():
         raise VectorResearchInputError(f"{name} must be boolean-valued (entry/exit signal matrix)")
+    if signals.isna().any().any():
+        raise VectorResearchInputError(f"{name} must not contain missing values")
+
+
+def _validate_init_cash(init_cash: float) -> None:
+    if isinstance(init_cash, bool) or not isinstance(init_cash, (int, float)):
+        raise VectorResearchInputError(
+            f"init_cash must be numeric (not bool), got {type(init_cash).__name__}"
+        )
+    if not math.isfinite(init_cash):
+        raise VectorResearchInputError(f"init_cash must be finite, got {init_cash!r}")
+    if init_cash <= 0:
+        raise VectorResearchInputError(f"init_cash must be positive, got {init_cash}")
+
+
+def _validate_fees(fees: float) -> None:
+    if isinstance(fees, bool) or not isinstance(fees, (int, float)):
+        raise VectorResearchInputError(f"fees must be numeric (not bool), got {type(fees).__name__}")
+    if not math.isfinite(fees):
+        raise VectorResearchInputError(f"fees must be finite, got {fees!r}")
+    if not (0.0 <= fees < 1.0):
+        raise VectorResearchInputError(f"fees must be within [0.0, 1.0) as a fraction, got {fees}")
+
+
+def _shift_to_execution_bar(signals: pd.DataFrame) -> pd.DataFrame:
+    """Shift a signal-generation matrix forward one bar (see module docstring)."""
+    return signals.shift(1, fill_value=False)
+
+
+def _classify(raw: float, *, trade_count: int, return_std: float) -> ExploratoryMetric:
+    if trade_count == 0:
+        return ExploratoryMetric(None, "no_trades")
+    if not math.isfinite(raw):
+        if return_std == 0.0:
+            return ExploratoryMetric(None, "zero_variance")
+        return ExploratoryMetric(None, "non_finite")
+    return ExploratoryMetric(float(raw), "ok")
 
 
 def run_parameter_sweep(
     close: pd.Series,
-    entries: pd.DataFrame,
-    exits: pd.DataFrame,
+    entry_signals: pd.DataFrame,
+    exit_signals: pd.DataFrame,
     *,
     init_cash: float = 100_000.0,
     fees: float = 0.0,
 ) -> ParameterSweepResult:
     """Run a vectorized parameter sweep over a boolean signal matrix.
 
-    `entries`/`exits` are boolean-valued DataFrames sharing `close`'s index,
-    one column per parameter combination under evaluation -- VectorBT's
-    signal-matrix convention for broadcasting a single price series across
-    many strategy variants at once. This is research-only: the returned
+    `entry_signals`/`exit_signals` are boolean-valued DataFrames sharing
+    `close`'s index and columns, one column per parameter combination under
+    evaluation -- VectorBT's signal-matrix convention for broadcasting a
+    single price series across many strategy variants at once. See this
+    module's docstring for the signal-timing, temporal, and
+    exploratory-analytics contracts this function enforces. The returned
     `ParameterSweepResult` is advisory and carries no execution authority.
 
     Raises `VectorResearchInputError` for any malformed input, before
     VectorBT is ever invoked.
     """
     _validate_close(close)
-    _validate_signal_frame("entries", entries, close)
-    _validate_signal_frame("exits", exits, close)
-    if init_cash <= 0:
-        raise VectorResearchInputError(f"init_cash must be positive, got {init_cash}")
-    if fees < 0:
-        raise VectorResearchInputError(f"fees must be non-negative, got {fees}")
+    _validate_signal_frame("entry_signals", entry_signals, close)
+    _validate_signal_frame("exit_signals", exit_signals, close)
+    if list(entry_signals.columns) != list(exit_signals.columns):
+        raise VectorResearchInputError(
+            "entry_signals and exit_signals must have identical columns in identical order"
+        )
+    _validate_init_cash(init_cash)
+    _validate_fees(fees)
+
+    entries = _shift_to_execution_bar(entry_signals)
+    exits = _shift_to_execution_bar(exit_signals)
 
     portfolio = vbt.Portfolio.from_signals(
-        close, entries, exits, init_cash=init_cash, fees=fees, freq="1D"
+        close, entries, exits, init_cash=init_cash, fees=fees, freq=_BAR_FREQ
     )
+
+    trade_counts = portfolio.trades.count()
+    return_stds = portfolio.returns().std()
+    raw_total_return = portfolio.total_return()
+    raw_sharpe_ratio = portfolio.sharpe_ratio(year_freq=_YEAR_FREQ)
+    raw_max_drawdown = portfolio.max_drawdown()
+
+    columns = list(entry_signals.columns)
+    total_return: dict[str, ExploratoryMetric] = {}
+    sharpe_ratio: dict[str, ExploratoryMetric] = {}
+    max_drawdown: dict[str, ExploratoryMetric] = {}
+    trade_count: dict[str, int] = {}
+    for col in columns:
+        tc = int(trade_counts.get(col, 0))
+        std = float(return_stds.get(col, 0.0))
+        trade_count[col] = tc
+        total_return[col] = _classify(float(raw_total_return[col]), trade_count=tc, return_std=std)
+        sharpe_ratio[col] = _classify(float(raw_sharpe_ratio[col]), trade_count=tc, return_std=std)
+        max_drawdown[col] = _classify(float(raw_max_drawdown[col]), trade_count=tc, return_std=std)
+
     return ParameterSweepResult(
-        total_return=portfolio.total_return(),
-        sharpe_ratio=portfolio.sharpe_ratio(),
-        max_drawdown=portfolio.max_drawdown(),
+        metric_source=METRIC_SOURCE,
+        frequency=_BAR_FREQ,
+        year_freq=_YEAR_FREQ,
+        total_return=total_return,
+        sharpe_ratio=sharpe_ratio,
+        max_drawdown=max_drawdown,
+        trade_count=trade_count,
         portfolio=portfolio,
     )

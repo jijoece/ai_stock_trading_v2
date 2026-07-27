@@ -882,6 +882,170 @@ market-data service was called; no live data was fetched; the scheduler was
 not enabled; the new adapter has zero callers and is not reachable from any
 scheduled or live code path.
 
+### PR 5 review-fix round (2026-07-26)
+
+Review of the merged PR (#13) found five categories of issue in the
+original `vector_research` adapter, all fixed on this branch before any
+LumiBot/PR 6 work began. **Scope:** `src/trading_research/vector_research/`
+(`adapter.py`, `__init__.py`), both PR 5 test files, and `.github/workflows/
+ci.yml`'s `research-tests` job. No PR 4 file, no LumiBot/backtest file, and
+no file outside this PR's original scope was touched.
+
+**1. Look-ahead bias eliminated — next-session execution policy.**
+VectorBT's `Portfolio.from_signals` was verified (directly, not assumed) to
+fill a `True` entry/exit at that *same* bar's close — confirmed with a
+controlled fixture: an entry set at index 5 of a 10-bar series fills at
+index 5, not index 6. Passed straight through, a signal computed from bar
+`t`'s own close could therefore trade at that identical close: look-ahead
+bias. `run_parameter_sweep`'s parameters were renamed `entry_signals`/
+`exit_signals` (from `entries`/`exits`) to make explicit that they are
+signal-*generation* matrices, not execution-ready ones, and the function
+now shifts both forward exactly one bar
+(`.shift(1, fill_value=False)`) before calling VectorBT — matching this
+repository's existing backtest convention that a signal generated during a
+session becomes eligible only on the next session. There is no parameter
+to disable this shift; a signal on the final bar has no later bar to
+execute on and produces no fill, which is intentional. Proven by five
+tests: a one-bar price spike cannot be bought at the spike bar (the fill
+lands one bar later, at the following bar's close, not the spike price); a
+signal on the final bar produces zero trades; entry lands on the first
+eligible subsequent bar; exit follows the identical rule; and a
+whole-portfolio parity check compares the adapter's output against calling
+VectorBT directly with a manually pre-shifted signal matrix (`orders.
+records_readable` compared frame-for-frame), proving the shift is applied
+faithfully rather than merely on the specific indices the other four tests
+happen to check.
+
+**2. Temporal structure and parameter alignment validated —
+daily-session-only, timezone-aware, minimum-history contract.** The
+validation boundary (still entirely before any VectorBT call) now also
+requires: `close.index` is a `DatetimeIndex`; timezone-aware (`tz is not
+None`) — this mirrors `evaluation/market_calendar.py`'s existing
+`is_market_open` convention, which already "requires a timezone-aware
+datetime"; unique and strictly increasing; daily-session spacing (each
+consecutive gap `>= 1` day and `<= 10` days — tolerates weekend/holiday
+clusters, rejects intraday, weekly, monthly, or otherwise irregular bar
+spacing); and at least 10 bars (**insufficient-data behavior**: below this,
+`run_parameter_sweep` raises `VectorResearchInputError` before calling
+VectorBT at all, rather than returning a degraded or partially-meaningful
+result — a stricter, more fail-closed choice than exposing an
+"insufficient_history" *metric status*, made because a too-short series
+makes the entire sweep meaningless, not just one metric on it).
+`entry_signals`/`exit_signals` must share `close`'s index and column set
+*exactly*, including timezone — `pandas.Index.equals` was verified
+(directly) to treat two same-instant indexes with different timezone
+labels as unequal, so the existing index-equality check already catches a
+timezone mismatch without needing a separate check. Signal columns must be
+unique, and `entry_signals`/`exit_signals` must have identical columns in
+identical order (previously unchecked). `freq="1D"` is no longer an
+unconditional assumption applied to arbitrary input — it is now the
+documented, enforced contract for **supported time-series frequency**:
+daily-session data only, validated up front, not silently assumed for
+whatever spacing happens to be supplied. 15 new/updated tests cover every
+listed scenario: non-`DatetimeIndex`, tz-naive index, duplicate timestamps,
+unsorted timestamps, intraday spacing, an irregular (30-day) gap, a
+too-short series, infinite price, signal-frame index mismatch, a signal
+timezone mismatch, duplicate signal columns, mismatched entry/exit column
+sets, and non-finite/negative `init_cash`/`fees`.
+
+**3. Analytics authority preserved — VectorBT metrics are explicitly
+exploratory, never authoritative.** `evaluation/metrics.py` (migrating to
+`empyrical-reloaded` in PR 11) remains the sole authority for any reported,
+compared, or audited performance figure; VectorBT's own vectorized
+statistics are useful only for coarse relative ranking inside a sweep.
+`ParameterSweepResult.metric_source` is now a literal constant,
+`"VECTORBT_EXPLORATORY"` (exported as `vector_research.METRIC_SOURCE`),
+plus explicit `frequency` (`"1D"`) and `year_freq` (`"365 days"`, passed
+explicitly to `Portfolio.sharpe_ratio(year_freq=...)` rather than relying
+on VectorBT's internal default, so the annualization assumption cannot
+silently drift with a VectorBT version bump) fields recording exactly what
+annualization assumption produced the numbers — verified these are
+VectorBT's own defaults, not an invented figure, by calling
+`sharpe_ratio(year_freq="365 days")` and `sharpe_ratio()` side by side and
+confirming identical output. `total_return`/`sharpe_ratio`/`max_drawdown`
+are no longer raw `pandas.Series`; each column now maps to an
+`ExploratoryMetric(value, status)`, `status` being `"ok"`, `"no_trades"`,
+`"zero_variance"`, or `"non_finite"` — `value` is `None` whenever
+`status != "ok"`, so a raw NaN/inf can never reach ranking or selection
+logic. Verified directly against real VectorBT output (not assumed): an
+all-`False` signal column reports `sharpe_ratio = inf` from VectorBT itself
+(not NaN) with a zero-trade count, classified `"no_trades"`; a flat
+(constant) price with one round-tripped trade reports the same `inf` from
+VectorBT but with a non-zero trade count and zero return-variance,
+classified `"zero_variance"`, distinguishing "never traded" from "traded
+into a degenerate, zero-volatility case" — the review's requested
+distinction; one real trade on ordinary data gives a finite
+`"ok"`-status Sharpe. A sixth test forces a `"non_finite"` classification
+independent of both of the above by patching
+`vectorbt.Portfolio.sharpe_ratio` to return `NaN` on a fixture with
+non-zero trades and non-zero return variance, proving the catch-all path
+fires on its own rather than only ever being reachable through the
+zero-variance path.
+
+**4. Advisory-only boundary enforced structurally, repository-wide.** The
+previous "no `submit`/`order`/`broker`/`authorize` attribute" check on
+`ParameterSweepResult` is retained but was correctly identified as
+insufficient on its own. `tests/unit/test_vector_research_import_boundary.py`
+now also asserts, by AST inspection (not a source-text substring check,
+and correctly handling both absolute and relative import forms — a
+naive top-level-name check misses `from trading_research.vector_research
+import adapter` entirely, since `vector_research` is a *sub*-package, not
+a top-level import target): **no production module anywhere under
+`src/trading_research/` outside `vector_research/` itself may import it.**
+This is deliberately a single repository-wide rule rather than an
+enumerated list of `execution/`, `paper_books/`, `runtime/`, scheduler, or
+broker-gateway paths — a curated list would need updating every time a new
+package is added and could silently under-cover a future path; the
+single rule cannot. A future consumer requires an explicit architecture
+decision and a test update, not a silent import — documented directly in
+`adapter.py`'s module docstring, including that `ParameterSweepResult.
+portfolio` (the raw `vectorbt.Portfolio`) must never be passed to
+`paper_books`, `execution`, `runtime`, or any broker/scheduling interface
+without an explicit, reviewed conversion into a framework-neutral research
+DTO — no such conversion exists yet because no consumer exists yet, and
+this repository-wide import-boundary test is what would force that
+decision to be explicit whenever a consumer is eventually proposed.
+
+**5. Research-environment CI gate strengthened.** The `research-tests`
+CI job (Python 3.11, `.[dev,research]`) now runs the full offline suite
+(`pytest tests/ -q --tb=short`) as a second blocking step, immediately
+after the focused `vector_research` file — not just the focused file alone.
+**Full-suite research-environment CI result:** run locally against the
+same `.[dev,research]` environment this job installs — **2826 passed, 65
+skipped, 0 failed**. Every skip in that run was confirmed to be an expected
+optional-extra skip (`indicators`/`analytics`/`observability` are not
+installed in this environment, so their `pytest.importorskip`-guarded tests
+skip there, exactly as `indicators-tests` already demonstrates for the
+`indicators` extra in reverse) — none is a failure hidden because a module
+could not import; `pip check` was also clean in this environment.
+
+**Tests run (review-fix round):**
+- `pytest tests/unit/test_vector_research_adapter.py
+  tests/unit/test_vector_research_import_boundary.py -q --tb=short`,
+  VectorBT **not** installed — **6 passed** (missing-dependency guard plus
+  5 import-boundary tests, none of which require VectorBT), **34 skipped**,
+  **0 failed**.
+- Same command on a Python 3.11 scratch venv with `.[dev,research]`
+  installed — **40 passed, 0 failed** — every behavioral test (signal
+  timing, temporal validation, exploratory-metric classification,
+  advisory-only surface, and the repository-wide import boundary) passes
+  for real.
+- `pytest tests/ -q --tb=short` on the same `.[dev,research]` scratch venv
+  — **2826 passed, 65 skipped, 0 failed**.
+- `pytest tests/ -q --tb=short` on the plain `.[dev]` `.venv` (no
+  VectorBT) — **2849 passed, 51 skipped, 0 failed** (one apparent failure,
+  `test_codex_provider.py::test_timeout_maps_to_provider_timeout_and_
+  reaps_threads`, was observed on one run of the full suite under system
+  load and reproduced as a pass both in isolation and on an immediate
+  full-suite re-run; it is pre-existing thread-timing flakiness unrelated
+  to this PR — no file it covers was touched here).
+
+**API note:** `run_parameter_sweep`'s `entries`/`exits` parameters were
+renamed to `entry_signals`/`exit_signals` as part of fix 1 above. This is a
+breaking rename of a function that has zero callers anywhere in the
+repository (confirmed by the import-boundary test in fix 4), so it carries
+no migration cost.
+
 ## Next PR
 
 **PR 6 — LumiBot backtest evaluation adapter.**
