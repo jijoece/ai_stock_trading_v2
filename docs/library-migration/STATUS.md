@@ -996,6 +996,23 @@ Not fixed here — this pre-step touches no test file.
 4.5.78 installs **309 packages / ~1.9 GB** (not "~140 transitive packages").
 Both figures had been carried forward unchecked from ADR 0001/0002.
 
+### Tests run
+
+This pre-step changes documentation only, so no test outcome can be
+attributed to it; the suite was run to confirm exactly that.
+
+- `pytest tests/ -q --tb=short` on a scratch Python 3.11 `.[dev]`-only venv —
+  **2791 passed, 75 skipped, 0 failed.** This is not directly comparable to
+  PR 5's recorded 2848 passed / 27 skipped: that figure came from an
+  environment that also had the `indicators` extra present, so its TA-Lib
+  tests passed where they skip here. No test file was modified by this
+  pre-step.
+- `pytest tests/unit/test_lumibot_adapter.py
+  tests/unit/test_runtime_client_no_lumibot_import.py -q -rs` on the same
+  venv — **2 passed, 1 skipped**, the skip being
+  `test_lumibot_adapter.py:27` taking the whole module with it. This is the
+  evidence for the collateral finding above.
+
 **Safety:** no trading limit, authorization rule, `paper_books` accounting
 code, or scheduling behavior was touched; no broker, provider, model, or
 market-data service was called; no live data was fetched; the scheduler was
