@@ -21,9 +21,12 @@ contamination measurement.
 
 Modes (all read before `import lumibot`):
 
-  SPIKE_CREDS=present|absent
+  SPIKE_CREDS=present|absent|inherit
       present -> seed fake sentinel broker credentials into os.environ
-      absent  -> scrub every credential-named variable from os.environ
+      absent  -> run the credential scrub: delete every credential-named
+                 variable inherited from the parent process
+      inherit -> neither seed nor scrub; the positive control that shows what
+                 an inherited process-environment credential would do
   SPIKE_SUPPRESS_DOTENV=1|0
       1 -> set LUMIBOT_DISABLE_DOTENV=1, the documented 4.5.78 opt-out that
            skips .env/.env.local discovery entirely (see EVALUATION.md §2.3)
@@ -43,18 +46,36 @@ import sys
 import guards
 
 # --- guards installed BEFORE lumibot is imported -------------------------
-# SPIKE_CREDS=present -> seed sentinel broker credentials (models a developer
-# machine / CI runner that already holds Alpaca paper credentials).
-# SPIKE_CREDS=absent  -> scrub every known broker-credential variable first.
+# SPIKE_CREDS=present -> seed sentinel broker credentials in-process (models a
+#                        developer machine / CI runner already holding Alpaca
+#                        paper credentials).
+# SPIKE_CREDS=absent  -> run the credential scrub: delete every
+#                        credential-named variable inherited from the parent
+#                        process. This is the scrub ADR 0009 Decision 2
+#                        requires of backtest_runtime/'s entry point.
+# SPIKE_CREDS=inherit -> neither seed nor scrub. The positive control for the
+#                        process-environment case: whatever the parent
+#                        exported stays, so the harness can show the scrub is
+#                        what removes it.
 SPIKE_CREDS = os.environ.get("SPIKE_CREDS", "present")
+
+# Captured before the scrub so the evidence can state what this process
+# actually inherited, rather than what it was assumed to inherit.
+INHERITED_SENTINEL_KEYS = guards.keys_with_token(guards.PROCENV_SENTINEL_TOKEN)
+
 if SPIKE_CREDS == "present":
     for key, value in guards.CREDENTIAL_SENTINELS.items():
         os.environ[key] = value
-else:
+elif SPIKE_CREDS == "absent":
     for key in list(os.environ):
         upper = key.upper()
         if any(marker in upper for marker in guards.CREDENTIAL_KEY_MARKERS):
             del os.environ[key]
+elif SPIKE_CREDS != "inherit":
+    raise SystemExit(f"unknown SPIKE_CREDS mode: {SPIKE_CREDS!r}")
+
+# Immediately after the scrub, before lumibot is imported.
+SENTINEL_KEYS_AFTER_SCRUB = guards.keys_with_token(guards.PROCENV_SENTINEL_TOKEN)
 
 # --- .env suppression: the exact 4.5.78 mechanism ------------------------
 # lumibot/credentials.py reads LUMIBOT_DISABLE_DOTENV at module scope, before
@@ -207,23 +228,39 @@ def dotenv_and_broker_evidence() -> dict:
     """
     from lumibot import credentials as lumibot_credentials
 
-    leaked_keys = guards.sentinel_env_keys()
-    configs_with_sentinel = sorted(
-        name
-        for name in dir(lumibot_credentials)
-        if name.endswith("_CONFIG")
-        and guards.sentinel_hits_in(getattr(lumibot_credentials, name, None))
-    )
+    dotenv_keys = guards.keys_with_token(guards.DOTENV_SENTINEL_TOKEN)
+    procenv_keys = guards.keys_with_token(guards.PROCENV_SENTINEL_TOKEN)
+
+    configs_with_sentinel = {}
+    for name in dir(lumibot_credentials):
+        if not name.endswith("_CONFIG"):
+            continue
+        hits = guards.sentinel_hits_in(getattr(lumibot_credentials, name, None))
+        if hits:
+            configs_with_sentinel[name] = hits
+
     broker = getattr(lumibot_credentials, "broker", None)
     data_source = getattr(lumibot_credentials, "data_source", None)
     return {
-        # The corrected safety metric: LumiBot may read credential NAMES; no
-        # credential VALUE may be available to it.
+        # Credential NAMES LumiBot resolved to some value, including its own
+        # hardcoded .get() defaults. Not expected to be empty.
         "credential_env_reads_with_values": guards.credential_reads_with_values(),
-        # Did the sentinel .env / .env.local reach this process at all?
-        "sentinel_env_keys_after_import": leaked_keys,
-        "sentinel_values_loaded": bool(leaked_keys),
+        # The strict metric: credential-named values that actually came from
+        # the process environment. Must be empty.
+        "credential_values_from_environment": guards.credential_values_from_environment(),
+        # Leak path A: did a sentinel .env / .env.local reach this process?
+        "dotenv_sentinel_keys_after_import": dotenv_keys,
+        "dotenv_sentinel_loaded": bool(dotenv_keys),
+        # Leak path B: did an inherited process-environment credential survive?
+        "procenv_sentinel_keys_inherited": INHERITED_SENTINEL_KEYS,
+        "procenv_sentinel_keys_after_scrub": SENTINEL_KEYS_AFTER_SCRUB,
+        "procenv_sentinel_keys_after_import": procenv_keys,
+        "procenv_sentinel_survived": bool(procenv_keys),
+        # Either path reaching a LumiBot config, reported by token.
         "sentinel_in_lumibot_configs": configs_with_sentinel,
+        # Back-compat aggregate across both leak paths.
+        "sentinel_env_keys_after_import": guards.sentinel_env_keys(),
+        "sentinel_values_loaded": bool(dotenv_keys or procenv_keys),
         # No live broker / live data provider initialized.
         "broker_after_import": repr(broker),
         "data_source_after_import": repr(data_source),
@@ -270,10 +307,19 @@ def main() -> int:
 
     evidence["credential_env_reads_total"] = guards.credential_reads()
     evidence["credential_env_reads_with_values_total"] = guards.credential_reads_with_values()
+    evidence["credential_values_from_environment_total"] = (
+        guards.credential_values_from_environment()
+    )
     evidence["network_attempts_total"] = guards.NETWORK_ATTEMPTS
     evidence["network_attempt_count"] = len(guards.NETWORK_ATTEMPTS)
     evidence["distinct_env_keys_read"] = len(set(guards.ENV_READS))
     evidence["sentinel_env_keys_after_run"] = guards.sentinel_env_keys()
+    evidence["dotenv_sentinel_keys_after_run"] = guards.keys_with_token(
+        guards.DOTENV_SENTINEL_TOKEN
+    )
+    evidence["procenv_sentinel_keys_after_run"] = guards.keys_with_token(
+        guards.PROCENV_SENTINEL_TOKEN
+    )
 
     with open(f"result_{label}.json", "w") as handle:
         json.dump(evidence, handle, indent=2, default=str)

@@ -52,16 +52,30 @@ cp "$HERE/sentinel_dotenv/sentinel.env"       "$WORKDIR/sentinel_cwd/.env"
 cp "$HERE/sentinel_dotenv/sentinel.env.local" "$WORKDIR/sentinel_cwd/.env.local"
 export PYTHONPATH="$WORKDIR/scripts"
 
-run() {  # label cwd suppress creds perturb
-  local label=$1 cwd=$2 suppress=$3 creds=$4 perturb=$5
+run() {  # label cwd suppress creds perturb [procenv]
+  local label=$1 cwd=$2 suppress=$3 creds=$4 perturb=$5 procenv=${6:-no}
+  # The process-environment case exports fake Alpaca credentials into the
+  # CHILD process before the interpreter starts, so they are genuinely
+  # inherited rather than seeded in-process. Fake values only.
+  local -a envvars=()
+  if [ "$procenv" = "yes" ]; then
+    envvars=(
+      "ALPACA_API_KEY=SENTINEL-PROCENV-3d5b18ca9027-ALPACA-KEY"
+      "ALPACA_API_SECRET=SENTINEL-PROCENV-3d5b18ca9027-ALPACA-SECRET"
+      "ALPACA_IS_PAPER=true"
+    )
+  fi
+  # ${a[@]+"${a[@]}"} so an empty array is safe under `set -u` on bash 3.2.
   ( cd "$cwd" \
-    && SPIKE_SUPPRESS_DOTENV="$suppress" SPIKE_CREDS="$creds" SPIKE_PERTURB="$perturb" \
+    && env ${envvars[@]+"${envvars[@]}"} \
+       SPIKE_SUPPRESS_DOTENV="$suppress" SPIKE_CREDS="$creds" SPIKE_PERTURB="$perturb" \
        "$PY" "$WORKDIR/scripts/spike_backtest.py" "$label" \
        > "$WORKDIR/out/stdout_$label.txt" 2> "$WORKDIR/out/stderr_$label.txt" )
   mv "$cwd/result_$label.json" "$WORKDIR/out/"
   echo "run $label: stdout_bytes=$(wc -c < "$WORKDIR/out/stdout_$label.txt" | tr -d ' ')"
 }
 
+# .env / .env.local discovery cases.
 #    label  cwd                              suppress creds   perturb
 run  S0     "$WORKDIR/clean_cwd"             1        absent  0
 run  S1     "$WORKDIR/sentinel_cwd"          0        absent  0
@@ -69,5 +83,11 @@ run  S2     "$WORKDIR/sentinel_cwd"          1        absent  0
 run  S3     "$WORKDIR/sentinel_cwd"          1        absent  0
 run  S4     "$WORKDIR/sentinel_cwd"          1        absent  1
 run  S5     "$WORKDIR/sentinel_cwd/nested_empty" 0    absent  0
+
+# Process-environment cases: credentials inherited from the parent process,
+# in a clean CWD so the only possible source is the environment itself.
+#    label  cwd                              suppress creds    perturb procenv
+run  P1     "$WORKDIR/clean_cwd"             1        inherit  0       yes
+run  P2     "$WORKDIR/clean_cwd"             1        absent   0       yes
 
 "$PY" "$HERE/summarize_dotenv_sentinel.py" "$WORKDIR/out"

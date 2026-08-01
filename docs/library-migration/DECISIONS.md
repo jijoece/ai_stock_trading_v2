@@ -403,6 +403,12 @@ merging it, not a gate on starting it — ADR 0009 Decision 4.
 
 **Discovered 2026-07-26, during PR 1 dependency-resolution validation.**
 
+> **Scope note.** "Sole authority" describes the repository's current state.
+> Under the accepted ADR 0009 there will be two isolated authorities once PR 6
+> adds `backtest_runtime/pyproject.toml`. The invariant that governs in both
+> states — the root `pyproject.toml` declares no LumiBot dependency, ever — is
+> spelled out in "Reconciliation with the backtest-mode boundary" below.
+
 `pip install -e ".[paper]"` in the root `pyproject.toml` fails with a hard
 `ResolutionImpossible`, not a soft version downgrade: LumiBot's
 `google-adk[extensions]` requirement pulls in `litellm`, which pins
@@ -445,13 +451,23 @@ locally installs `lumibot` into a scratch virtualenv by hand; this is no
 longer offered as a `pyproject.toml`-declared extra since it cannot resolve
 against this repository's own floor.
 
-### Reconciliation with the backtest-mode boundary (2026-07-26, pre-step before PR 6)
+### Reconciliation with the backtest-mode boundary (2026-07-26; ADR 0009 accepted 2026-08-01)
 
-If ADR 0009 is accepted, this section's phrase "`paper_runtime/pyproject.toml`
-becomes the sole LumiBot dependency declaration in the repository" stops being
-literally true — `backtest_runtime/pyproject.toml` would declare
-`lumibot==4.5.78` as well. The two statements are reconciled as follows, and
-the narrower rule below is the one that governs:
+ADR 0009 is **accepted**, so this section's phrase
+"`paper_runtime/pyproject.toml` becomes the sole LumiBot dependency
+declaration in the repository" describes the repository's **current** state
+only. It stops being literally true the moment PR 6 creates
+`backtest_runtime/pyproject.toml`, which declares `lumibot==4.5.78` as well.
+
+* **Today:** `paper_runtime/pyproject.toml` is the only LumiBot declaration in
+  the repository.
+* **After PR 6:** there are exactly two — `paper_runtime/` and
+  `backtest_runtime/` — each owning an isolated declaration in its own
+  separately-installed environment.
+
+Neither state changes what the root `pyproject.toml` declares, which is
+nothing. The narrower rule below is the one that governs, and it holds in both
+states:
 
 ```text
 The root pyproject.toml declares no LumiBot dependency and no extra

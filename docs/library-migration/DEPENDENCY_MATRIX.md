@@ -136,9 +136,17 @@ paper:
   removed (PR 1) — `pip install -e ".[paper]"` cannot resolve for any
   published lumibot==4.5.x release (litellm's exact jsonschema==4.23.0 pin,
   pulled in via google-adk[extensions], unconditionally conflicts with this
-  repo's jsonschema>=4.26.0 floor). `paper_runtime/pyproject.toml` is the
-  sole LumiBot dependency authority (lumibot==4.5.78). See `DECISIONS.md`
-  D5 and `docs/adr/0002-isolated-lumibot-runtime.md` (Amendment).
+  repo's jsonschema>=4.26.0 floor). `paper_runtime/pyproject.toml` is
+  TODAY the sole LumiBot dependency authority (lumibot==4.5.78). Under the
+  accepted ADR 0009 that becomes two isolated authorities once PR 6 creates
+  `backtest_runtime/pyproject.toml` — paper_runtime/ (credentialed, live)
+  and backtest_runtime/ (uncredentialed, offline), each owning its own
+  declaration in its own separately-installed environment. The invariant
+  that actually governs is unchanged either way: the ROOT pyproject.toml
+  declares no LumiBot dependency and no extra containing one, ever. See
+  `DECISIONS.md` D5 (and its reconciliation section),
+  `docs/adr/0002-isolated-lumibot-runtime.md` (Amendment), and
+  `docs/adr/0009-lumibot-backtest-distribution-boundary.md`.
 
 analytics:
   empyrical-reloaded            (PR 1 — added; authoritative primitive
@@ -251,4 +259,4 @@ summary of what changed and why:
 | TA-Lib install guidance | Unconditional `brew install ta-lib` / apt package | Prebuilt wheel required first; system install is a documented fallback only if wheel resolution fails on a supported target | TA-Lib 0.7.1 ships prebuilt wheels for all CI-relevant platform/interpreter combinations |
 | Analytics authority | Ambiguous overlap between empyrical-reloaded and quantstats-lumi | empyrical-reloaded = authoritative primitives; quantstats-lumi = reporting/presentation only | Two independent authorities over the same metrics is a defect, not a feature |
 | PR 5 title | "VectorBT research adapter" | "Vectorized research library selection and adapter" | PR 5 may select VectorBT only after the license decision is explicitly approved and recorded |
-| Root `paper` extra | Bump `lumibot` patch pin in place, keep the extra | **Removed entirely.** `paper_runtime/pyproject.toml` is the sole LumiBot dependency authority (`DECISIONS.md` D5) | `pip install -e ".[paper]"` cannot resolve for any published `lumibot==4.5.x` release — `litellm`'s exact `jsonschema==4.23.0` pin (pulled in via `google-adk[extensions]`) unconditionally conflicts with this repo's `jsonschema>=4.26.0` floor |
+| Root `paper` extra | Bump `lumibot` patch pin in place, keep the extra | **Removed entirely.** `paper_runtime/pyproject.toml` is the sole LumiBot dependency authority today; under the accepted ADR 0009 it becomes one of two isolated authorities once PR 6 adds `backtest_runtime/pyproject.toml`, with the root still declaring none (`DECISIONS.md` D5 and its reconciliation section) | `pip install -e ".[paper]"` cannot resolve for any published `lumibot==4.5.x` release — `litellm`'s exact `jsonschema==4.23.0` pin (pulled in via `google-adk[extensions]`) unconditionally conflicts with this repo's `jsonschema>=4.26.0` floor |

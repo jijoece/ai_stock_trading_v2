@@ -165,17 +165,37 @@ sentinel proof executes from an empty directory and loads the parent's `.env`
 anyway, builds an Alpaca broker object, and makes 58 blocked outbound attempts.
 `chdir` is not a suppression mechanism; the flag is.
 
+**The two mechanisms are independent, and both are required.** The flag
+protects the `.env` path; the credential scrub protects the process
+environment. Neither covers the other: a run with the flag set but no scrub
+still hands inherited credentials to LumiBot and connects.
+
 **Evidence.** `docs/library-migration/pre-step-06/dotenv_sentinel_output.txt`,
-reproducible via `run_dotenv_sentinel.sh`. A sentinel `.env` and `.env.local`
-holding unique fake Alpaca values sit in the working directory. Without the
-flag (runs S1 and S5) the sentinel values load into `os.environ`, propagate
-into `ALPACA_CONFIG`, construct a live broker, and drive 58–73 blocked
-connection attempts to `paper-api.alpaca.markets:443`. With the flag (runs
-S2/S3/S4) the sentinel never appears in `os.environ` or in any LumiBot config,
-`broker` and `data_source` are both `None`, outbound attempts are **0**, and
-the result is bit-identical across repeats and identical to the no-`.env`
-baseline — while perturbing one input bar still moves it, so the backtest is
-consuming only the caller-supplied fixture.
+reproducible via `run_dotenv_sentinel.sh`. Two distinct fake sentinel
+credential sets are planted, one in a `.env`/`.env.local` in the working
+directory and one exported into the child process environment.
+
+* **Controls** — each omitting one protection: without the flag (S1, S5) or
+  without the scrub (P1), the sentinel values load into `os.environ`,
+  propagate into `ALPACA_CONFIG`, construct a live broker, and drive dozens of
+  blocked connection attempts to `paper-api.alpaca.markets:443` (56–63
+  observed; a background retry thread makes the count vary, so only the fact
+  of attempting is asserted).
+* **Protected runs** (S0/S2/S3/S4 with the dotenv fixtures still in the CWD,
+  P2 with the credentials still inherited): no sentinel appears in
+  `os.environ` or any LumiBot config; credential-named values sourced from the
+  environment are **0**; `broker` and `data_source` are both `None`; outbound
+  attempts are **0**; results are bit-identical across repeats and identical
+  to the clean baseline — while perturbing one input bar still moves them, so
+  the backtest is consuming only the caller-supplied fixture.
+
+The three credential-named variables that do resolve to a value under
+protection are LumiBot's own hardcoded `.get()` defaults — `COINBASE_SANDBOX`,
+`IB_USE_PAPER_ACCOUNT`, `DATADOWNLOADER_API_KEY_HEADER`. The evidence
+distinguishes a default from an environment-sourced value by measurement (key
+presence is resolved separately from the value), and asserts that set
+**exactly**, so a LumiBot upgrade that resolves a fourth credential-named
+variable fails the check rather than being explained in prose.
 
 **Network prohibition.** No live broker, live data provider, or benchmark
 fetch is ever initialized. `benchmark_asset=None` and `analyze_backtest=False`
@@ -255,7 +275,12 @@ list is what PR 6 must deliver.
      or from a `.env`/`.env.local`, no broker or live data provider
      initialized, zero outbound attempts under the fail-closed guard, and
      determinism across a repeated identical run. It must **not** assert zero
-     credential *reads*, which LumiBot makes unconditionally.
+     credential *reads*, which LumiBot makes unconditionally. It must assert
+     the benign credential-named defaults as an **exact set**, so a LumiBot
+     upgrade that resolves an additional one fails the job; and it must cover
+     **both** leak paths, including a case where fake credentials are
+     inherited from the process environment, since the `.env` flag does not
+     protect that path.
 5. **The existing AST boundary is repaired** (below).
 
 The declared Python floor for this distribution is verified by the job's

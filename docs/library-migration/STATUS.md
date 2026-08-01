@@ -167,7 +167,11 @@ already flagged this exact risk as a *silent downgrade* motivating the
 `paper_runtime` process-boundary architecture; it has since become an
 unconditional resolution failure now that `jsonschema>=4.26.0` is a hard
 floor. `paper_runtime/pyproject.toml` is now the sole LumiBot dependency
-declaration in the repository. `runtime/lumibot/adapter.py` (ADR 0001) and
+declaration in the repository. (Still true today. Under the accepted ADR 0009
+it becomes one of two isolated declarations once PR 6 adds
+`backtest_runtime/pyproject.toml`; the root `pyproject.toml` declares none in
+either state — see `DECISIONS.md` D5's reconciliation section.)
+`runtime/lumibot/adapter.py` (ADR 0001) and
 its test (`tests/unit/test_lumibot_adapter.py`) are unaffected in behavior —
 the test still guards itself with `pytest.importorskip("lumibot")` and a
 developer who wants to exercise it installs `lumibot` into a scratch
@@ -993,14 +997,17 @@ Failed — and these findings decided the architecture:
    ANSI-escaped progress bars), unchanged from the 4.5.74 behavior ADR 0002
    already had to work around in `paper_runtime`.
 
-### Sentinel-`.env` suppression proof (2026-08-01)
+### Credential-safety sentinel proof (2026-08-01)
 
 Finding 3 above says an operator's `.env` gets loaded; this proof establishes
-the exact mechanism that stops it, and demonstrates that the mechanism works.
-Raw evidence: `pre-step-06/dotenv_sentinel_output.txt`; reproduce with
-`pre-step-06/run_dotenv_sentinel.sh <disposable-workdir>`.
+the exact mechanism that stops it, and measures a second leak path — broker
+credentials inherited from the process environment — alongside it. Raw
+evidence: `pre-step-06/dotenv_sentinel_output.txt`; reproduce with
+`pre-step-06/run_dotenv_sentinel.sh <disposable-workdir>`. The summariser
+asserts every claim against the measured JSON and exits non-zero on any
+failure, so the record fails closed rather than being narrated.
 
-**Mechanism:** `LUMIBOT_DISABLE_DOTENV=1`, set in `os.environ` **before**
+**First mechanism — `.env` suppression:** `LUMIBOT_DISABLE_DOTENV=1`, set in `os.environ` **before**
 `import lumibot`. `lumibot/credentials.py` reads it at module scope before any
 discovery runs and then skips both the script-directory walk and the
 working-directory walk, so `dotenv.load_dotenv` is never called. No other
@@ -1009,34 +1016,59 @@ mechanism works at the pinned versions (`lumibot==4.5.78`,
 `os.getcwd()`, neither configurable, and `find_and_load_dotenv()` walks upward
 to the filesystem root — so running from an empty directory does not help.
 
+**Second mechanism — the credential scrub.** The dotenv flag protects one path
+only. Broker credentials already present in the process environment are
+removed by deleting every credential-named variable from `os.environ` before
+the import, which is what ADR 0009 Decision 2 requires of the entry point.
+
 **Setup:** a sentinel `.env` and `.env.local` holding unique, obviously-fake
 Alpaca values (`SENTINEL-DOTENV-7f3a9c21e4b8-…`) placed in the working
-directory the spike is launched from. No real credential was read, used, or
-exposed; the runner refuses to start if a pre-existing `.env` sits anywhere in
-its ancestor chain.
+directory the spike is launched from, and a second, distinct set
+(`SENTINEL-PROCENV-3d5b18ca9027-…`) exported into the child process
+environment before the interpreter starts. Two tokens so the two leak paths
+can never be confused. No real credential was read, used, or exposed; the
+runner refuses to start if a pre-existing `.env` sits anywhere in its ancestor
+chain, and where a control inherits the operator's real ambient environment
+the record reports a count rather than enumerating variable names.
 
-**Positive controls — the sentinel is real.** With suppression off, the
-sentinel values load into `os.environ`, propagate into LumiBot's
-`ALPACA_CONFIG`, construct a live Alpaca broker object, and drive blocked
-outbound attempts to `paper-api.alpaca.markets:443` — 73 attempts with the
-`.env` in the CWD (S1) and 58 with the CWD set to an *empty subdirectory*
-whose parent holds it (S5). S5 is what rules out `chdir` as a mechanism.
+**Positive controls — the sentinels are real.** Each control omits one
+protection and demonstrates the hazard it prevents; the summariser fails if a
+control stops leaking. In every one, sentinel values reach `os.environ`,
+propagate into `ALPACA_CONFIG`, construct a live Alpaca broker object, and
+drive blocked outbound attempts to `paper-api.alpaca.markets:443`:
 
-**With `LUMIBOT_DISABLE_DOTENV=1` (S2/S3/S4), the sentinel `.env` and
-`.env.local` still present in the CWD:**
+- **S1** (62 attempts) — `.env` in the CWD, suppression off;
+- **S5** (56 attempts) — CWD is an **empty subdirectory** whose parent holds
+  the `.env`; this is what rules out `chdir` as a mechanism;
+- **P1** (56 attempts) — fake credentials inherited from the parent process
+  with the scrub off, **even with `LUMIBOT_DISABLE_DOTENV=1` set**; the flag
+  does not protect this path.
 
-- sentinel values in `os.environ` after import, and after the run: **none**;
-- sentinel values in any LumiBot `*_CONFIG`: **none**;
-- credential-named variables that resolved to a value: **3**, all of them
-  LumiBot's own hardcoded defaults (`COINBASE_SANDBOX` → `"false"`,
+The attempt counts vary between runs (a background retry thread drives them),
+so the proof asserts that a control attempts *at all*, never how many times.
+
+**In the protected runs (S0/S2/S3/S4 with the sentinel dotenv files still in
+the CWD, and P2 with the fake credentials still inherited):**
+
+- credential-named variables whose value came **from the process
+  environment**: **0** — the strict metric;
+- credential-named variables resolving to a value at all: exactly **3**, all
+  LumiBot's own hardcoded `.get()` defaults (`COINBASE_SANDBOX` → `"false"`,
   `IB_USE_PAPER_ACCOUNT` → `"true"`, `DATADOWNLOADER_API_KEY_HEADER` →
-  `"X-Downloader-Key"`, a header name). No broker credential value was
-  available;
+  `"X-Downloader-Key"`, a header name). Attribution is measured, not
+  interpreted: the tracer resolves key presence separately from the value, so
+  a default returned for an absent key is recorded as not-from-environment.
+  The set is asserted **exactly**, so a fourth credential-named value fails
+  the check;
+- sentinel values in `os.environ` after the scrub, after import, and after the
+  run: **none**; in any LumiBot `*_CONFIG`: **none**. For P2 the scrub is
+  shown working at the exact point it must — inherited keys present before it,
+  gone immediately after, still before `import lumibot`;
 - `lumibot.credentials.broker` and `.data_source` after import: **both
   `None`** — no broker or live data provider initialized;
 - outbound network attempts: **0**;
 - determinism: S2 and S3 produced bit-identical result dicts, and both equal
-  the no-`.env` baseline (S0) exactly;
+  the no-`.env` baseline (S0) exactly — as does P2;
 - caller-supplied data: S4 perturbed one input bar and the result moved
   (`total_return` `0.00065` → `0.00115`), so the backtest consumed only the
   10-bar fixture the caller passed in.
@@ -1082,8 +1114,12 @@ attributed to it; the suite was run to confirm exactly that.
   `test_lumibot_adapter.py:27` taking the whole module with it. This is the
   evidence for the collateral finding above.
 - `pre-step-06/run_dotenv_sentinel.sh` on a disposable Python 3.11.15 venv
-  holding `lumibot==4.5.78` alone — **6 runs, all assertions passed**. Output
-  committed as `pre-step-06/dotenv_sentinel_output.txt`.
+  holding `lumibot==4.5.78` alone — **8 runs, all assertions passed**
+  (6 `.env`-path runs, 2 process-environment runs). Output committed as
+  `pre-step-06/dotenv_sentinel_output.txt`. The summariser's fail-closed
+  behavior was itself verified by tampering with copies of the result JSON:
+  an injected extra credential-named value and a silently-disabled scrub were
+  both caught, exit 1.
 
 **Safety:** no trading limit, authorization rule, `paper_books` accounting
 code, or scheduling behavior was touched; no broker, provider, model, or
