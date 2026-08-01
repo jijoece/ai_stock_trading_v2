@@ -253,24 +253,161 @@ list of paths.
 
 ### Open items requiring resolution before implementation (not before PR 0)
 
-1. **LumiBot backtest-mode import boundary (blocks PR 6 start, not PR 0).**
-   ADR 0001's AST-enforced constraint
-   (`test_no_lumibot_import_outside_runtime_package`) currently limits
-   LumiBot imports to `runtime/lumibot/`. Using LumiBot's backtest mode for
-   PR 6/7/8 parity work requires deciding whether that evaluation happens
-   inside the existing `paper_runtime` boundary (preferred, no boundary
-   change) or requires extending the enforced import boundary to a second
-   package. Must be resolved and recorded here before PR 6 implementation
-   begins. **Still open — PR 5 did not touch this item.**
+1. ~~**LumiBot backtest-mode dependency/process boundary.**~~ **Resolved
+   2026-08-01** — the repository owner accepted ADR 0009 and selected Option B,
+   an isolated, credential-free `backtest_runtime/` distribution. The Opus
+   architecture review, the pinned-version feasibility spike, and the
+   sentinel-`.env` suppression proof are complete, and owner acceptance
+   completes the pre-step. PR 6 is unblocked and not started. Creating
+   `backtest_runtime/` and its blocking CI job is PR 6's work, not a
+   precondition for it — see "LumiBot backtest-mode boundary" below. An entry
+   here briefly marked this resolved on 2026-07-26 on the strength of a
+   withdrawn first pass; the resolution recorded now rests on the Opus review
+   and owner acceptance instead.
 2. ~~VectorBT license note.~~ **Resolved 2026-07-26 (PR 5)** — see
    "VectorBT status" above; superseded by the explicit owner approval
    recorded there.
+
+### LumiBot backtest-mode boundary (design selected 2026-07-26; **accepted 2026-08-01**)
+
+**Status: RESOLVED.**
+`docs/adr/0009-lumibot-backtest-distribution-boundary.md` is **Accepted** —
+the repository owner reviewed the architecture review and feasibility spike and
+selected Option B. The pre-step is complete and PR 6 is unblocked (not
+started).
+
+`backtest_runtime/` does not exist yet, and its absence does **not** block
+PR 6. Creating the directory, its installable `pyproject.toml`, its tests, and
+its blocking CI job are PR 6 acceptance criteria (ADR 0009 Decision 4) — merge
+conditions, not preconditions.
+
+**Correction to the first pass (2026-07-26).** An earlier version of this
+section recorded a *different* decision — a second in-process import boundary
+at `src/trading_research/backtesting/lumibot_backtest/` — and declared the
+item resolved. That pass ran under **Sonnet**, not the **Opus review**
+`MASTER_PLAN.md`'s "Pre-step before PR 6" row requires, reasoned from a stale
+`lumibot==4.5.74` local installation rather than the repository's
+`4.5.78` pin, and ran no feasibility spike. The required Opus review has now
+run, with a pinned-version spike, and found the earlier proposal's premises
+false. Both the decision and the "resolved" status are withdrawn.
+
+**Decision (accepted 2026-08-01):** LumiBot backtest mode gets
+its own isolated, credential-free distribution, `backtest_runtime/` — a third
+top-level package beside the main project and `paper_runtime/`, with its own
+`pyproject.toml`, its own explicitly declared `requires-python`,
+`lumibot==4.5.78` as a base dependency, no broker credentials, no live
+submission operations, a deterministic file-based fixture/result contract,
+dedicated tests, and a blocking CI job.
+
+**Do not** put a LumiBot import in the main source tree, and **do not** add
+backtest operations to `paper_runtime`'s credentialed protocol.
+
+Full review, decision matrix, and raw evidence:
+`docs/library-migration/pre-step-06/EVALUATION.md` and `spike_output.txt`.
+
+**Reasoning — what the feasibility spike measured** (clean venv, exactly
+`lumibot==4.5.78`, Python 3.11.15, network patched to fail closed, every
+`os.environ` read recorded):
+
+1. **`import lumibot` looks for broker credentials unconditionally.** 277
+   distinct environment variables read at import, **64 of them
+   credential-named** — `ALPACA_API_KEY`, `ALPACA_API_SECRET`, `IB_PASSWORD`,
+   `COINBASE_PRIVATE_KEY`, `SCHWAB_APP_SECRET`, and `ANTHROPIC_API_KEY`, which
+   this repository genuinely uses. There is no backtest-only import path that
+   avoids this, so the requirement imposed on `backtest_runtime/` is **not**
+   "zero credential reads" — it is that none of those reads finds a value (see
+   the five-part proof set in ADR 0009 Decision 2).
+2. **With credentials visible, an offline backtest opens a live broker
+   connection.** The run produced **177 blocked outbound attempts to
+   `paper-api.alpaca.markets:443`** (696 in an earlier identical run — a
+   background retry thread drives the count), with LumiBot logging `Waiting
+   for the socket stream connection to be established`. With credentials
+   scrubbed: **zero** attempts and byte-identical results. The connection
+   contributes nothing to the backtest; it is pure side effect.
+3. **LumiBot loads `.env` from the current working directory** at import
+   (`lumibot/credentials.py::find_and_load_dotenv`), walking *upward* from
+   both the script directory and the CWD to the filesystem root. This
+   repository's `.env.example` documents exactly `ALPACA_API_KEY` and
+   `ALPACA_API_SECRET` and `.env` is gitignored, so an operator machine is
+   expected to have one. An in-process import from a repo-root `pytest` run
+   would load the operator's real paper-broker credentials and then connect —
+   during a "deterministic offline backtest." That is exactly what ADR 0002
+   exists to prevent, and it is what the first pass's proposal would have
+   permitted.
+
+   **The suppression mechanism is `LUMIBOT_DISABLE_DOTENV=1`, set before
+   `import lumibot`, and nothing else works.** It is read at
+   `credentials.py` module scope before any discovery runs and skips both
+   walks entirely. Because the walks ascend to the filesystem root and their
+   base directories (`sys.argv[0]`'s directory and `os.getcwd()`) are not
+   configurable, running from an empty directory does *not* help. Proved with
+   a sentinel `.env`/`.env.local` holding unique fake Alpaca values:
+   `docs/library-migration/pre-step-06/dotenv_sentinel_output.txt`.
+4. **The offline backtest itself works and is deterministic** —
+   `PandasDataBacktesting` replayed a caller-supplied 10-bar DataFrame,
+   repeated runs were bit-identical, and perturbing one input bar moved the
+   result, proving the bars are genuinely caller-supplied. So the capability
+   PR 6 wants is real; only the *boundary* the first pass chose was wrong.
+5. **Option C remains unavailable.** Re-verified at `4.5.78`: `pip install -e
+   <root> lumibot==4.5.78` fails `ResolutionImpossible` on two independent
+   walls — `litellm`'s exact `jsonschema==4.23.0` against this repository's
+   `jsonschema>=4.26.0` floor (confirming D5 below at the current pin), plus
+   a `google-genai`/`google-adk` conflict. In its own environment LumiBot
+   resolves `jsonschema==4.23.0` and `pip check` is clean.
+6. **Routing through `paper_runtime` (Option A) was evaluated concretely, not
+   dismissed.** `paper-runtime.v2` caps one envelope at 65,536 bytes; measured
+   DTO sizes are 218 B per `HistoricalBar`, 143 B per `BacktestDailyState`,
+   226 B per `BacktestFill`. A 3-symbol × 2-year parity fixture is 329,616 B
+   in (**5.0×** the cap) and 85,632 B out (**1.3×**), so chunking operations
+   would be required. But the disqualifier is credential proximity, not size:
+   `paper_runtime` is the one process authorized to reach a real broker, and
+   finding 2 means every backtest there would run next to live credentials.
+
+**Corrections to figures this document previously repeated:** the protocol is
+`paper-runtime.v2` with **19 operations**, not "`paper-runtime.v1`, 9
+operations"; and LumiBot 4.5.78 installs **309 packages, ~1.9 GB**, not the
+"~140 transitive packages" carried forward from ADR 0001/0002.
+
+**Collateral finding — the AST import boundary does not run in CI.**
+`tests/unit/test_lumibot_adapter.py` begins with a module-level
+`pytest.importorskip("lumibot")`, so
+`test_no_lumibot_import_outside_runtime_package` **skips** under `main-tests`
+(which installs `.[dev]` only). The claim, repeated in this document and in
+`MASTER_PLAN.md`, that the constraint is "AST-enforced, not
+documentation-only" is not true as things stand — the only boundary test that
+actually runs is `tests/unit/test_runtime_client_no_lumibot_import.py`, which
+checks an explicit list of 17 named files. PR 6 must move the tree-walking
+test into a file that runs with LumiBot absent. Because `backtest_runtime/`
+sits outside `src/trading_research/`, that test needs **no new permitted
+directory** — under the selected design the AST rule gets stricter
+enforcement rather than a new exception, which is a further advantage over the
+withdrawn in-process proposal.
+
+**Pre-step gates — all met (2026-08-01):**
+
+```text
+[x] Opus architecture review complete
+[x] pinned-version feasibility spike passes
+[x] sentinel-.env suppression proof passes
+[x] ADR 0009 accepted by the repository owner
+```
+
+PR 6 is unblocked and not started. The reproducible install path
+(`backtest_runtime/` with its `pyproject.toml`, tests, and blocking
+`backtest-runtime-tests` job) is PR 6's deliverable and a condition for
+merging it, not a gate on starting it — ADR 0009 Decision 4.
 
 ---
 
 ## D5 — Root `paper` extra removed: `paper_runtime` is the sole LumiBot dependency authority
 
 **Discovered 2026-07-26, during PR 1 dependency-resolution validation.**
+
+> **Scope note.** "Sole authority" describes the repository's current state.
+> Under the accepted ADR 0009 there will be two isolated authorities once PR 6
+> adds `backtest_runtime/pyproject.toml`. The invariant that governs in both
+> states — the root `pyproject.toml` declares no LumiBot dependency, ever — is
+> spelled out in "Reconciliation with the backtest-mode boundary" below.
 
 `pip install -e ".[paper]"` in the root `pyproject.toml` fails with a hard
 `ResolutionImpossible`, not a soft version downgrade: LumiBot's
@@ -313,3 +450,48 @@ when lumibot is not importable. A developer who wants to exercise that file
 locally installs `lumibot` into a scratch virtualenv by hand; this is no
 longer offered as a `pyproject.toml`-declared extra since it cannot resolve
 against this repository's own floor.
+
+### Reconciliation with the backtest-mode boundary (2026-07-26; ADR 0009 accepted 2026-08-01)
+
+ADR 0009 is **accepted**, so this section's phrase
+"`paper_runtime/pyproject.toml` becomes the sole LumiBot dependency
+declaration in the repository" describes the repository's **current** state
+only. It stops being literally true the moment PR 6 creates
+`backtest_runtime/pyproject.toml`, which declares `lumibot==4.5.78` as well.
+
+* **Today:** `paper_runtime/pyproject.toml` is the only LumiBot declaration in
+  the repository.
+* **After PR 6:** there are exactly two — `paper_runtime/` and
+  `backtest_runtime/` — each owning an isolated declaration in its own
+  separately-installed environment.
+
+Neither state changes what the root `pyproject.toml` declares, which is
+nothing. The narrower rule below is the one that governs, and it holds in both
+states:
+
+```text
+The root pyproject.toml declares no LumiBot dependency and no extra
+containing one, ever.
+
+Every LumiBot declaration lives in a separately installed distribution that
+is never resolved in the same environment as the main project:
+    paper_runtime/      credentialed, live/paper broker submission (ADR 0002)
+    backtest_runtime/   uncredentialed, offline backtesting  (ADR 0009, Accepted;
+                                                              created by PR 6)
+
+Both pin the same exact version. A test asserts they do not drift apart.
+```
+
+The substantive commitment being preserved is ADR 0002 Decision 1 — "the main
+trading-desk process's `pyproject.toml` gains zero new dependencies" and
+LumiBot's transitive footprint is never absorbed by the main environment.
+That commitment is **strengthened**, not weakened, by ADR 0009: the withdrawn
+in-process proposal would have put a LumiBot import inside
+`src/trading_research/` with no declared dependency at all, whereas a second
+isolated distribution keeps the main environment exactly as clean as it is
+today while making the backtest dependency declared, resolvable, and
+CI-verified for the first time.
+
+"Sole dependency *authority*" in the sense that mattered when it was written —
+"the main project does not own, declare, or install LumiBot" — remains true
+without qualification.

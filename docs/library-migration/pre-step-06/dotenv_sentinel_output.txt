@@ -1,0 +1,117 @@
+date: 2026-08-01 (pre-step before PR 6 — credential-safety proof)
+host: macOS arm64, Python 3.11.15 (the interpreter line CI already uses)
+harness: run_dotenv_sentinel.sh (committed beside this file); scripts guards.py, spike_backtest.py
+reproduce: ./run_dotenv_sentinel.sh <disposable-workdir>
+
+=== LumiBot 4.5.78 credential-safety proof — raw evidence ===
+python: 3.11.15   lumibot: 4.5.78 (asserted exactly 4.5.78: True)
+mechanisms under test:
+  .env / .env.local     -> LUMIBOT_DISABLE_DOTENV=1 before `import lumibot`
+  process environment   -> credential scrub of os.environ before the import
+sentinel tokens (fake; authenticate nothing):
+  SENTINEL-DOTENV-7f3a9c21e4b8    written into the .env / .env.local fixtures
+  SENTINEL-PROCENV-3d5b18ca9027   exported into the child process environment
+
+--- run matrix ---
+  run  suppress  scrub   .env cwd  inherited  leaked      env vals  net   broker  total_return
+  S0   True      on      False     False      no          0         0     None    0.0006500000000000394
+  S1   False     on      True      False      LEAKED      3         62    built   0.0006500000000000394
+  S2   True      on      True      False      no          0         0     None    0.0006500000000000394
+  S3   True      on      True      False      no          0         0     None    0.0006500000000000394
+  S4   True      on      True      False      no          0         0     None    0.0011499999999999844
+  S5   False     on      False     False      LEAKED      3         56    built   0.0006500000000000394
+  P1   True      off     False     True       LEAKED      6         56    built   0.0006500000000000394
+  P2   True      on      False     True       no          0         0     None    0.0006500000000000394
+
+  S0 = baseline: clean CWD, no .env anywhere, suppression ON
+  S1 = CONTROL: sentinel .env in CWD, suppression OFF
+  S2 = sentinel .env in CWD, suppression ON
+  S3 = identical repeat of S2 (determinism)
+  S4 = S2 + final bar close perturbed +5.00
+  S5 = CONTROL: CWD is an EMPTY subdirectory, suppression OFF
+  P1 = CONTROL: fake creds inherited from the parent process, NO scrub
+  P2 = fake creds inherited from the parent process, scrub ON
+
+  'env vals'  = credential-named variables whose value came from the process
+                environment (the strict metric; must be 0 in protected runs)
+  'leaked'    = either sentinel token found in os.environ after import
+
+--- positive controls: the sentinels are real and detectable ---
+  S1: CONTROL: sentinel .env in CWD, suppression OFF
+      sentinel keys in os.environ after import: ['ALPACA_API_KEY', 'ALPACA_API_SECRET']
+      sentinel reached LumiBot configs: {'ALPACA_CONFIG': ['SENTINEL-DOTENV-7f3a9c21e4b8']}
+      credential values from the environment: 3 (sentinel-carrying: ['ALPACA_API_KEY', 'ALPACA_API_SECRET'])
+      live broker object constructed at import: True
+      blocked outbound attempts: {"('paper-api.alpaca.markets', 443)": 63}
+  S5: CONTROL: CWD is an EMPTY subdirectory, suppression OFF
+      sentinel keys in os.environ after import: ['ALPACA_API_KEY', 'ALPACA_API_SECRET']
+      sentinel reached LumiBot configs: {'ALPACA_CONFIG': ['SENTINEL-DOTENV-7f3a9c21e4b8']}
+      credential values from the environment: 3 (sentinel-carrying: ['ALPACA_API_KEY', 'ALPACA_API_SECRET'])
+      live broker object constructed at import: True
+      blocked outbound attempts: {"('paper-api.alpaca.markets', 443)": 56}
+  P1: CONTROL: fake creds inherited from the parent process, NO scrub
+      sentinel keys in os.environ after import: ['ALPACA_API_KEY', 'ALPACA_API_SECRET']
+      sentinel reached LumiBot configs: {'ALPACA_CONFIG': ['SENTINEL-PROCENV-3d5b18ca9027']}
+      credential values from the environment: 6 (sentinel-carrying: ['ALPACA_API_KEY', 'ALPACA_API_SECRET'])
+      live broker object constructed at import: True
+      blocked outbound attempts: {"('paper-api.alpaca.markets', 443)": 57}
+
+  S1/S5 show the .env path: S5's CWD is EMPTY and the PARENT's .env still
+  loaded, because find_and_load_dotenv() walks upward to the filesystem
+  root — so chdir-to-an-empty-directory is NOT a suppression mechanism.
+  P1 shows the process-environment path: credentials inherited from the
+  parent reach LumiBot untouched when the scrub does not run.
+
+--- protected runs: the five required properties ---
+  runs checked: S0, S2, S3, S4, P2
+  credential values sourced from the environment:  none, in every run
+  credential-named variables resolving to a value:  exactly the 3 benign
+    LumiBot defaults, asserted as an exact set —
+      COINBASE_SANDBOX               os.environ.get(..., "false")   mode flag
+      IB_USE_PAPER_ACCOUNT           os.environ.get(..., "true")    mode flag
+      DATADOWNLOADER_API_KEY_HEADER  os.environ.get(..., "X-Downloader-Key")
+                                                                   header NAME
+    Attribution is measured, not interpreted: the tracer resolves key presence
+    separately from the value, so a default returned for an ABSENT key is
+    recorded as not-from-environment. Any fourth credential-named value, or
+    any of these arriving from the environment instead, fails this script.
+  .env / .env.local sentinel loaded:                never
+  inherited process-environment credential survived: never
+  sentinel in any LumiBot *_CONFIG:                 never
+  broker / data source initialized:                 never (both None)
+  outbound network attempts:                        0
+
+  for scale: LumiBot LOOKED FOR 61 credential-named variables in S2.
+  Reads are unavoidable and are not the safety property; values are.
+
+--- the process-environment case in detail (P1 control vs P2) ---
+  P1: inherited from parent        ['ALPACA_API_KEY', 'ALPACA_API_SECRET']
+      after the scrub (pre-import)  ['ALPACA_API_KEY', 'ALPACA_API_SECRET']
+      after import                  ['ALPACA_API_KEY', 'ALPACA_API_SECRET']
+      after the backtest            ['ALPACA_API_KEY', 'ALPACA_API_SECRET']
+      LumiBot configs               {'ALPACA_CONFIG': ['SENTINEL-PROCENV-3d5b18ca9027']}
+      broker built / outbound       True / 56
+  P2: inherited from parent        ['ALPACA_API_KEY', 'ALPACA_API_SECRET']
+      after the scrub (pre-import)  []
+      after import                  []
+      after the backtest            []
+      LumiBot configs               {}
+      broker built / outbound       False / 0
+
+  P1 and P2 inherit identical credentials in a CWD with no .env, so the
+  environment is the only possible source and the scrub is the only
+  difference between them.
+
+--- determinism and caller-supplied data ---
+  S2 == S3 (full result dict, repeated offline run):  True
+  S2 == S0 (sentinel .env present vs absent):         True
+  P2 == S0 (inherited credentials vs none):           True
+  S4 != S2 (one input bar perturbed):                 True
+    S2/S3 input digest: abe55fa78bf6d1f4ac412dfd0bdd507d7a487a1105a8a5b277a0d92a49047cfe
+    S4    input digest: fa55cf4f72f340d02dc284c092b10cb0c7be980f8c4070deebee79a41e61cb24
+    total_return  S2 0.0006500000000000394  ->  S4 0.0011499999999999844
+  The backtest consumed only the caller-supplied 10-bar fixture: neither a
+  .env nor an inherited credential changed anything, and perturbing one bar
+  changed the result.
+
+ALL ASSERTIONS PASSED

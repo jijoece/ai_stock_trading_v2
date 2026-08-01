@@ -164,3 +164,56 @@ LumiBot dependency authority, consistent with Decision 1 above ("the main tradin
 and the test still guards itself with `pytest.importorskip("lumibot")` — a developer who wants to
 exercise it locally installs `lumibot` into a scratch virtualenv by hand (not via any
 `pyproject.toml`-declared extra). See `docs/library-migration/DECISIONS.md` D5 for the full record.
+
+## Amendment 2 (2026-07-26, library-migration pre-step before PR 6)
+
+**Version labels.** This ADR's Context and Consequences narrate
+`lumibot==4.5.74`, which is what was installed at Milestone 4 implementation
+time; those statements are left as the dated historical record they are. The
+repository's pin has been **`lumibot==4.5.78`** since library-migration PR 1
+(`paper_runtime/pyproject.toml`), and every current statement about the pin
+should be read against that version. The jsonschema conflict, the stdout
+banner, and the dependency-tree weight were all re-verified against `4.5.78`
+and still hold — see `docs/library-migration/pre-step-06/spike_output.txt`.
+
+**Corrections measured at 4.5.78.**
+
+* The protocol is **`paper-runtime.v2` with 19 operations**, not the
+  "`paper-runtime.v1` … 9 operations, ~5 envelope fields" Decision 2 records.
+  Decision 2's *reasoning* — keep the contract small, validate the wire
+  format independently on both sides, share no Python types — is unchanged.
+* The footprint is **309 packages, ~1.9 GB**, not "~140 packages."
+* The stdout banner Consequences describes is **unchanged in 4.5.78**
+  (58 bytes at import, plus ANSI-escaped progress output during a run), so
+  the `__main__.py` redirect this ADR introduced is still load-bearing.
+
+**A second, non-credentialed LumiBot distribution is accepted.**
+`docs/adr/0009-lumibot-backtest-distribution-boundary.md` (**Accepted**
+2026-08-01) establishes `backtest_runtime/` for offline backtesting
+(PR 6/7/8); the distribution itself is PR 6's deliverable and does not exist
+yet. ADR 0009 supplements this ADR and does not amend any of its five
+decisions:
+
+* Decision 1's core commitment — the main project's `pyproject.toml` gains
+  zero LumiBot dependencies and LumiBot's tree is never installed alongside
+  it — is preserved exactly. ADR 0009 adds a *third* separately-installed
+  distribution, not a root dependency.
+* Decision 3's asynchronous submission path is untouched; backtesting is
+  synchronous and offline and deliberately does **not** reuse it.
+* Decision 5's "no live historical-price data source ships" posture is
+  carried forward: `backtest_runtime/` has no data fetcher and takes every
+  bar from a caller-supplied fixture.
+* Adding backtest operations to `paper-runtime.v2` was evaluated and
+  **rejected** — measured payloads exceed the 65,536-byte envelope cap by
+  5–25× at realistic parity sizes, and, more importantly, it would place
+  deterministic research work inside the one process that holds broker
+  credentials.
+
+That last point is the sharpest finding of the pre-step spike, and it
+strengthens this ADR's original reasoning: at 4.5.78, `import lumibot` reads
+64 credential-named environment variables and loads `.env` from the current
+working directory, and a *backtest* run with credentials visible opened
+repeated connections to `paper-api.alpaca.markets:443`. The isolation this
+ADR chose for credentialed submission turns out to be necessary for
+uncredentialed backtesting too — for the opposite reason: not to let
+credentials in, but to keep them out.

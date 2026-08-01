@@ -120,6 +120,7 @@ autonomous live execution, direct LLM-to-order execution) and Milestone
   jsonschema/python-dotenv version conflicts with this repository's pinned
   floor are isolated to an optional `paper` extra — the default
   development/test environment never installs it.
+  **(Superseded on both counts — see the Amendment below.)**
 * The full paper-execution vertical slice (eligibility → intent → fill →
   ledger → reconciliation) is provable offline via a deterministic adapter,
   independent of whether LumiBot is installed at all.
@@ -127,3 +128,31 @@ autonomous live execution, direct LLM-to-order execution) and Milestone
   implement `runtime.lumibot.adapter.PaperBrokerGateway` against a
   credentialed LumiBot `Trader`/`Strategy` — no other module in this
   codebase needs to change.
+
+## Amendment (2026-07-26, library-migration pre-step before PR 6)
+
+Two factual corrections to "Consequences" above, plus one scope note. Decision
+1's import boundary itself is **unchanged and still in force**:
+`src/trading_research/runtime/lumibot/` remains the only directory under
+`src/trading_research/` permitted to import LumiBot.
+
+1. **The `paper` extra no longer exists.** PR 1 removed it from the root
+   `pyproject.toml` — it was a declared install target that could not resolve.
+   `paper_runtime/pyproject.toml` owns the LumiBot declaration instead. See
+   ADR 0002's Amendment and `docs/library-migration/DECISIONS.md` D5.
+2. **"~140 packages" understates it.** Measured against the current pin
+   `lumibot==4.5.78` in a clean venv: **309 packages, ~1.9 GB installed**
+   (`docs/library-migration/pre-step-06/spike_output.txt`).
+3. **Enforcement gap.** `test_no_lumibot_import_outside_runtime_package`,
+   cited in Decision 1 as the mechanism enforcing this boundary, sits in a
+   file whose module-level `pytest.importorskip("lumibot")` makes it **skip**
+   under the `main-tests` CI job (which installs `.[dev]` only). The boundary
+   is currently documentation-backed rather than test-enforced in CI.
+   Repairing this is a PR 6 requirement (ADR 0009 Decision 4).
+4. **A second LumiBot use is accepted.** Offline backtesting (PR 6/7/8) lives
+   in a separate distribution, `backtest_runtime/`, per
+   `docs/adr/0009-lumibot-backtest-distribution-boundary.md` — **Accepted**
+   2026-08-01; the distribution is PR 6's deliverable and does not exist yet.
+   That design deliberately does **not** widen this ADR's in-process import
+   boundary; `backtest_runtime/` sits outside `src/trading_research/`, so
+   Decision 1's rule stays exactly as strict as it is today.
