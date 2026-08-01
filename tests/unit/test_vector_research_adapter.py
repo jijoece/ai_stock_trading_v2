@@ -211,6 +211,16 @@ def test_rejects_irregular_gap_too_large(adapter):
         adapter.run_parameter_sweep(close, entries, exits)
 
 
+def test_rejects_weekly_cadence_within_gap_bounds(adapter):
+    # Every gap is exactly 7 days -- within the [1D, 10D] min/max bound alone,
+    # so this only fails via the median-cadence check, not the gap-bound checks.
+    idx = pd.date_range("2024-01-01", periods=_N_BARS, freq="7D", tz="UTC")
+    close = pd.Series([100.0] * _N_BARS, index=idx)
+    entries, exits = _empty_signals(close)
+    with pytest.raises(adapter.VectorResearchInputError, match="median"):
+        adapter.run_parameter_sweep(close, entries, exits)
+
+
 def test_rejects_close_shorter_than_minimum_bars(adapter):
     idx = pd.date_range("2024-01-01", periods=3, freq="D", tz="UTC")
     close = pd.Series([100.0, 101.0, 102.0], index=idx)
@@ -240,6 +250,30 @@ def test_rejects_non_positive_price(adapter):
     close.iloc[0] = 0.0
     entries, exits = _empty_signals(close)
     with pytest.raises(adapter.VectorResearchInputError, match="positive"):
+        adapter.run_parameter_sweep(close, entries, exits)
+
+
+def test_rejects_boolean_close(adapter):
+    idx = pd.date_range("2024-01-01", periods=_N_BARS, freq="D", tz="UTC")
+    close = pd.Series([True] * _N_BARS, index=idx)
+    entries, exits = _empty_signals(close)
+    with pytest.raises(adapter.VectorResearchInputError, match="boolean"):
+        adapter.run_parameter_sweep(close, entries, exits)
+
+
+def test_rejects_numeric_string_close(adapter):
+    idx = pd.date_range("2024-01-01", periods=_N_BARS, freq="D", tz="UTC")
+    close = pd.Series([str(100.0 + i) for i in range(_N_BARS)], index=idx, dtype=object)
+    entries, exits = _empty_signals(close)
+    with pytest.raises(adapter.VectorResearchInputError, match="numeric-looking strings"):
+        adapter.run_parameter_sweep(close, entries, exits)
+
+
+def test_rejects_non_convertible_close(adapter):
+    idx = pd.date_range("2024-01-01", periods=_N_BARS, freq="D", tz="UTC")
+    close = pd.Series(["not-a-price"] * _N_BARS, index=idx, dtype=object)
+    entries, exits = _empty_signals(close)
+    with pytest.raises(adapter.VectorResearchInputError, match="could not be converted"):
         adapter.run_parameter_sweep(close, entries, exits)
 
 

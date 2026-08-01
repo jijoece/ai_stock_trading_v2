@@ -41,9 +41,17 @@ contract.
 ## Daily-session, timezone-aware temporal contract
 
 `close.index` must be a timezone-aware, strictly increasing, duplicate-free
-`DatetimeIndex` with daily-session spacing (each gap `>= 1` day and
-`<= 10` days, tolerating weekends/holiday clusters but rejecting intraday,
-weekly, monthly, or otherwise irregular bar spacing). Requiring
+`DatetimeIndex` with daily-session spacing: each gap `>= 1` day and
+`<= 10` days (tolerating weekends/holiday clusters but rejecting intraday
+or monthly/irregular bar spacing), **and** a median bar-to-bar gap of
+exactly one day. The median-gap check exists because a systematically
+wider cadence -- most notably weekly (`freq="7D"`) data -- has a uniform
+gap that falls entirely within the `[1, 10]` day bound and would
+otherwise silently pass the min/max check alone while this adapter still
+executes with `freq="1D"`, corrupting every annualized statistic. A
+genuine daily session calendar (including weekend/holiday gaps) always
+has a majority of one-day gaps, so its median gap is one day; a uniform
+weekly (or coarser) cadence never does. Requiring
 timezone-awareness mirrors `evaluation/market_calendar.py`'s existing
 fail-closed convention (`is_market_open` "requires a timezone-aware
 datetime"); this module does not guess a timezone for tz-naive input.
@@ -102,6 +110,7 @@ METRIC_SOURCE = "VECTORBT_EXPLORATORY"
 
 _MIN_SESSION_GAP = pd.Timedelta("1D")
 _MAX_SESSION_GAP = pd.Timedelta("10D")
+_EXPECTED_MEDIAN_SESSION_GAP = pd.Timedelta("1D")
 _MIN_BARS_FOR_SWEEP = 10
 _BAR_FREQ = "1D"
 _YEAR_FREQ = "365 days"
@@ -157,6 +166,15 @@ def _validate_daily_session_spacing(index: pd.DatetimeIndex) -> None:
             f"close.index contains a gap larger than {_MAX_SESSION_GAP} -- this adapter "
             "supports daily-session data only, not weekly/monthly or irregular bars"
         )
+    median_gap = pd.Series(diffs).median()
+    if median_gap != _EXPECTED_MEDIAN_SESSION_GAP:
+        raise VectorResearchInputError(
+            f"close.index's median bar-to-bar gap is {median_gap}, not "
+            f"{_EXPECTED_MEDIAN_SESSION_GAP} -- this adapter requires a genuine daily-session "
+            "cadence (occasional weekend/holiday gaps tolerated, but the typical gap must be "
+            "one day), not a systematically wider cadence such as weekly or monthly bars that "
+            "would otherwise pass the min/max gap bound alone"
+        )
 
 
 def _validate_close(close: pd.Series) -> None:
@@ -182,9 +200,24 @@ def _validate_close(close: pd.Series) -> None:
             f"close must contain at least {_MIN_BARS_FOR_SWEEP} bars for a meaningful "
             f"parameter sweep, got {len(close)}"
         )
+    if pd.api.types.is_bool_dtype(close.dtype):
+        raise VectorResearchInputError(
+            "close must contain numeric prices, got boolean dtype -- boolean values are not "
+            "valid prices"
+        )
     if close.isna().any():
         raise VectorResearchInputError("close must not contain NaN values")
-    values = close.to_numpy(dtype=float)
+    try:
+        values = close.to_numpy(dtype=float)
+    except (TypeError, ValueError) as exc:
+        raise VectorResearchInputError(
+            f"close could not be converted to numeric prices: {exc}"
+        ) from exc
+    if not pd.api.types.is_numeric_dtype(close.dtype):
+        raise VectorResearchInputError(
+            f"close must have a numeric dtype, got {close.dtype} -- numeric-looking strings "
+            "are not accepted as prices, even when individually convertible to float"
+        )
     if not np.isfinite(values).all():
         raise VectorResearchInputError("close must contain only finite values (no +/-infinity)")
     if not (values > 0).all():
