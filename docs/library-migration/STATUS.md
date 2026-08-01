@@ -1,20 +1,25 @@
 # Migration Status
 
-**Current phase: pre-step before PR 6 — IN REVIEW / BLOCKED.**
-**Next phase: PR 6 — LumiBot backtest evaluation adapter (BLOCKED; not
-started, and no implementation prompt is written yet).**
+**Current phase: pre-step before PR 6 — COMPLETE.**
+**Next phase: PR 6 — LumiBot backtest evaluation adapter (UNBLOCKED; not
+started).**
 
-The pre-step is not complete. Two of its four gates are met:
+The pre-step is complete. All of its gates are met:
 
 ```text
 [x] Opus architecture review complete   (docs/library-migration/pre-step-06/EVALUATION.md)
 [x] feasibility spike passes            (pinned lumibot==4.5.78, same directory)
-[ ] ADR approved                        (docs/adr/0009-... is Proposed, not Accepted)
-[ ] reproducible CI/install path exists (backtest_runtime/ does not exist yet)
+[x] sentinel-.env suppression proved    (pre-step-06/dotenv_sentinel_output.txt)
+[x] ADR accepted by the owner           (docs/adr/0009-..., Accepted 2026-08-01)
 ```
 
-PR 6 must not begin, and this file must not carry a PR 6 implementation
-prompt, until all four are met.
+The repository owner accepted ADR 0009 and selected Option B: an isolated,
+credential-free `backtest_runtime/` distribution.
+
+`backtest_runtime/` does **not** exist yet, and that does not block PR 6.
+Creating it — the directory, its installable `pyproject.toml`, its tests, and
+its blocking `backtest-runtime-tests` CI job — is PR 6's work, recorded as PR 6
+acceptance criteria in ADR 0009 Decision 4. PR 6 has not been started.
 
 ## Completed work (PR 0)
 
@@ -268,12 +273,11 @@ dependency; PR 3/4/11/15/16 wire the respective libraries into code.
 
 ## Remaining blockers
 
-1. **LumiBot-backtest-mode dependency/process-boundary question**
-   (`DECISIONS.md` D4, open item 1) must be resolved before PR 6 starts.
-   **Still open as of 2026-07-26:** the Opus review and feasibility spike are
-   done and a design is selected, but ADR 0009 is Proposed, not Accepted, and
-   `backtest_runtime/` does not exist — see "Work in progress (pre-step
-   before PR 6)" below. Not a blocker for PR 1 or PR 2.
+1. ~~**LumiBot-backtest-mode dependency/process-boundary question**~~
+   (`DECISIONS.md` D4, open item 1). **Resolved 2026-08-01:** the owner
+   accepted ADR 0009 (Option B, `backtest_runtime/`). The pre-step is complete
+   and PR 6 is unblocked — see "Completed work (pre-step before PR 6)" below.
+   Was never a blocker for PR 1 or PR 2.
 2. **PR 13/14 feasibility outcomes** (SQLAlchemy/Alembic trigger-safety,
    APScheduler lease-coexistence) are unknown until those PRs run — PR 1
    does not depend on them.
@@ -897,14 +901,21 @@ market-data service was called; no live data was fetched; the scheduler was
 not enabled; the new adapter has zero callers and is not reachable from any
 scheduled or live code path.
 
-## Work in progress (pre-step before PR 6) — IN REVIEW / BLOCKED
+## Completed work (pre-step before PR 6) — COMPLETE, ADR 0009 Accepted
 
 **Scope:** `docs/library-migration/pre-step-06/` (new: `EVALUATION.md`,
-`spike_output.txt`, `guards.py`, `spike_backtest.py`),
-`docs/adr/0009-lumibot-backtest-distribution-boundary.md` (new, **Proposed**),
-`DECISIONS.md` (D4 correction and D5 reconciliation), `ARCHITECTURE.md`,
-`MASTER_PLAN.md`, `docs/INDEX.md`, and this file. No file under `src/`,
-`scripts/`, `paper_runtime/src/`, `tests/`, or `config/` was modified.
+`spike_output.txt`, `guards.py`, `spike_backtest.py`,
+`dotenv_sentinel_output.txt`, `run_dotenv_sentinel.sh`,
+`summarize_dotenv_sentinel.py`, `sentinel_dotenv/`),
+`docs/adr/0009-lumibot-backtest-distribution-boundary.md` (new, **Accepted**),
+`DECISIONS.md` (D4 correction, resolution, and D5 reconciliation),
+`ARCHITECTURE.md`, `MASTER_PLAN.md`, `docs/INDEX.md`, and this file. No file
+under `src/`, `scripts/`, `paper_runtime/src/`, `tests/`, or `config/` was
+modified.
+
+**Outcome:** the repository owner accepted ADR 0009 and selected Option B — an
+isolated, credential-free `backtest_runtime/` distribution. The pre-step is
+complete; PR 6 is unblocked and not started.
 
 ### First pass withdrawn
 
@@ -912,12 +923,19 @@ The first pass at this pre-step ran under **Sonnet**, not the **Opus review**
 `MASTER_PLAN.md`'s "Pre-step before PR 6" row requires. It recorded a decision
 — a second in-process import boundary at
 `src/trading_research/backtesting/lumibot_backtest/` — marked the pre-step
-complete, declared PR 6 unblocked, and wrote a PR 6 implementation prompt.
-All four of those are withdrawn. The required Opus review has now run, with
-the pinned-version feasibility spike the first pass did not run, and found the
-earlier proposal's premises false.
+complete on that basis, declared PR 6 unblocked, and wrote a PR 6
+implementation prompt. All four are withdrawn. The required Opus review has
+since run, with the pinned-version feasibility spike the first pass did not
+run, and found the earlier proposal's premises false.
 
-### Decision selected (pending ADR acceptance)
+The pre-step is now complete and PR 6 is unblocked again — but on entirely
+different grounds: the Opus review, the feasibility spike, the
+sentinel-`.env` suppression proof, and the owner's acceptance of ADR 0009,
+selecting `backtest_runtime/` rather than an in-process package. The withdrawn
+PR 6 implementation prompt has **not** been reinstated; writing one is PR 6's
+own first step.
+
+### Decision accepted (2026-08-01)
 
 LumiBot backtest mode gets its own isolated, credential-free distribution,
 **`backtest_runtime/`** — a third top-level package beside the main project
@@ -953,24 +971,75 @@ Passed:
 
 Failed — and these findings decided the architecture:
 
-1. **`import lumibot` reads broker credentials unconditionally.** 277 distinct
-   environment variables read at import, 64 credential-named, including
-   `ALPACA_API_KEY`, `ALPACA_API_SECRET`, `IB_PASSWORD`, and
-   `ANTHROPIC_API_KEY`.
+1. **`import lumibot` looks for broker credentials unconditionally.** 277
+   distinct environment variables read at import, 64 credential-named,
+   including `ALPACA_API_KEY`, `ALPACA_API_SECRET`, `IB_PASSWORD`, and
+   `ANTHROPIC_API_KEY`. Nothing suppresses this, which is why the requirement
+   placed on `backtest_runtime/` is that no credential *value* is available —
+   not "zero credential reads."
 2. **With credentials visible, the offline backtest opened a live broker
    connection** — 177 blocked attempts to `paper-api.alpaca.markets:443` (696
    in an earlier identical run; a background retry thread drives the count),
    with LumiBot logging `Waiting for the socket stream connection to be
    established`. Credentials scrubbed: zero attempts, byte-identical results.
    The connection contributes nothing to the backtest.
-3. **LumiBot loads `.env` from the current working directory** at import.
-   This repository's `.env.example` documents exactly `ALPACA_API_KEY` and
-   `ALPACA_API_SECRET`, and `.env` is gitignored — so an in-process import
+3. **LumiBot loads `.env` from the current working directory** at import,
+   walking upward from both the script directory and the CWD to the filesystem
+   root. This repository's `.env.example` documents exactly `ALPACA_API_KEY`
+   and `ALPACA_API_SECRET`, and `.env` is gitignored — so an in-process import
    from a repo-root `pytest` run would load the operator's real paper-broker
    credentials and then connect.
 4. **stdout is contaminated** — 382–543 bytes per run (startup banner plus
    ANSI-escaped progress bars), unchanged from the 4.5.74 behavior ADR 0002
    already had to work around in `paper_runtime`.
+
+### Sentinel-`.env` suppression proof (2026-08-01)
+
+Finding 3 above says an operator's `.env` gets loaded; this proof establishes
+the exact mechanism that stops it, and demonstrates that the mechanism works.
+Raw evidence: `pre-step-06/dotenv_sentinel_output.txt`; reproduce with
+`pre-step-06/run_dotenv_sentinel.sh <disposable-workdir>`.
+
+**Mechanism:** `LUMIBOT_DISABLE_DOTENV=1`, set in `os.environ` **before**
+`import lumibot`. `lumibot/credentials.py` reads it at module scope before any
+discovery runs and then skips both the script-directory walk and the
+working-directory walk, so `dotenv.load_dotenv` is never called. No other
+mechanism works at the pinned versions (`lumibot==4.5.78`,
+`python-dotenv==1.2.2`): the two base directories come from `sys.argv[0]` and
+`os.getcwd()`, neither configurable, and `find_and_load_dotenv()` walks upward
+to the filesystem root — so running from an empty directory does not help.
+
+**Setup:** a sentinel `.env` and `.env.local` holding unique, obviously-fake
+Alpaca values (`SENTINEL-DOTENV-7f3a9c21e4b8-…`) placed in the working
+directory the spike is launched from. No real credential was read, used, or
+exposed; the runner refuses to start if a pre-existing `.env` sits anywhere in
+its ancestor chain.
+
+**Positive controls — the sentinel is real.** With suppression off, the
+sentinel values load into `os.environ`, propagate into LumiBot's
+`ALPACA_CONFIG`, construct a live Alpaca broker object, and drive blocked
+outbound attempts to `paper-api.alpaca.markets:443` — 73 attempts with the
+`.env` in the CWD (S1) and 58 with the CWD set to an *empty subdirectory*
+whose parent holds it (S5). S5 is what rules out `chdir` as a mechanism.
+
+**With `LUMIBOT_DISABLE_DOTENV=1` (S2/S3/S4), the sentinel `.env` and
+`.env.local` still present in the CWD:**
+
+- sentinel values in `os.environ` after import, and after the run: **none**;
+- sentinel values in any LumiBot `*_CONFIG`: **none**;
+- credential-named variables that resolved to a value: **3**, all of them
+  LumiBot's own hardcoded defaults (`COINBASE_SANDBOX` → `"false"`,
+  `IB_USE_PAPER_ACCOUNT` → `"true"`, `DATADOWNLOADER_API_KEY_HEADER` →
+  `"X-Downloader-Key"`, a header name). No broker credential value was
+  available;
+- `lumibot.credentials.broker` and `.data_source` after import: **both
+  `None`** — no broker or live data provider initialized;
+- outbound network attempts: **0**;
+- determinism: S2 and S3 produced bit-identical result dicts, and both equal
+  the no-`.env` baseline (S0) exactly;
+- caller-supplied data: S4 perturbed one input bar and the result moved
+  (`total_return` `0.00065` → `0.00115`), so the backtest consumed only the
+  10-bar fixture the caller passed in.
 
 Option C re-verified at the current pin: `pip install -e <root>
 lumibot==4.5.78` fails `ResolutionImpossible` on two independent walls —
@@ -1012,12 +1081,18 @@ attributed to it; the suite was run to confirm exactly that.
   venv — **2 passed, 1 skipped**, the skip being
   `test_lumibot_adapter.py:27` taking the whole module with it. This is the
   evidence for the collateral finding above.
+- `pre-step-06/run_dotenv_sentinel.sh` on a disposable Python 3.11.15 venv
+  holding `lumibot==4.5.78` alone — **6 runs, all assertions passed**. Output
+  committed as `pre-step-06/dotenv_sentinel_output.txt`.
 
 **Safety:** no trading limit, authorization rule, `paper_books` accounting
 code, or scheduling behavior was touched; no broker, provider, model, or
 market-data service was called; no live data was fetched; the scheduler was
-not enabled. Every network attempt made during the spike was blocked by the
-fail-closed guard and is itemized in `pre-step-06/spike_output.txt`.
+not enabled. Every network attempt made during the spike and the sentinel
+proof was blocked by the fail-closed guard and is itemized in
+`pre-step-06/spike_output.txt` and `pre-step-06/dotenv_sentinel_output.txt`.
+The sentinel proof used fabricated credential values only, ran entirely inside
+a disposable scratch directory, and never read the repository's own `.env`.
 ### PR 5 review-fix round (2026-07-26)
 
 Review of the merged PR (#13) found five categories of issue in the
@@ -1183,22 +1258,36 @@ repository (confirmed by the import-boundary test in fix 4), so it carries
 no migration cost.
 ## Next PR
 
-**PR 6 — LumiBot backtest evaluation adapter. BLOCKED.**
+**PR 6 — LumiBot backtest evaluation adapter. UNBLOCKED, not started.**
 
-No bounded implementation prompt is written yet, deliberately. Two gates
-remain:
+ADR 0009 is Accepted, so no gate remains on starting PR 6. Nothing about
+`backtest_runtime/` needs to exist first — it is what PR 6 builds.
 
-1. **ADR 0009 must be accepted by the repository owner.** It is Proposed. It
-   adds a third distribution to the repository — an owner decision, not a
-   review's.
-2. **A reproducible CI/install path must exist.** `backtest_runtime/` does not
-   exist yet; creating it with its blocking CI job is PR 6 implementation
-   work.
+PR 6 must deliver, and cannot merge without (ADR 0009 Decision 4):
 
-When both are met, the PR 6 prompt written at that point must cover, at
-minimum: creating `backtest_runtime/` per ADR 0009 Decisions 1–3; the
-credential-scrub and `.env`-suppression entry point and the stdout redirect,
-both **before** importing `lumibot`; the fail-closed network assertion as a
-blocking test; the blocking `backtest-runtime-tests` CI job per ADR 0009
-Decision 4; moving the tree-walking AST test into a file that runs without
-LumiBot installed; and an exact bounded PR 7 prompt for the parity report.
+1. **`backtest_runtime/`** implementing ADR 0009 Decisions 1–3, including an
+   entry point that — **before** importing `lumibot` — scrubs credential-named
+   variables from `os.environ`, sets `LUMIBOT_DISABLE_DOTENV=1`, and redirects
+   `sys.stdout` to `sys.stderr`.
+2. **`backtest_runtime/pyproject.toml`**, installable on its own via
+   `pip install -e backtest_runtime/`, declaring `lumibot==4.5.78` as a base
+   dependency and an explicit `requires-python`.
+3. **Its own tests**, carrying no `importorskip` guard — they must fail, not
+   skip, when LumiBot is absent.
+4. **A blocking `backtest-runtime-tests` CI job** that installs the
+   distribution alone, runs `pip check`, asserts the resolved LumiBot version
+   is exactly `4.5.78`, runs the tests, and asserts all five credential-safety
+   properties of ADR 0009 Decision 2 — no credential value available or
+   loaded; nothing loaded from the environment or from a `.env`/`.env.local`;
+   no broker or live data provider initialized; zero outbound attempts under
+   the fail-closed guard; determinism across a repeated identical run. It must
+   **not** assert zero credential *reads*, which LumiBot makes
+   unconditionally.
+5. **The AST import-boundary repair** — move the tree-walking
+   `test_no_lumibot_import_outside_runtime_package` into a file that runs with
+   LumiBot absent, so the boundary is enforced rather than documented.
+
+PR 6 must also produce an exact bounded PR 7 prompt for the parity report.
+
+No implementation prompt is written here: writing one is the first step of
+PR 6 itself, and this pre-step deliberately changed no code.

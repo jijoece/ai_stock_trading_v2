@@ -123,9 +123,11 @@ indicators:
 
 backtest:
   WILL NOT BE POPULATED. The pre-step before PR 6 (Opus review + pinned
-  feasibility spike, 2026-07-26) selected a separate distribution,
+  feasibility spike, 2026-07-26; sentinel-.env suppression proof and owner
+  acceptance, 2026-08-01) selected a separate distribution,
   `backtest_runtime/`, over any root extra — see DECISIONS.md D4 and
-  docs/adr/0009-lumibot-backtest-distribution-boundary.md (Proposed).
+  docs/adr/0009-lumibot-backtest-distribution-boundary.md (Accepted).
+  That distribution owns its own pyproject.toml; PR 6 creates it.
   A root `backtest` extra containing lumibot could not resolve anyway, for
   exactly the reason the `paper` extra was removed below (re-verified against
   lumibot==4.5.78, not just the older pin).

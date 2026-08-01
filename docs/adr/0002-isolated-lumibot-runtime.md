@@ -187,10 +187,12 @@ and still hold — see `docs/library-migration/pre-step-06/spike_output.txt`.
   (58 bytes at import, plus ANSI-escaped progress output during a run), so
   the `__main__.py` redirect this ADR introduced is still load-bearing.
 
-**A second, non-credentialed LumiBot distribution is proposed.**
-`docs/adr/0009-lumibot-backtest-distribution-boundary.md` (**Proposed, not
-Accepted**) proposes `backtest_runtime/` for offline backtesting (PR 6/7/8).
-It supplements this ADR and does not amend any of its five decisions:
+**A second, non-credentialed LumiBot distribution is accepted.**
+`docs/adr/0009-lumibot-backtest-distribution-boundary.md` (**Accepted**
+2026-08-01) establishes `backtest_runtime/` for offline backtesting
+(PR 6/7/8); the distribution itself is PR 6's deliverable and does not exist
+yet. ADR 0009 supplements this ADR and does not amend any of its five
+decisions:
 
 * Decision 1's core commitment — the main project's `pyproject.toml` gains
   zero LumiBot dependencies and LumiBot's tree is never installed alongside

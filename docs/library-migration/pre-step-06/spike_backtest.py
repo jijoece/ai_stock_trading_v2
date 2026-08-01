@@ -4,16 +4,33 @@ Proves (or disproves) each claim the pre-step's architecture decision depends on
 
   1. the installed LumiBot version is exactly 4.5.78
   2. PandasDataBacktesting replays a caller-supplied DataFrame
-  3. no broker credentials are read
-  4. no network connection is attempted (guards fail closed)
-  5. no live broker / live data provider is initialized
-  6. results are deterministic across repeated runs
-  7. all input bars are caller supplied
-  8. stdout contamination measured (protocol-corruption risk for a subprocess)
+  3. no broker credential *value* is available to or loaded by LumiBot
+     (LumiBot reads credential variable *names* unconditionally; that is not
+     the safety property and is not asserted away)
+  4. no credentials are loaded from the process environment or from a .env /
+     .env.local file in the script directory or the working directory
+  5. no network connection is attempted (guards fail closed)
+  6. no live broker / live data provider is initialized
+  7. results are deterministic across repeated runs
+  8. all input bars are caller supplied
+  9. stdout contamination measured (protocol-corruption risk for a subprocess)
 
 Run: venv-b/bin/python spike_backtest.py <run_label>
 Writes JSON evidence to result_<run_label>.json; keeps stdout free for the
 contamination measurement.
+
+Modes (all read before `import lumibot`):
+
+  SPIKE_CREDS=present|absent
+      present -> seed fake sentinel broker credentials into os.environ
+      absent  -> scrub every credential-named variable from os.environ
+  SPIKE_SUPPRESS_DOTENV=1|0
+      1 -> set LUMIBOT_DISABLE_DOTENV=1, the documented 4.5.78 opt-out that
+           skips .env/.env.local discovery entirely (see EVALUATION.md §2.3)
+      0 -> leave discovery on; used as the positive control that proves the
+           sentinel .env really would be loaded
+  SPIKE_PERTURB=1
+      raise the final bar's close by 5.00, proving bars are caller-supplied
 """
 from __future__ import annotations
 
@@ -38,6 +55,25 @@ else:
         upper = key.upper()
         if any(marker in upper for marker in guards.CREDENTIAL_KEY_MARKERS):
             del os.environ[key]
+
+# --- .env suppression: the exact 4.5.78 mechanism ------------------------
+# lumibot/credentials.py reads LUMIBOT_DISABLE_DOTENV at module scope, before
+# any discovery runs, and skips BOTH the script-directory walk and the
+# working-directory walk when it is set. Setting it here — before the import —
+# is what prevents an operator's .env from entering this process.
+SPIKE_SUPPRESS_DOTENV = os.environ.get("SPIKE_SUPPRESS_DOTENV", "1") == "1"
+if SPIKE_SUPPRESS_DOTENV:
+    os.environ["LUMIBOT_DISABLE_DOTENV"] = "1"
+else:
+    os.environ.pop("LUMIBOT_DISABLE_DOTENV", None)
+
+# Recorded before the import so the evidence states what the process actually
+# faced, not what it was configured to face.
+CWD_AT_START = os.getcwd()
+SCRIPT_DIR = os.path.dirname(os.path.abspath(sys.argv[0]))
+DOTENV_IN_CWD = os.path.isfile(os.path.join(CWD_AT_START, ".env"))
+DOTENV_LOCAL_IN_CWD = os.path.isfile(os.path.join(CWD_AT_START, ".env.local"))
+
 guards.install_env_tracer()
 guards.install_network_guard()
 
@@ -162,12 +198,52 @@ def normalize(result) -> dict:
     return {"repr": repr(result)[:400]}
 
 
+def dotenv_and_broker_evidence() -> dict:
+    """Post-import proof set for the credential-safety requirement.
+
+    Deliberately records *presence*, never a value: a leaked sentinel is
+    reported by key name and by the boolean below, so the evidence file can be
+    committed without carrying any credential-shaped string.
+    """
+    from lumibot import credentials as lumibot_credentials
+
+    leaked_keys = guards.sentinel_env_keys()
+    configs_with_sentinel = sorted(
+        name
+        for name in dir(lumibot_credentials)
+        if name.endswith("_CONFIG")
+        and guards.sentinel_hits_in(getattr(lumibot_credentials, name, None))
+    )
+    broker = getattr(lumibot_credentials, "broker", None)
+    data_source = getattr(lumibot_credentials, "data_source", None)
+    return {
+        # The corrected safety metric: LumiBot may read credential NAMES; no
+        # credential VALUE may be available to it.
+        "credential_env_reads_with_values": guards.credential_reads_with_values(),
+        # Did the sentinel .env / .env.local reach this process at all?
+        "sentinel_env_keys_after_import": leaked_keys,
+        "sentinel_values_loaded": bool(leaked_keys),
+        "sentinel_in_lumibot_configs": configs_with_sentinel,
+        # No live broker / live data provider initialized.
+        "broker_after_import": repr(broker),
+        "data_source_after_import": repr(data_source),
+        "broker_is_none": broker is None,
+        "data_source_is_none": data_source is None,
+    }
+
+
 def main() -> int:
     label = sys.argv[1] if len(sys.argv) > 1 else "run"
     evidence = {
         "label": label,
         "spike_creds_mode": SPIKE_CREDS,
+        "dotenv_suppressed": SPIKE_SUPPRESS_DOTENV,
+        "lumibot_disable_dotenv": os.environ.get("LUMIBOT_DISABLE_DOTENV"),
         "lumibot_lazy_credentials": os.environ.get("LUMIBOT_LAZY_CREDENTIALS"),
+        "cwd": CWD_AT_START,
+        "script_dir": SCRIPT_DIR,
+        "sentinel_dotenv_present_in_cwd": DOTENV_IN_CWD,
+        "sentinel_dotenv_local_present_in_cwd": DOTENV_LOCAL_IN_CWD,
         "python": sys.version.split()[0],
         "lumibot_version": lumibot.__version__,
         "lumibot_version_is_exactly_4_5_78": lumibot.__version__ == "4.5.78",
@@ -178,6 +254,7 @@ def main() -> int:
         "credential_env_reads_at_import": guards.credential_reads(),
         "network_attempts_at_import": NET_AT_IMPORT,
     }
+    evidence.update(dotenv_and_broker_evidence())
     try:
         evidence["backtest"] = run_once()
         evidence["backtest_ok"] = True
@@ -192,8 +269,11 @@ def main() -> int:
         evidence["backtest_traceback"] = traceback.format_exc()[-2500:]
 
     evidence["credential_env_reads_total"] = guards.credential_reads()
+    evidence["credential_env_reads_with_values_total"] = guards.credential_reads_with_values()
     evidence["network_attempts_total"] = guards.NETWORK_ATTEMPTS
+    evidence["network_attempt_count"] = len(guards.NETWORK_ATTEMPTS)
     evidence["distinct_env_keys_read"] = len(set(guards.ENV_READS))
+    evidence["sentinel_env_keys_after_run"] = guards.sentinel_env_keys()
 
     with open(f"result_{label}.json", "w") as handle:
         json.dump(evidence, handle, indent=2, default=str)

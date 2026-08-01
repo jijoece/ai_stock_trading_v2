@@ -1,0 +1,74 @@
+date: 2026-08-01 (pre-step before PR 6 — .env suppression proof)
+host: macOS arm64, Python 3.11.15 (the interpreter line CI already uses)
+harness: run_dotenv_sentinel.sh (committed beside this file); scripts guards.py, spike_backtest.py
+reproduce: ./run_dotenv_sentinel.sh <disposable-workdir>
+
+=== LumiBot 4.5.78 .env-suppression proof — raw evidence ===
+python: 3.11.15   lumibot: 4.5.78 (asserted exactly 4.5.78: True)
+mechanism under test: LUMIBOT_DISABLE_DOTENV=1 set before `import lumibot`
+sentinel token: SENTINEL-DOTENV-7f3a9c21e4b8 (fake; authenticates nothing)
+
+--- run matrix ---
+  run  suppress  .env in cwd  sentinel    cred values  net   broker   total_return
+  S0   True      False        not loaded  3            0     None     0.0006500000000000394
+  S1   False     True         LOADED      6            73    built    0.0006500000000000394
+  S2   True      True         not loaded  3            0     None     0.0006500000000000394
+  S3   True      True         not loaded  3            0     None     0.0006500000000000394
+  S4   True      True         not loaded  3            0     None     0.0011499999999999844
+  S5   False     False        LOADED      6            58    built    0.0006500000000000394
+
+  S0 = baseline: clean CWD, no .env anywhere, suppression ON
+  S1 = POSITIVE CONTROL: sentinel .env in CWD, suppression OFF
+  S2 = sentinel .env in CWD, suppression ON
+  S3 = identical repeat of S2 (determinism)
+  S4 = S2 + final bar close perturbed +5.00
+  S5 = POSITIVE CONTROL: CWD is an EMPTY subdirectory, suppression OFF
+
+--- what the positive controls prove (the sentinel is real) ---
+  S1: sentinel keys reaching os.environ: ['ALPACA_API_KEY', 'ALPACA_API_SECRET']
+      sentinel reached LumiBot configs: ['ALPACA_CONFIG']
+      live broker object constructed at import: True
+      blocked outbound attempts: {"('paper-api.alpaca.markets', 443)": 73}
+      cwd: /private/tmp/claude-501/-Users-jijopaul-workspace-ai-stock-trading-v2/18c703f2-9128-4b6d-920f-62c236a92721/scratchpad/sentinel_run/sentinel_cwd
+  S5: sentinel keys reaching os.environ: ['ALPACA_API_KEY', 'ALPACA_API_SECRET']
+      sentinel reached LumiBot configs: ['ALPACA_CONFIG']
+      live broker object constructed at import: True
+      blocked outbound attempts: {"('paper-api.alpaca.markets', 443)": 59}
+      cwd: /private/tmp/claude-501/-Users-jijopaul-workspace-ai-stock-trading-v2/18c703f2-9128-4b6d-920f-62c236a92721/scratchpad/sentinel_run/sentinel_cwd/nested_empty
+  S5 is the decisive one: its CWD is an EMPTY directory, yet the parent's
+  .env still loaded. find_and_load_dotenv() walks UPWARD to the filesystem
+  root, so chdir-to-an-empty-directory is NOT a suppression mechanism.
+
+--- what suppression proves (S2/S3/S4) ---
+  sentinel .env AND .env.local present in the CWD for all three runs
+  sentinel values loaded:                      never
+  sentinel values in any LumiBot *_CONFIG:      never
+  broker / data source initialized:             never (both None)
+  outbound network attempts:                    0
+
+--- credential-named reads: names vs values ---
+  credential-named variables LumiBot LOOKED FOR: 61
+  of those, ones that RESOLVED TO A VALUE:       3
+    ['COINBASE_SANDBOX', 'IB_USE_PAPER_ACCOUNT', 'DATADOWNLOADER_API_KEY_HEADER']
+  All three are LumiBot's own hardcoded defaults, not values from the
+  environment or from any .env — they only match the credential-name
+  markers used by the tracer:
+    COINBASE_SANDBOX             os.environ.get("COINBASE_SANDBOX", "false")
+    IB_USE_PAPER_ACCOUNT         os.environ.get("IB_USE_PAPER_ACCOUNT", "true")
+    DATADOWNLOADER_API_KEY_HEADER  ...get(..., "X-Downloader-Key")  # a header NAME
+  No broker credential VALUE was available to LumiBot in any suppressed run.
+  This is why the requirement is not 'zero credential reads': LumiBot reads
+  the NAMES unconditionally, and no configuration prevents that.
+
+--- determinism and caller-supplied data ---
+  S2 == S3 (full result dict, repeated offline run):  True
+  S2 == S0 (sentinel .env present vs absent):         True
+  S4 != S2 (one input bar perturbed):                 True
+    S2/S3 input digest: abe55fa78bf6d1f4ac412dfd0bdd507d7a487a1105a8a5b277a0d92a49047cfe
+    S4    input digest: fa55cf4f72f340d02dc284c092b10cb0c7be980f8c4070deebee79a41e61cb24
+    total_return  S2 0.0006500000000000394  ->  S4 0.0011499999999999844
+  The backtest consumed only the caller-supplied 10-bar fixture: the
+  presence or absence of a .env changed nothing, and perturbing one bar
+  changed the result.
+
+ALL ASSERTIONS PASSED

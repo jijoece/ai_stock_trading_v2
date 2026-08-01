@@ -2,8 +2,10 @@
 
 Install BEFORE importing lumibot. Two guards:
 
-1. env-read tracing: every read of os.environ is recorded, so we can state
-   exactly which (if any) broker-credential variables LumiBot consults.
+1. env-read tracing: every read of os.environ is recorded, together with
+   whether the read *resolved to a value*. LumiBot reads credential variable
+   names unconditionally, so the read count is not the safety property; the
+   safety property is that none of those reads returns a credential value.
 2. network fail-closed: DNS resolution and TCP connect raise NetworkBlocked
    instead of succeeding. Any attempt is recorded with a stack summary.
 """
@@ -14,6 +16,10 @@ import socket
 import traceback
 
 ENV_READS: list[str] = []
+# Keys whose traced read returned a non-empty value. A credential-named key in
+# ENV_READS is expected and harmless; the same key here means a credential
+# value was actually available to LumiBot.
+ENV_READS_WITH_VALUE: list[str] = []
 NETWORK_ATTEMPTS: list[dict] = []
 
 
@@ -21,21 +27,35 @@ class NetworkBlocked(RuntimeError):
     pass
 
 
+def _record_read(key, value) -> None:
+    name = str(key)
+    ENV_READS.append(name)
+    if value not in (None, "") and name not in ENV_READS_WITH_VALUE:
+        ENV_READS_WITH_VALUE.append(name)
+
+
 def install_env_tracer() -> None:
     real = os.environ
 
     class TracingEnviron(type(real)):  # type: ignore[misc]
         def __getitem__(self, key):
-            ENV_READS.append(str(key))
-            return super().__getitem__(key)
+            try:
+                value = super().__getitem__(key)
+            except KeyError:
+                _record_read(key, None)
+                raise
+            _record_read(key, value)
+            return value
 
         def get(self, key, default=None):
-            ENV_READS.append(str(key))
-            return super().get(key, default)
+            value = super().get(key, default)
+            _record_read(key, value)
+            return value
 
         def __contains__(self, key):
-            ENV_READS.append(str(key))
-            return super().__contains__(key)
+            present = super().__contains__(key)
+            _record_read(key, "x" if present else None)
+            return present
 
     try:
         traced = TracingEnviron(
@@ -101,10 +121,52 @@ CREDENTIAL_KEY_MARKERS = (
 )
 
 
+def _is_credential_named(key: str) -> bool:
+    upper = key.upper()
+    return any(marker in upper for marker in CREDENTIAL_KEY_MARKERS)
+
+
 def credential_reads() -> list[str]:
+    """Credential-named variables LumiBot *looked for*.
+
+    Expected to be non-empty on any `import lumibot`: LumiBot reads the names
+    unconditionally. This is not a safety metric on its own — see
+    `credential_reads_with_values()`, which is.
+    """
     seen = []
     for key in ENV_READS:
-        upper = key.upper()
-        if any(marker in upper for marker in CREDENTIAL_KEY_MARKERS) and key not in seen:
+        if _is_credential_named(key) and key not in seen:
             seen.append(key)
     return seen
+
+
+def credential_reads_with_values() -> list[str]:
+    """Credential-named variables that actually resolved to a value.
+
+    This is the safety metric. It must be empty: LumiBot may read the names,
+    but no broker credential value may be available to it.
+    """
+    return [key for key in ENV_READS_WITH_VALUE if _is_credential_named(key)]
+
+
+# Unique, obviously-fake marker written into the sentinel .env / .env.local
+# fixtures. Never a real credential. If this substring appears in os.environ or
+# in a LumiBot config after import, a dotenv file leaked into the process.
+DOTENV_SENTINEL_TOKEN = "SENTINEL-DOTENV-7f3a9c21e4b8"
+
+
+def sentinel_env_keys() -> list[str]:
+    """Environment keys whose value carries the sentinel token."""
+    leaked = []
+    for key, value in os.environ.items():
+        if DOTENV_SENTINEL_TOKEN in str(value):
+            leaked.append(str(key))
+    return sorted(leaked)
+
+
+def sentinel_hits_in(obj) -> bool:
+    """True if the sentinel token appears anywhere in obj's repr."""
+    try:
+        return DOTENV_SENTINEL_TOKEN in repr(obj)
+    except Exception:  # pragma: no cover - defensive
+        return False

@@ -1,9 +1,16 @@
 # ADR 0009: LumiBot backtest mode gets its own isolated, credential-free distribution
 
-**Status:** Proposed — **not Accepted.** Requires repository-owner approval.
-Until it is accepted, the boundary it defines does not exist and PR 6 must not
-begin.
-**Date:** 2026-07-26 (library-migration, pre-step before PR 6)
+**Status:** **Accepted** (repository owner, 2026-08-01). The owner reviewed the
+architecture review and feasibility spike and selected Option B — an isolated,
+credential-free `backtest_runtime/` distribution.
+**Date:** 2026-07-26 (library-migration, pre-step before PR 6); accepted
+2026-08-01.
+
+`backtest_runtime/` does **not** exist yet, and it is not a precondition for
+starting PR 6. Creating it — the directory, its installable
+`pyproject.toml`, its tests, and its blocking CI job — is PR 6's work, and is
+recorded as PR 6 acceptance criteria in Decision 4. Acceptance of this ADR
+completes the pre-step.
 **Supplements:** ADR 0001 (LumiBot import boundary), ADR 0002 (credentialed
 runtime process isolation). Supersedes neither; both remain in force exactly
 as written.
@@ -112,6 +119,27 @@ main process.
 
 ## Decision 2: no credentials, and it is enforced, not documented
 
+**What is required, stated precisely.** LumiBot 4.5.78 reads credential
+variable *names* on plain `import lumibot`, unconditionally, whether or not any
+value exists. No configuration prevents that, so "zero credential reads" is not
+an achievable requirement and is not the one imposed here. The requirement is
+that no credential *value* is ever available to LumiBot. Concretely,
+`backtest_runtime/` must prove all five of the following, as blocking CI
+checks:
+
+1. **no broker credential value is available to or loaded by LumiBot** — every
+   credential-named variable LumiBot reads resolves to nothing, or to
+   LumiBot's own hardcoded default;
+2. **no credentials are loaded from the process environment or from a `.env` /
+   `.env.local` file** — neither the ambient environment nor any dotenv file in
+   the working directory, the script directory, or any of their ancestors;
+3. **no broker and no live data provider is initialized** —
+   `lumibot.credentials.broker` and `.data_source` are both `None` after import;
+4. **zero outbound network attempts occur** across a full backtest, under a
+   fail-closed socket guard;
+5. **repeated offline runs remain deterministic** — an identical rerun produces
+   a bit-identical result.
+
 **Credential prohibition.** `backtest_runtime/` never reads, receives, stores,
 or accepts a broker credential. Its entry point, **before importing
 `lumibot`**, must:
@@ -120,8 +148,34 @@ or accepts a broker credential. Its entry point, **before importing
    (`*_API_KEY`, `*_SECRET`, `*_TOKEN`, `*_PASSWORD`, `ALPACA_*`, `TRADIER_*`,
    `IB_*`, `SCHWAB_*`, `COINBASE_*`, `POLYGON_*`, and the rest of the list the
    spike enumerated), and
-2. point LumiBot's `.env` discovery at a path guaranteed not to exist, so a
-   repository-root `.env` cannot be picked up from the CWD.
+2. set **`LUMIBOT_DISABLE_DOTENV=1`** in `os.environ`.
+
+**The `.env` mechanism is exactly `LUMIBOT_DISABLE_DOTENV`, and nothing else
+works.** `lumibot/credentials.py` reads that flag at module scope
+(`_env_flag_enabled`, accepting `1`/`true`/`yes`/`on`) *before* any discovery
+runs, and when it is set both discovery walks are skipped and
+`dotenv.load_dotenv` is never called at all. The alternative this ADR
+originally specified — pointing discovery at a path guaranteed not to exist —
+**is not implementable**: the two base directories are `os.path.dirname(
+os.path.abspath(sys.argv[0]))` and `os.getcwd()`, neither configurable, and
+`find_and_load_dotenv()` walks *upward* from each to the filesystem root. A
+run whose working directory is an empty directory therefore still loads a
+`.env` from any ancestor. That was measured, not reasoned about: run S5 of the
+sentinel proof executes from an empty directory and loads the parent's `.env`
+anyway, builds an Alpaca broker object, and makes 58 blocked outbound attempts.
+`chdir` is not a suppression mechanism; the flag is.
+
+**Evidence.** `docs/library-migration/pre-step-06/dotenv_sentinel_output.txt`,
+reproducible via `run_dotenv_sentinel.sh`. A sentinel `.env` and `.env.local`
+holding unique fake Alpaca values sit in the working directory. Without the
+flag (runs S1 and S5) the sentinel values load into `os.environ`, propagate
+into `ALPACA_CONFIG`, construct a live broker, and drive 58–73 blocked
+connection attempts to `paper-api.alpaca.markets:443`. With the flag (runs
+S2/S3/S4) the sentinel never appears in `os.environ` or in any LumiBot config,
+`broker` and `data_source` are both `None`, outbound attempts are **0**, and
+the result is bit-identical across repeats and identical to the no-`.env`
+baseline — while perturbing one input bar still moves it, so the backtest is
+consuming only the caller-supplied fixture.
 
 **Network prohibition.** No live broker, live data provider, or benchmark
 fetch is ever initialized. `benchmark_asset=None` and `analyze_backtest=False`
@@ -129,7 +183,8 @@ are required arguments of the run, not defaults to rely on. The distribution's
 own test suite installs the fail-closed socket guard from
 `docs/library-migration/pre-step-06/guards.py` and asserts **zero** outbound
 attempts across a full backtest — as a blocking CI check, so a future LumiBot
-upgrade that reintroduces autoconnect fails the build rather than silently
+upgrade that reintroduces autoconnect, or a LumiBot release that renames or
+drops `LUMIBOT_DISABLE_DOTENV`, fails the build rather than silently
 connecting.
 
 **Forbidden imports.** `backtest_runtime/` must never import
@@ -175,20 +230,33 @@ travel by file, stdout contamination cannot corrupt them — but the redirect is
 still required so log output stays readable and a future switch to a stream
 protocol is not silently unsafe.
 
-## Decision 4: CI requirements
+## Decision 4: PR 6 acceptance criteria, including CI
 
-PR 6 must add a **blocking** `backtest-runtime-tests` job that:
+None of the following is a precondition for *starting* PR 6. Each is a
+condition for **merging** it. This ADR's acceptance is what unblocks PR 6; this
+list is what PR 6 must deliver.
 
-* installs `backtest_runtime/` from its own `pyproject.toml`, alone, in its
-  own environment (never combined with the root project or `paper_runtime`,
-  matching the existing never-combine-extras convention);
-* runs `pip check`;
-* asserts the resolved LumiBot version is exactly `4.5.78`;
-* runs the distribution's tests **without any `importorskip` guard** — they
-  must fail, not skip, if LumiBot is missing;
-* asserts zero credential reads and zero outbound network attempts under the
-  fail-closed guard;
-* asserts a repeated identical run produces bit-identical results.
+1. **`backtest_runtime/` exists** as a top-level directory implementing
+   Decisions 1–3.
+2. **`backtest_runtime/pyproject.toml` exists** and is installable on its own
+   via `pip install -e backtest_runtime/`, declaring `lumibot==4.5.78` as a
+   base dependency and an explicit `requires-python`.
+3. **The distribution has its own tests**, carrying no `importorskip` guard —
+   they must fail, not skip, when LumiBot is missing.
+4. **A blocking `backtest-runtime-tests` CI job exists** that:
+   * installs `backtest_runtime/` from its own `pyproject.toml`, alone, in its
+     own environment (never combined with the root project or `paper_runtime`,
+     matching the existing never-combine-extras convention);
+   * runs `pip check`;
+   * asserts the resolved LumiBot version is exactly `4.5.78`;
+   * runs the distribution's tests;
+   * asserts all five credential-safety properties of Decision 2 — no
+     credential value available or loaded, nothing loaded from the environment
+     or from a `.env`/`.env.local`, no broker or live data provider
+     initialized, zero outbound attempts under the fail-closed guard, and
+     determinism across a repeated identical run. It must **not** assert zero
+     credential *reads*, which LumiBot makes unconditionally.
+5. **The existing AST boundary is repaired** (below).
 
 The declared Python floor for this distribution is verified by the job's
 `actions/setup-python` pin, not by a local observation.
@@ -248,6 +316,13 @@ until PR 7's evidence says otherwise.
 * A LumiBot release adds a documented, tested "backtest-only, never read
   credentials, never open a socket" import mode. That would make an in-process
   boundary arguable again and should reopen this ADR.
+* A LumiBot release renames, removes, or changes the semantics of
+  `LUMIBOT_DISABLE_DOTENV`. Decision 2's `.env` suppression rests entirely on
+  that flag, and no fallback exists — `chdir` does not work, because discovery
+  walks upward to the filesystem root. Decision 4's blocking CI check is
+  designed to fail loudly if this happens; the response is to find the
+  replacement mechanism and re-verify it with the sentinel proof, not to
+  weaken the check.
 * PR 7 finds the file-based contract cannot express a parity dimension it
   needs. Extend the DTO contract; do not reach for the credentialed protocol.
 * A third distribution proves unsustainable to maintain in CI. The fallback is

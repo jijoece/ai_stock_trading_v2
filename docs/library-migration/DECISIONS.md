@@ -253,22 +253,33 @@ list of paths.
 
 ### Open items requiring resolution before implementation (not before PR 0)
 
-1. **LumiBot backtest-mode dependency/process boundary. STILL OPEN** — a
-   design has been selected and evidenced (see "LumiBot backtest-mode
-   boundary" below), but it depends on ADR 0009, which is **Proposed, not
-   Accepted**. PR 6 remains blocked until the owner accepts that ADR. An
-   earlier entry here marked this item resolved on 2026-07-26; that was
-   premature and is corrected below.
+1. ~~**LumiBot backtest-mode dependency/process boundary.**~~ **Resolved
+   2026-08-01** — the repository owner accepted ADR 0009 and selected Option B,
+   an isolated, credential-free `backtest_runtime/` distribution. The Opus
+   architecture review, the pinned-version feasibility spike, and the
+   sentinel-`.env` suppression proof are complete, and owner acceptance
+   completes the pre-step. PR 6 is unblocked and not started. Creating
+   `backtest_runtime/` and its blocking CI job is PR 6's work, not a
+   precondition for it — see "LumiBot backtest-mode boundary" below. An entry
+   here briefly marked this resolved on 2026-07-26 on the strength of a
+   withdrawn first pass; the resolution recorded now rests on the Opus review
+   and owner acceptance instead.
 2. ~~VectorBT license note.~~ **Resolved 2026-07-26 (PR 5)** — see
    "VectorBT status" above; superseded by the explicit owner approval
    recorded there.
 
-### LumiBot backtest-mode boundary (design selected 2026-07-26; **still blocked** on ADR 0009)
+### LumiBot backtest-mode boundary (design selected 2026-07-26; **accepted 2026-08-01**)
 
-**Status: NOT resolved.** A design is selected and evidenced, but it depends
-on `docs/adr/0009-lumibot-backtest-distribution-boundary.md`, which is
-**Proposed, not Accepted**. PR 6 must not begin until that ADR is accepted and
-a reproducible CI/install path exists.
+**Status: RESOLVED.**
+`docs/adr/0009-lumibot-backtest-distribution-boundary.md` is **Accepted** —
+the repository owner reviewed the architecture review and feasibility spike and
+selected Option B. The pre-step is complete and PR 6 is unblocked (not
+started).
+
+`backtest_runtime/` does not exist yet, and its absence does **not** block
+PR 6. Creating the directory, its installable `pyproject.toml`, its tests, and
+its blocking CI job are PR 6 acceptance criteria (ADR 0009 Decision 4) — merge
+conditions, not preconditions.
 
 **Correction to the first pass (2026-07-26).** An earlier version of this
 section recorded a *different* decision — a second in-process import boundary
@@ -280,7 +291,7 @@ item resolved. That pass ran under **Sonnet**, not the **Opus review**
 run, with a pinned-version spike, and found the earlier proposal's premises
 false. Both the decision and the "resolved" status are withdrawn.
 
-**Decision (selected, pending ADR acceptance):** LumiBot backtest mode gets
+**Decision (accepted 2026-08-01):** LumiBot backtest mode gets
 its own isolated, credential-free distribution, `backtest_runtime/` — a third
 top-level package beside the main project and `paper_runtime/`, with its own
 `pyproject.toml`, its own explicitly declared `requires-python`,
@@ -298,11 +309,14 @@ Full review, decision matrix, and raw evidence:
 `lumibot==4.5.78`, Python 3.11.15, network patched to fail closed, every
 `os.environ` read recorded):
 
-1. **`import lumibot` reads broker credentials unconditionally.** 277 distinct
-   environment variables read at import, **64 of them credential-named** —
-   `ALPACA_API_KEY`, `ALPACA_API_SECRET`, `IB_PASSWORD`, `COINBASE_PRIVATE_KEY`,
-   `SCHWAB_APP_SECRET`, and `ANTHROPIC_API_KEY`, which this repository
-   genuinely uses. There is no backtest-only import path that avoids this.
+1. **`import lumibot` looks for broker credentials unconditionally.** 277
+   distinct environment variables read at import, **64 of them
+   credential-named** — `ALPACA_API_KEY`, `ALPACA_API_SECRET`, `IB_PASSWORD`,
+   `COINBASE_PRIVATE_KEY`, `SCHWAB_APP_SECRET`, and `ANTHROPIC_API_KEY`, which
+   this repository genuinely uses. There is no backtest-only import path that
+   avoids this, so the requirement imposed on `backtest_runtime/` is **not**
+   "zero credential reads" — it is that none of those reads finds a value (see
+   the five-part proof set in ADR 0009 Decision 2).
 2. **With credentials visible, an offline backtest opens a live broker
    connection.** The run produced **177 blocked outbound attempts to
    `paper-api.alpaca.markets:443`** (696 in an earlier identical run — a
@@ -311,13 +325,24 @@ Full review, decision matrix, and raw evidence:
    scrubbed: **zero** attempts and byte-identical results. The connection
    contributes nothing to the backtest; it is pure side effect.
 3. **LumiBot loads `.env` from the current working directory** at import
-   (`lumibot/credentials.py::find_and_load_dotenv`). This repository's
-   `.env.example` documents exactly `ALPACA_API_KEY` and `ALPACA_API_SECRET`
-   and `.env` is gitignored, so an operator machine is expected to have one.
-   An in-process import from a repo-root `pytest` run would load the
-   operator's real paper-broker credentials and then connect — during a
-   "deterministic offline backtest." That is exactly what ADR 0002 exists to
-   prevent, and it is what the first pass's proposal would have permitted.
+   (`lumibot/credentials.py::find_and_load_dotenv`), walking *upward* from
+   both the script directory and the CWD to the filesystem root. This
+   repository's `.env.example` documents exactly `ALPACA_API_KEY` and
+   `ALPACA_API_SECRET` and `.env` is gitignored, so an operator machine is
+   expected to have one. An in-process import from a repo-root `pytest` run
+   would load the operator's real paper-broker credentials and then connect —
+   during a "deterministic offline backtest." That is exactly what ADR 0002
+   exists to prevent, and it is what the first pass's proposal would have
+   permitted.
+
+   **The suppression mechanism is `LUMIBOT_DISABLE_DOTENV=1`, set before
+   `import lumibot`, and nothing else works.** It is read at
+   `credentials.py` module scope before any discovery runs and skips both
+   walks entirely. Because the walks ascend to the filesystem root and their
+   base directories (`sys.argv[0]`'s directory and `os.getcwd()`) are not
+   configurable, running from an empty directory does *not* help. Proved with
+   a sentinel `.env`/`.env.local` holding unique fake Alpaca values:
+   `docs/library-migration/pre-step-06/dotenv_sentinel_output.txt`.
 4. **The offline backtest itself works and is deterministic** —
    `PandasDataBacktesting` replayed a caller-supplied 10-bar DataFrame,
    repeated runs were bit-identical, and perturbing one input bar moved the
@@ -358,14 +383,19 @@ directory** — under the selected design the AST rule gets stricter
 enforcement rather than a new exception, which is a further advantage over the
 withdrawn in-process proposal.
 
-**Gates remaining before PR 6 may start:**
+**Pre-step gates — all met (2026-08-01):**
 
 ```text
 [x] Opus architecture review complete
 [x] pinned-version feasibility spike passes
-[ ] ADR 0009 accepted by the repository owner
-[ ] reproducible CI/install path exists (backtest_runtime/ does not exist yet)
+[x] sentinel-.env suppression proof passes
+[x] ADR 0009 accepted by the repository owner
 ```
+
+PR 6 is unblocked and not started. The reproducible install path
+(`backtest_runtime/` with its `pyproject.toml`, tests, and blocking
+`backtest-runtime-tests` job) is PR 6's deliverable and a condition for
+merging it, not a gate on starting it — ADR 0009 Decision 4.
 
 ---
 
@@ -430,7 +460,8 @@ containing one, ever.
 Every LumiBot declaration lives in a separately installed distribution that
 is never resolved in the same environment as the main project:
     paper_runtime/      credentialed, live/paper broker submission (ADR 0002)
-    backtest_runtime/   uncredentialed, offline backtesting  (ADR 0009, Proposed)
+    backtest_runtime/   uncredentialed, offline backtesting  (ADR 0009, Accepted;
+                                                              created by PR 6)
 
 Both pin the same exact version. A test asserts they do not drift apart.
 ```

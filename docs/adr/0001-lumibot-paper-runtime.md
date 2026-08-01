@@ -149,11 +149,10 @@ Two factual corrections to "Consequences" above, plus one scope note. Decision
    under the `main-tests` CI job (which installs `.[dev]` only). The boundary
    is currently documentation-backed rather than test-enforced in CI.
    Repairing this is a PR 6 requirement (ADR 0009 Decision 4).
-4. **A second LumiBot use is proposed but not accepted.** Offline backtesting
-   (PR 6/7/8) is proposed to live in a separate distribution,
-   `backtest_runtime/`, in
-   `docs/adr/0009-lumibot-backtest-distribution-boundary.md` — **Proposed,
-   not Accepted**. That design deliberately does **not** widen this ADR's
-   in-process import boundary; `backtest_runtime/` sits outside
-   `src/trading_research/`, so Decision 1's rule stays exactly as strict as
-   it is today.
+4. **A second LumiBot use is accepted.** Offline backtesting (PR 6/7/8) lives
+   in a separate distribution, `backtest_runtime/`, per
+   `docs/adr/0009-lumibot-backtest-distribution-boundary.md` — **Accepted**
+   2026-08-01; the distribution is PR 6's deliverable and does not exist yet.
+   That design deliberately does **not** widen this ADR's in-process import
+   boundary; `backtest_runtime/` sits outside `src/trading_research/`, so
+   Decision 1's rule stays exactly as strict as it is today.
