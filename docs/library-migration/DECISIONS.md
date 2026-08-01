@@ -392,10 +392,11 @@ withdrawn in-process proposal.
 [x] ADR 0009 accepted by the repository owner
 ```
 
-PR 6 is unblocked and not started. The reproducible install path
-(`backtest_runtime/` with its `pyproject.toml`, tests, and blocking
-`backtest-runtime-tests` job) is PR 6's deliverable and a condition for
-merging it, not a gate on starting it — ADR 0009 Decision 4.
+PR 6 is **implemented, not merged** (branch
+`migration/06-lumibot-backtest-adapter`; see `STATUS.md` "Completed work (PR
+6)" for the full record). The reproducible install path (`backtest_runtime/`
+with its `pyproject.toml`, tests, and blocking `backtest-runtime-tests` job)
+that ADR 0009 Decision 4 required has been delivered.
 
 ---
 

@@ -108,6 +108,7 @@ exclude = [
     ".venv",
     ".pytest_cache",
     "paper_runtime",
+    "backtest_runtime",
 ]
 venvPath = "."
 venv = ".venv"

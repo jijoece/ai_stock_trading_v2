@@ -155,19 +155,9 @@ def test_lumibot_objects_do_not_reach_repositories():
     assert "lumibot" not in source.lower()
 
 
-def test_no_lumibot_import_outside_runtime_package():
-    import ast
-    import pathlib
-
-    src_root = pathlib.Path(__file__).resolve().parents[2] / "src" / "trading_research"
-    offenders = []
-    for path in src_root.rglob("*.py"):
-        if "runtime" in path.parts:
-            continue  # the one package that is allowed to import lumibot
-        tree = ast.parse(path.read_text())
-        for node in ast.walk(tree):
-            if isinstance(node, ast.Import) and any(a.name.split(".")[0] == "lumibot" for a in node.names):
-                offenders.append(str(path))
-            if isinstance(node, ast.ImportFrom) and node.module and node.module.split(".")[0] == "lumibot":
-                offenders.append(str(path))
-    assert offenders == []
+# test_no_lumibot_import_outside_runtime_package moved to
+# tests/unit/test_lumibot_import_boundary.py (library-migration PR 6): this
+# file's module-level pytest.importorskip("lumibot") above made the AST walk
+# skip under main-tests instead of actually running. See that file's
+# docstring and docs/adr/0009-lumibot-backtest-distribution-boundary.md
+# section 4.

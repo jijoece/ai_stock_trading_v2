@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "trading-backtest-runtime"
+version = "0.1.0"
+description = "Isolated, credential-free LumiBot backtest evaluation runtime. Offline, deterministic, file-based fixture/result contract; never imported by the main project or paper_runtime. See docs/adr/0009-lumibot-backtest-distribution-boundary.md."
+requires-python = ">=3.10"
+dependencies = [
+    "lumibot==4.5.78",
+    "pandas>=2.2.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+
+[tool.pyright]
+include = ["src", "tests"]
+exclude = [
+    "**/__pycache__",
+    "**/*.egg-info",
+    ".pytest_cache",
+]
+venvPath = ".."
+venv = ".venv"
+pythonVersion = "3.10"
+typeCheckingMode = "basic"
