@@ -8,6 +8,18 @@ decision and scope.
 """
 from __future__ import annotations
 
-from .adapter import ParameterSweepResult, VectorResearchInputError, run_parameter_sweep
+from .adapter import (
+    METRIC_SOURCE,
+    ExploratoryMetric,
+    ParameterSweepResult,
+    VectorResearchInputError,
+    run_parameter_sweep,
+)
 
-__all__ = ["ParameterSweepResult", "VectorResearchInputError", "run_parameter_sweep"]
+__all__ = [
+    "METRIC_SOURCE",
+    "ExploratoryMetric",
+    "ParameterSweepResult",
+    "VectorResearchInputError",
+    "run_parameter_sweep",
+]

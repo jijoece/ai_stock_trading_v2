@@ -231,6 +231,26 @@ Consequently:
 This is a licensing-classification and project-decision record, not a legal
 conclusion.
 
+### PR 5 review-fix round (2026-07-26)
+
+Post-merge review of PR 5 (#13) found the original adapter permitted
+look-ahead bias (VectorBT fills a signal at its own bar's close, verified
+directly), under-validated temporal/parameter structure, exposed VectorBT's
+own Sharpe/drawdown as if they were this repository's authoritative
+metrics, and enforced its advisory-only boundary only by an attribute
+absence check rather than an import-boundary test. All four were fixed on
+the same branch before any PR 6/LumiBot work began — see `STATUS.md`'s "PR
+5 review-fix round" for the full record. Net effect on this decision
+record: the license approval above is unchanged; the *adapter*
+implementing it now (a) shifts signal-generation matrices one bar forward
+before execution, (b) requires timezone-aware, daily-session-only,
+minimum-10-bar input, (c) labels every metric `metric_source =
+"VECTORBT_EXPLORATORY"` and wraps each in an explicit `ok`/`no_trades`/
+`zero_variance`/`non_finite` status (never a raw non-finite value), and
+(d) is now guarded by a repository-wide AST test barring any production
+module outside `vector_research/` from importing it, not merely a curated
+list of paths.
+
 ### Open items requiring resolution before implementation (not before PR 0)
 
 1. **LumiBot backtest-mode dependency/process boundary. STILL OPEN** — a
