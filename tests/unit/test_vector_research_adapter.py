@@ -221,6 +221,31 @@ def test_rejects_weekly_cadence_within_gap_bounds(adapter):
         adapter.run_parameter_sweep(close, entries, exits)
 
 
+def test_accepts_daily_series_crossing_spring_forward_dst(adapter):
+    # America/New_York DST spring-forward on 2024-03-10: the elapsed wall-clock
+    # gap between 2024-03-09 00:00 and 2024-03-10 00:00 local time is 23 hours,
+    # not 24 -- a valid daily series crossing this boundary must not be
+    # misclassified as intraday.
+    idx = pd.date_range("2024-03-04", periods=15, freq="D", tz="America/New_York")
+    close = pd.Series([100.0] * len(idx), index=idx)
+    entries, exits = _empty_signals(close)
+    result = adapter.run_parameter_sweep(close, entries, exits)
+    assert result.trade_count["p1"] == 0
+    assert result.trade_count["p2"] == 0
+
+
+def test_accepts_daily_series_crossing_fall_back_dst(adapter):
+    # America/New_York DST fall-back on 2024-11-03: the elapsed wall-clock gap
+    # between 2024-11-02 00:00 and 2024-11-03 00:00 local time is 25 hours --
+    # still one calendar day, not a gap the adapter should ever reject.
+    idx = pd.date_range("2024-10-28", periods=15, freq="D", tz="America/New_York")
+    close = pd.Series([100.0] * len(idx), index=idx)
+    entries, exits = _empty_signals(close)
+    result = adapter.run_parameter_sweep(close, entries, exits)
+    assert result.trade_count["p1"] == 0
+    assert result.trade_count["p2"] == 0
+
+
 def test_rejects_close_shorter_than_minimum_bars(adapter):
     idx = pd.date_range("2024-01-01", periods=3, freq="D", tz="UTC")
     close = pd.Series([100.0, 101.0, 102.0], index=idx)

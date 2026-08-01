@@ -44,14 +44,20 @@ contract.
 `DatetimeIndex` with daily-session spacing: each gap `>= 1` day and
 `<= 10` days (tolerating weekends/holiday clusters but rejecting intraday
 or monthly/irregular bar spacing), **and** a median bar-to-bar gap of
-exactly one day. The median-gap check exists because a systematically
-wider cadence -- most notably weekly (`freq="7D"`) data -- has a uniform
-gap that falls entirely within the `[1, 10]` day bound and would
-otherwise silently pass the min/max check alone while this adapter still
-executes with `freq="1D"`, corrupting every annualized statistic. A
-genuine daily session calendar (including weekend/holiday gaps) always
-has a majority of one-day gaps, so its median gap is one day; a uniform
-weekly (or coarser) cadence never does. Requiring
+exactly one day. Gaps are measured in local calendar days (via
+`index.date`), not raw elapsed duration between the tz-aware timestamps
+themselves -- elapsed wall-clock duration between two consecutive local
+calendar days is not fixed at 24 hours across a DST transition (23h in
+spring, 25h in fall in `America/New_York`), so a valid daily series that
+crosses a DST boundary is never misclassified as intraday. The
+median-gap check exists because a systematically wider cadence -- most
+notably weekly (`freq="7D"`) data -- has a uniform gap that falls
+entirely within the `[1, 10]` day bound and would otherwise silently
+pass the min/max check alone while this adapter still executes with
+`freq="1D"`, corrupting every annualized statistic. A genuine daily
+session calendar (including weekend/holiday gaps) always has a majority
+of one-day gaps, so its median gap is one day; a uniform weekly (or
+coarser) cadence never does. Requiring
 timezone-awareness mirrors `evaluation/market_calendar.py`'s existing
 fail-closed convention (`is_market_open` "requires a timezone-aware
 datetime"); this module does not guess a timezone for tz-naive input.
@@ -155,7 +161,16 @@ class ParameterSweepResult:
 def _validate_daily_session_spacing(index: pd.DatetimeIndex) -> None:
     if len(index) < 2:
         return
-    diffs = index[1:] - index[:-1]
+    # Diff local calendar dates, not raw elapsed duration on the tz-aware
+    # timestamps themselves -- a DST transition changes the elapsed wall-clock
+    # duration between two consecutive local calendar days (23h in spring,
+    # 25h in fall in America/New_York) without changing the number of
+    # calendar days that elapsed. `index.date` extracts each timestamp's own
+    # local calendar date (already resolved in the index's timezone);
+    # rewrapping that in a tz-naive DatetimeIndex and diffing gives exact,
+    # DST-independent whole-day gaps.
+    local_days = pd.DatetimeIndex(index.date)
+    diffs = local_days[1:] - local_days[:-1]
     if (diffs < _MIN_SESSION_GAP).any():
         raise VectorResearchInputError(
             "close.index spacing is finer than one day -- this adapter supports "
