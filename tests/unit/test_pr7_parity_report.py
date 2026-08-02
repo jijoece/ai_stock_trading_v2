@@ -8,12 +8,18 @@ loses one of them fails here:
 1. order alignment pairs BUY with BUY, and no vocabulary rule can conceal a
    BUY/SELL or a market/limit difference;
 2. the cross-case legacy run-identity collision is detected and classified;
-3. the exact-parity case really is exact on every promised dimension;
+3. the exact-parity case really is exact on every promised dimension, on every
+   co-dated session with none excluded, and every booking session in the report
+   comes from an engine's own record rather than from matching a fill price to
+   a bar's open;
 4. classification categories are valid, and "unsupported requirement" is not
    used for a capability only one side lacks.
 
-Plus the point-in-time-safety property of the fixture set itself: no signal
-parameter may be derived from a bar the signal could not have seen.
+Plus three properties of the fixture set and the harness themselves: no signal
+parameter may be derived from a bar the signal could not have seen; every
+result document must describe the fixture it is compared against, so a
+volume-only fixture edit invalidates stale results; and `run_parity.sh` must
+resolve both interpreters to absolute paths before it changes directory.
 
 Nothing here imports `backtest_runtime` (the main environment must never
 install it) or runs either engine; it reads the checked-in JSON and the
@@ -227,18 +233,166 @@ def test_exact_parity_case_agrees_in_the_raw_documents():
     )
 
 
-def test_the_only_daily_state_disagreement_is_the_entry_session(comparison):
+def test_no_co_dated_session_disagrees_in_the_exact_case(comparison):
+    """No session is exempt -- the entry session included.
+
+    Reference strategy v1 needed the entry session excluded, because the state
+    it sampled there pre-dated that session's own fill. v2 reports the booking
+    session's fills in the booking session's state, so an excluded session here
+    would mean a hidden disagreement rather than a classified defect.
+    """
+    case = next(
+        row for row in comparison["cases"] if row["case_id"] == "case_f_exact_entry_parity"
+    )
+    assert case["exact_parity"]["excluded_sessions"] == []
+    entry_session = case["exact_parity"]["entry_session"]
+    assert entry_session in case["exact_parity"]["sessions_compared"]
+
+    differing = [
+        (row["market_date"], field)
+        for row in case["daily_state_table"]
+        for field, value in row.items()
+        if field != "market_date" and value.get("status") == "differs"
+    ]
+    assert differing == [], f"co-dated sessions disagree: {differing}"
+
+
+def test_entry_session_state_reflects_the_entry_on_both_sides(comparison):
+    """The specific row that used to be exempt, checked by value."""
     case = next(
         row for row in comparison["cases"] if row["case_id"] == "case_f_exact_entry_parity"
     )
     entry_session = case["exact_parity"]["entry_session"]
-    for row in case["daily_state_table"]:
-        for field, value in row.items():
-            if field == "market_date" or value.get("status") != "differs":
-                continue
-            assert row["market_date"] == entry_session, (
-                f"{field} differs on {row['market_date']}, which is not the entry session"
+    row = next(r for r in case["daily_state_table"] if r["market_date"] == entry_session)
+    for field in ("cash", "equity", "unrealized_pnl", "realized_pnl", "drawdown_fraction"):
+        assert row[field]["status"] == "equal", (field, row[field])
+    # Both sides must actually have the position on the entry session -- equal
+    # would be trivially satisfiable if neither had entered yet.
+    assert Decimal(str(row["cash"]["backtest_runtime"])) < Decimal("100000")
+    assert Decimal(row["cash"]["legacy_engine"]) < Decimal("100000")
+
+
+# --- 3b. authoritative fill timing -----------------------------------------
+
+
+def test_fill_dates_come_from_each_engines_own_booking_record(comparison):
+    """No booking session anywhere in the report is inferred from a price.
+
+    Every reported entry `market_date` must be a session whose open equals the
+    reported fill price. That is corroboration of a date each engine supplied,
+    not the derivation of one -- and the comparator emits a difference when it
+    fails, so this assertion pins the observed state of the artifacts.
+    """
+    for case in comparison["cases"]:
+        runtime = json.loads(
+            (RESULTS / f"{case['case_id']}.backtest_runtime.json").read_text(encoding="utf-8")
+        )
+        legacy = json.loads(
+            (RESULTS / f"{case['case_id']}.legacy_engine.json").read_text(encoding="utf-8")
+        )
+        document = json.loads((FIXTURES / case["input"]).read_text(encoding="utf-8"))
+        opens = {bar["date"]: Decimal(str(bar["open"])) for bar in document["bars"]}
+
+        entry = runtime["fills"][0]
+        assert opens[entry["market_date"]] == Decimal(str(entry["fill_price"])), (
+            case["case_id"],
+            "backtest_runtime booked a session that does not open at its fill price",
+        )
+        legacy_entry = next(fill for fill in legacy["fills"] if fill["side"] == "BUY")
+        assert opens[legacy_entry["market_date"]] == Decimal(legacy_entry["fill_price"]), (
+            case["case_id"],
+            "the legacy engine booked a session that does not open at its fill price",
+        )
+
+
+def test_the_observation_lag_defects_are_resolved_and_cannot_return(
+    comparison, compare_parity
+):
+    """D4 and D15 were adapter defects under reference strategy v1.
+
+    They are reclassified as library semantics -- LumiBot dispatches
+    `on_filled_order` a session after its broker books the fill, and runs the
+    strategy before processing a session's orders -- and no longer appear as
+    differences, because v2 reads the broker's own event log. The comparator
+    exits non-zero if either is emitted again.
+    """
+    resolved = compare_parity.RESOLVED_BY_REFERENCE_STRATEGY_V2
+    assert set(resolved) == {"D4-fill-observation-lag", "D15-entry-session-state-lag"}
+    for difference_id in resolved:
+        classification, _ = compare_parity.CLASSIFICATIONS[difference_id]
+        assert classification == "LIBRARY_SEMANTIC", difference_id
+        # No longer an adapter defect, so no adapter-defect subcategory.
+        assert difference_id not in compare_parity.SUBCATEGORIES
+
+    emitted = {row["difference_id"] for row in _differences(comparison)}
+    assert emitted.isdisjoint(resolved), sorted(emitted & set(resolved))
+    assert comparison["adapter_defect_subcategory_tally"]["BEHAVIOR"] == 0
+
+
+def test_probe_records_the_booking_clock_apart_from_the_callback_clock():
+    """The evidence the reclassification rests on, in the checked-in probe."""
+    transcript = (RESULTS / "probe_output.txt").read_text(encoding="utf-8")
+    assert "AUTHORITATIVE BROKER TRADE-EVENT LOG" in transcript
+    assert "broker booked the fill on" in transcript
+    assert "strategy was told on" in transcript
+    assert "first iteration with changed cash" in transcript
+    # The exact-parity fixture is probed too, so the delayed booking session is
+    # measured rather than assumed.
+    assert "case_f_exact_entry_parity.input.json" in transcript
+    assert transcript.count("AUTHORITATIVE BROKER TRADE-EVENT LOG") == 3
+
+
+# --- 3c. results are bound to the current fixtures -------------------------
+
+
+def test_every_result_matches_the_current_fixture_checksum(comparison, compare_parity):
+    for case in comparison["cases"]:
+        document = json.loads((FIXTURES / case["input"]).read_text(encoding="utf-8"))
+        expected = compare_parity.fixture_bars_digest(document["bars"])
+        for suffix in ("backtest_runtime", "legacy_engine"):
+            result = json.loads(
+                (RESULTS / f"{case['case_id']}.{suffix}.json").read_text(encoding="utf-8")
             )
+            assert result["historical_bar_dataset_checksum"] == expected, (
+                case["case_id"],
+                suffix,
+            )
+
+
+def test_a_volume_only_fixture_change_rejects_the_stale_results(tmp_path, compare_parity):
+    """Changing nothing but a volume must invalidate every existing result.
+
+    Volume changes no price and therefore no number either engine computes, so
+    two stale result documents would still agree with each other perfectly.
+    Only comparison against the current fixture catches it -- which is why the
+    comparator recomputes the fixture's checksum itself rather than trusting
+    the two documents to agree.
+    """
+    import shutil
+
+    workspace = tmp_path / "pr7"
+    workspace.mkdir()
+    shutil.copy(PR7 / "compare_parity.py", workspace / "compare_parity.py")
+    shutil.copytree(FIXTURES, workspace / "fixtures")
+    shutil.copytree(RESULTS, workspace / "results")
+
+    target = workspace / "fixtures" / "case_a_buy_and_hold.input.json"
+    document = json.loads(target.read_text(encoding="utf-8"))
+    before = compare_parity.fixture_bars_digest(document["bars"])
+    document["bars"][0]["volume"] += 1
+    after = compare_parity.fixture_bars_digest(document["bars"])
+    assert before != after, "volume must participate in the canonical bar checksum"
+    target.write_text(json.dumps(document, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+    spec = importlib.util.spec_from_file_location(
+        "pr7_compare_parity_stale", workspace / "compare_parity.py"
+    )
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+
+    assert module.main([str(workspace / "results")]) == 6
 
 
 # --- 4. classification-category validity -----------------------------------
@@ -283,6 +437,28 @@ def test_tally_matches_the_classified_differences(comparison):
     for row in _differences(comparison) + comparison["cross_case_findings"]:
         counted[row["classification"]] += 1
     assert counted == comparison["classification_tally"]
+
+
+# --- 4b. run_parity.sh interpreter resolution ------------------------------
+
+
+def test_run_parity_resolves_interpreters_before_changing_directory():
+    """The documented invocation passes relative interpreter paths.
+
+    `run_parity.sh <venv>/bin/python .venv/bin/python` is run from the
+    repository root, but step 2 runs the isolated interpreter from a scratch
+    directory so LumiBot's `logs/` never lands in the repo. A relative path
+    would resolve against that scratch directory instead.
+    """
+    script = (PR7 / "run_parity.sh").read_text(encoding="utf-8")
+    resolution = script.index("absolute_interpreter()")
+    assignment = script.index('MAIN_PYTHON="$(absolute_interpreter')
+    first_cd = script.index('(cd "${SCRATCH}"')
+    assert resolution < first_cd, "interpreters must be resolved before any cd"
+    assert assignment < first_cd
+    # And the resolved paths must be checked, not merely rewritten.
+    assert 'if [ ! -x "${interpreter}" ]' in script
+    assert script.index('if [ ! -x "${interpreter}" ]') < first_cd
 
 
 # --- 5. fixture point-in-time safety ---------------------------------------

@@ -89,18 +89,22 @@ GAPPED_BARS = [
 # 2024-01-03` on the backtest_runtime side with the legacy engine's earliest
 # possible entry, so both enter on 2024-01-04 at that session's open of 101.0.
 #
-# Two properties of the bar levels are load-bearing, and both are consequences
-# of `backtest_runtime`'s daily state at date D reflecting fills through D-1
-# while the legacy engine's reflects fills through D:
+# One property of the bar levels is load-bearing, and it is a consequence of
+# D1 rather than of any fill-timing difference: the legacy engine's running
+# peak equity starts at `initial_cash`, while backtest_runtime's starts at zero
+# and is raised by the first session it reports -- and the session the legacy
+# engine reports first (2024-01-02) is one backtest_runtime never reports at
+# all. The two peaks therefore only coincide if the first session
+# backtest_runtime *does* report is still flat, so that its equity is exactly
+# the budget:
 #
-#  * the entry session's close (100.5) is BELOW the entry price (101.0), so the
-#    position is marked at a small loss on the entry session and neither side's
-#    running peak equity ever rises above the starting 100 000. Had the entry
-#    session closed higher, only the legacy engine would have recorded the
-#    higher peak, and every later drawdown would have diverged.
-#  * a LATER session (2024-01-05, close 99.2) is a strictly deeper drawdown
-#    than the entry session, so the aggregate `max_drawdown_fraction` is set by
-#    a session both engines report identically.
+#  * `entry_after_session = 2024-01-03` guarantees the entry is booked no
+#    earlier than 2024-01-04, so 2024-01-03 -- backtest_runtime's first
+#    reported session -- carries no position and marks at exactly 100 000, the
+#    same value the legacy engine's peak is seeded with.
+#  * every later session closes below that, so both sides agree on the running
+#    peak for the whole run and the aggregate `max_drawdown_fraction` is set by
+#    2024-01-05, a session both engines report identically.
 #
 # Neither engine's exits fire: the ATR(1) stop sits at 98.0 and its target at
 # 105.5, and no bar reaches either.

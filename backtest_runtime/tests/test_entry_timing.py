@@ -99,6 +99,81 @@ def test_delay_adds_no_sell_and_no_second_order(tmp_path):
     ]
 
 
+# --- authoritative booking session ----------------------------------------
+
+
+def test_fill_is_dated_to_the_session_the_broker_booked_it_in(tmp_path):
+    """Reference strategy v2 reads the broker's event log, not the callback.
+
+    LumiBot runs `process_pending_orders` at the end of the *submission*
+    session, so the fill belongs to that session. `on_filled_order` is
+    dispatched one session later; v1 stamped that later date onto the fill and
+    was wrong by one session every time.
+    """
+    from support.fixtures import valid_input_document
+
+    result = _run_cli(
+        valid_input_document(entry_after_session="2024-01-03"), tmp_path, "booking"
+    )
+
+    # Submission happens on the first iteration after 2024-01-03, i.e. BARS[2]
+    # = 2024-01-04, and the fill is booked in that same session at its open.
+    assert result["fills"][0]["market_date"] == "2024-01-04"
+    assert result["fills"][0]["fill_price"] == 102.0
+    # The callback fires on 2024-01-05. Nothing may report that date.
+    assert result["fills"][0]["market_date"] != "2024-01-05"
+
+
+def test_entry_session_state_includes_that_session_fill(tmp_path):
+    """The state row for the booking session must show the position.
+
+    LumiBot samples the strategy before it processes the session's fills, so
+    the raw sample shows no position on the entry session. v2 re-applies the
+    session's own authoritative fills, which is what makes the state series
+    mean "end of session" the way every other daily series does.
+    """
+    from support.fixtures import valid_input_document
+
+    result = _run_cli(
+        valid_input_document(entry_after_session="2024-01-03"), tmp_path, "entrystate"
+    )
+    states = {state["market_date"]: state for state in result["daily_states"]}
+
+    assert states["2024-01-03"]["cash"] == 100_000.0
+    entry = states["2024-01-04"]
+    assert entry["cash"] == 100_000.0 - 10 * 102.0
+    # BARS[2] closes at 101.5, so equity is that cash plus the marked position.
+    assert entry["equity"] == pytest.approx(98_980.0 + 10 * 101.5)
+    assert entry["unrealized_pnl"] == pytest.approx(10 * (101.5 - 102.0))
+
+
+def test_entry_on_the_last_session_is_reported_and_not_silently_dropped(tmp_path):
+    """Penultimate-session boundary: accepted input must not finish flat.
+
+    `entry_after_session` = BARS[-2] leaves exactly one session on which the
+    order can be submitted, and LumiBot books the fill in that same session --
+    after the last state sample, and with no later iteration to observe it. An
+    accepted document that produced a fill but no position, and an unchanged
+    final cash, would be a self-contradicting result document.
+    """
+    from support.fixtures import valid_input_document
+
+    document = valid_input_document(entry_after_session="2024-01-05")
+    parse_input_document(document)  # accepted, so it must produce a real entry
+    result = _run_cli(document, tmp_path, "penultimate")
+
+    assert len(result["fills"]) == 1
+    # BARS[4] is 2024-01-08 and its open is 103.5.
+    assert result["fills"][0]["market_date"] == "2024-01-08"
+    assert result["fills"][0]["fill_price"] == 103.5
+    assert result["positions"] == [
+        {"symbol": "SPKE", "quantity": 10.0, "average_price": 103.5}
+    ]
+    assert result["final_cash"] == 100_000.0 - 10 * 103.5
+    assert result["daily_states"][-1]["market_date"] == "2024-01-08"
+    assert result["daily_states"][-1]["cash"] == 100_000.0 - 10 * 103.5
+
+
 def test_delayed_run_is_deterministic(tmp_path):
     from support.fixtures import valid_input_document
 

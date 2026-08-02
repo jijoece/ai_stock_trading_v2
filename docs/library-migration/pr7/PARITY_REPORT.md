@@ -1,6 +1,6 @@
 # PR 7 — Backtest parity report
 
-**Date:** 2026-08-02 (revised the same day, review round 1) ·
+**Date:** 2026-08-02 (revised the same day, review rounds 1 and 2) ·
 **Branch:** `migration/07-backtest-parity-report` (PR #19) ·
 **Depends on:** PR 6 (merged, `bbd7a1f`)
 
@@ -20,17 +20,37 @@ is done about the findings.
 Recorded in full in `docs/library-migration/DECISIONS.md` **D6**.
 
 **The first pass took Option A and was wrong about what it had.** It claimed
-`case_a_buy_and_hold` matched the reference strategy exactly. It did not:
-`backtest_runtime` entered on **2024-01-03 at 100.5**, the legacy engine on
-**2024-01-04 at 102.0**, and every downstream number differed by that
-one-session, 1.50-per-share offset.
+`case_a_buy_and_hold` matched the reference strategy exactly. It did not.
 
-The offset is structural. The legacy engine cannot enter before its **third**
-bar — a signal is eligible only on the session *after*
-`generated_after_session`, and `average_true_range` needs `atr_period + 1` bars
-before that — while reference strategy v1 always bought on its first iteration,
-the **second** bar. No configuration of either side closes that gap, which is
-exactly the condition for taking Option B.
+**Which session a fill belongs to is now read from LumiBot's own books.** Both
+earlier passes reasoned from indirect evidence — the callback that reported the
+fill, and the bar whose open matched its price — and those two disagree. LumiBot's
+broker stamps every order event with `data_source._datetime` as it processes it,
+in its trade-event log (`lumibot/brokers/broker.py`), and that is authoritative:
+
+| clock | case A | case F |
+|---|---|---|
+| broker trade-event log (**authoritative**) | 2024-01-03 @ 100.5 | 2024-01-04 @ 101.0 |
+| `on_filled_order` callback | 2024-01-04 | 2024-01-05 |
+| first iteration with changed cash | 2024-01-04 | 2024-01-05 |
+
+`strategy_executor.py::_process_pandas_daily_data` runs a session as
+`_update_datetime(session)` → `_on_trading_iteration()` →
+`process_pending_orders()`, so the order is submitted **and** booked within one
+session and the strategy is told on the next. The lag is observation, not
+execution. All three clocks are recorded for three fixtures in
+`results/probe_output.txt`.
+
+**Option A is therefore impossible, and matching opens do not rescue it.** With
+the booking session established, the two floors are one session apart and both
+structural: LumiBot cannot submit before the **second** bar (the first is never
+a trading iteration) and books in the submission session; the legacy engine
+cannot enter before the **third** (eligibility is next-session-only, and ATR
+needs `atr_period + 1` prior bars, which even at `atr_period = 1` puts
+`generated_after_session` no earlier than bar 2). A fixture with deliberately
+matching consecutive opens would equalise the two fill *prices* while leaving the
+two *booking sessions* one apart — and the exact case must agree on the
+authoritative fill date, not only on the price.
 
 **The bounded extension.** Reference strategy **v2** adds exactly one control,
 `strategy.entry_after_session` (`null` = v1 behavior; a date defers the same
@@ -41,6 +61,17 @@ order, order type, scheduler, fetcher, or broker interaction;
 `benchmark_asset=None` and `analyze_backtest=False` stay hardcoded; every
 ADR 0009 credential, network and isolation guarantee is untouched and still
 asserted by that distribution's own blocking suite.
+
+**And one reporting fix.** v1 published both the fill date and the daily state
+from the lagging clocks above. v2 takes the fill's session from the broker's
+event log and re-applies each session's booked fills to that session's state,
+so a state row means end-of-session on both sides. The result schema is bumped
+to `backtest_runtime.result.v2` because the field *names* are unchanged while
+their meaning is not. Two invariants are checked as hard errors, not warnings:
+each session's observed balances must equal the reconstruction as of the
+previous reported session, and `observed cash + observed quantity × mark price`
+must equal the `portfolio_value` LumiBot reported. No trading behavior changed —
+only which clock the adapter believes.
 
 ---
 
@@ -62,11 +93,17 @@ both engines**.
 
 All bars are `SPKE`, quantity 10, budget 100 000.
 
-**Identical input is proved, not assumed.** Each side computes a SHA-256 over
-the canonical bar payload independently — `backtest_runtime.contract.bars_digest`
-on one side, a separate re-implementation in `run_legacy_engine.py` on the other
-(the main environment must never import `backtest_runtime`). The comparator
-aborts if the two digests disagree. They agree for all six cases.
+**Identical input is proved, not assumed — and so is *current* input.** Each
+side computes a SHA-256 over the canonical bar payload independently —
+`backtest_runtime.contract.bars_digest` on one side, a separate
+re-implementation in `run_legacy_engine.py` on the other (the main environment
+must never import `backtest_runtime`). The comparator computes a **third**,
+straight from the checked-in fixture, and requires all three to agree; it exits
+non-zero otherwise. The third one matters because two stale result documents
+agree with each other perfectly while describing bars that no longer exist, so
+mutual agreement proves nothing about currency. A regression test edits one
+fixture's *volume* — a field that changes no number either engine computes — and
+asserts the previously valid results are rejected.
 
 **No look-ahead in the legacy signals.** The first pass derived each signal's
 `limit_price` from the *entry* session's high — a bar that had not happened when
@@ -111,7 +148,7 @@ clean `git diff`.
 ## 4. Mapping between the two result shapes
 
 The two documents are **not** forced into one schema. Each side is serialized
-faithfully — `backtest_runtime.result.v1` as the CLI emits it,
+faithfully — `backtest_runtime.result.v2` as the CLI emits it,
 `pr7.legacy_engine.result.v1` as a direct serialization of `BacktestResult` /
 `BacktestFill` / `BacktestDailyState` with `Decimal` preserved as exact decimal
 strings — and the comparator holds the mapping (machine-readable in
@@ -119,12 +156,12 @@ strings — and the comparator holds the mapping (machine-readable in
 
 | Dimension | `backtest_runtime` | legacy engine | Note |
 |---|---|---|---|
-| bar set | `historical_bar_dataset_checksum` | recomputed independently | equality proves identical input |
+| bar set | `historical_bar_dataset_checksum` | recomputed independently | both must equal a third checksum the comparator recomputes from the fixture (§2) |
 | orders | `orders[]` | *(none)* → `derived.orders_from_fills[]` | `BacktestResult` has no order records — D11 |
-| fills | `fills[]` | `fills[]` | aligned by index in execution order |
+| fills | `fills[]` | `fills[]` | aligned by index in booking order on both sides |
 | fill quantity / price / fees | `.quantity` / `.fill_price` / `.fees` | same names | `float` vs `Decimal` |
 | fill slippage | *(absent)* | `fills[].slippage` | D7 |
-| fill timestamp | `fills[].market_date` | `fills[].market_date` | runtime value is the `on_filled_order` observation date — D4 |
+| fill timestamp | `fills[].market_date` | `fills[].market_date` | both sides' own booking session: the runtime's from LumiBot's broker event log, the legacy engine's assigned as it creates the fill |
 | exit reason | *(absent)* | `fills[].exit_reason` | D8 |
 | positions | `positions[]` | *(none)* → `derived.end_positions_from_fills[]` | D11 |
 | cash / equity / P&L / drawdown | `daily_states[].*` | `daily_states[].*` | aligned by `market_date` |
@@ -170,14 +207,19 @@ this report rests on a bound absorbing float/`Decimal` noise.
 ## 5. The exact case
 
 `case_f_exact_entry_parity` is the case the revised decision exists to produce.
-Its bar levels are chosen so that the entry session closes *below* the entry
-price (neither side's running peak equity ever rises above the starting
-100 000) and a *later* session is a strictly deeper drawdown (the aggregate is
-set by a session both engines report identically).
+One property of its bar levels is load-bearing, and it follows from D1 rather
+than from any fill-timing difference: the legacy engine seeds its running peak
+equity with `initial_cash` while `backtest_runtime` seeds it with zero and
+raises it on the first session it reports — and the legacy engine's first
+session (2024-01-02) is one `backtest_runtime` never reports. Setting
+`entry_after_session = 2024-01-03` guarantees the runtime's first reported
+session is still flat and therefore marks at exactly 100 000, so both peaks
+coincide for the whole run; every later session closes below that, and the
+aggregate drawdown is set by 2024-01-05, which both engines report.
 
 | Dimension | `backtest_runtime` | legacy engine | |
 |---|---|---|---|
-| entry session | 2024-01-04 | 2024-01-04 | equal |
+| entry session (authoritative booking date) | 2024-01-04 | 2024-01-04 | equal |
 | entry price | 101.00 | 101.00 | equal |
 | quantity | 10 | 10 | equal |
 | exits | none | none | equal |
@@ -186,39 +228,55 @@ set by a session both engines report identically).
 | final equity | 99 992 | 99 992 | equal |
 | final value | 99 992 | 99 992 | equal |
 | max drawdown | −0.00018 | −0.00018 | equal |
-| cash / equity / unrealized P&L / realized P&L / drawdown, per session | — | — | equal on **every** co-dated session except the entry session |
+| cash / equity / unrealized P&L / realized P&L / drawdown, per session | — | — | equal on **every** co-dated session, the entry session included |
 
 The comparator asserts all fifteen dimensions and **exits non-zero** if any
 fails; `run_parity.sh` therefore cannot produce a green run with a broken exact
-case. All fifteen pass.
+case. All fifteen pass, and `excluded_sessions` is empty.
 
-The one excluded session, and the fill's own reported date, are the two
-independently classified defects below (D15 and D4) — the same LumiBot
-fill-observation lag. Everything else that differs on this case is
-representational (D5, D6, D11, D14, D16) or an adapter capability gap (D7, D8).
+**No session is exempt.** Review round 1 excluded the entry session under
+`D15-entry-session-state-lag`, and excluded the fill's own date under
+`D4-fill-market-date-lag`. Both exemptions are gone: the entry session's cash,
+equity, unrealized P&L, realized P&L and drawdown are compared and equal, and
+both engines report the same booking date from their own records. What differs
+on this case is now only representational (D5, D6, D11, D14, D16) or an adapter
+capability gap (D7, D8).
+
+Both entry dates are corroborated but not derived: each engine's reported
+booking session is checked to be a session whose open equals that engine's own
+reported fill price, and a mismatch is emitted as a difference. The session is
+never inferred from the price.
 
 ---
 
 ## 6. What the two engines did across the set
 
-| Case | Entry session | Entry price | Exit | Final equity | Max drawdown |
+| Case | Booking session | Entry price | Exit | Final equity | Max drawdown |
 |---|---|---|---|---|---|
 | F | 01-04 · 01-04 | 101.0 · 101.0 | none · none | 99 992 · 99 992 | −0.00018 · −0.00018 |
-| A | 01-03 · 01-04 | 100.5 · 102.0 | none · none | 100 040 · 100 025 | 0 · −0.00005 |
-| B | 01-03 · 01-04 | 100.5 · 102.0 | none · **FINAL_TARGET** 109.5 | 100 090 · 100 075 | 0 · −0.00005 |
-| C | 01-03 · 01-04 | 100.0 · 110.0 | none · **STOP_GAP** 90.0 | 99 920 · 99 800 | −0.001 · −0.002 |
+| A | 01-03 · 01-04 | 100.5 · 102.0 | none · none | 100 040 · 100 025 | −0.0000499925… · −0.00005 |
+| B | 01-03 · 01-04 | 100.5 · 102.0 | none · **FINAL_TARGET** 109.5 | 100 090 · 100 075 | −0.0000499925… · −0.00005 |
+| C | 01-03 · 01-04 | 100.0 · 110.0 | none · **STOP_GAP** 90.0 | 99 920 · 99 800 | −0.001998001… · −0.002 |
 | E | 01-03 · 01-04 | 104.0 · 106.0 | none · none | 100 045 · 100 025 | 0 · 0 |
-| D | 01-03 · 01-24 | 100.8 · 100.9 | none · none | 100 010 · 100 009 | −0.00011 · −0.000109991… |
+| D | 01-03 · 01-24 | 100.8 · 100.9 | none · none | 100 010 · 100 009 | −0.000109996… · −0.000109991… |
 
-(`backtest_runtime` · legacy. Quantity was **10 shares, exactly equal, in every
-case**; fees were 0 on both sides in every case.)
+(`backtest_runtime` · legacy. Booking sessions are each engine's own record.
+Quantity was **10 shares, exactly equal, in every case**; fees were 0 on both
+sides in every case.)
 
-**Both engines fill an entry at the open of the entry session** — measured, not
-assumed. Case E gaps its opens away from the previous closes, and LumiBot still
-filled at **104.0**, the submission session's open, rather than **100.0**, the
-previous close (`results/probe_output.txt`). Outside case F the entry *price*
-differences are therefore entirely a consequence of *which* session each engine
-entered on.
+**Both engines fill an entry at the open of the session they book it in** —
+measured, not assumed. Case E gaps its opens away from the previous closes, and
+LumiBot still filled at **104.0**, the 2024-01-03 open, rather than **100.0**,
+the 2024-01-02 close (`results/probe_output.txt`). Outside case F the entry
+*price* differences are therefore entirely a consequence of *which* session each
+engine entered on.
+
+The drawdown columns are close but unequal on the default-timing cases for a
+reason unrelated to timing: the legacy engine seeds its running peak equity with
+`initial_cash`, while `backtest_runtime` seeds it with zero and raises it on the
+first session it reports — and on those cases the entry is already booked in
+that first reported session, so the two peaks differ by the entry's mark. Case F
+avoids this by construction (§5), which is why it is the case that can be exact.
 
 ---
 
@@ -232,7 +290,7 @@ cross-case finding:
 | Category | Count |
 |---|---|
 | old-engine defect | **13** |
-| adapter defect (in `backtest_runtime`) | **24** — 10 behavior, 14 capability |
+| adapter defect (in `backtest_runtime`) | **14** — 0 behavior, 14 capability |
 | intentional library semantic difference | **93** |
 | unsupported requirement (neither side can express it) | **0** |
 
@@ -243,6 +301,13 @@ those are **adapter capability defects**, because the requirement is
 demonstrably supportable. Nothing in this fixture set is genuinely unsupported
 by both sides, so that category is legitimately zero; short selling, intraday
 bars and multi-symbol portfolios would qualify, and none is exercised here.
+
+**The behavior subcategory is now empty**, down from 10. It held D4 and D15,
+which review round 2 established are properties of LumiBot's execution loop
+rather than defects of either engine, and which reference strategy v2 no longer
+reports wrongly. They are reclassified below and recorded in the comparator's
+`RESOLVED_BY_REFERENCE_STRATEGY_V2`, which fails the run if either is emitted
+as a difference again.
 
 ### Old-engine defect
 
@@ -274,24 +339,8 @@ computed value is wrong.
 
 ### Adapter defect — behavior
 
-**D4 — a fill's `market_date` is one session later than the fill.**
-`strategy.py` stamps a fill with `self.get_datetime()` inside `on_filled_order`,
-which LumiBot invokes on the iteration *after* the fill is booked. Case E is
-decisive: the recorded fill price is **104.0**, the open of **2024-01-03**, but
-the recorded `market_date` is **2024-01-04**, a session whose own open is 106.0.
-On the exact case the fill prices against 2024-01-04 and is stamped 2024-01-05.
-LumiBot leaves `order.broker_date` and `order.broker_create_date` as `None` in
-backtesting, so it offers no authoritative fill timestamp — which is what makes
-the wrong one easy to reach for — but the adapter already observes the correct
-session inside `on_trading_iteration`.
-
-**D15 — the entry session's daily state does not reflect the entry.** Same root
-cause, in the state series rather than the fill record: `backtest_runtime`'s
-state for session D reflects fills booked through D−1, because the snapshot is
-taken inside `on_trading_iteration` before LumiBot's broker processes that
-session's order. On the exact case this is the *only* daily-state
-disagreement — one session out of four, on cash, equity, unrealized P&L and
-drawdown.
+None. This subcategory held D4 and D15 after review round 1; both are
+reclassified below.
 
 ### Adapter defect — capability
 
@@ -308,10 +357,31 @@ all.
 
 ### Intentional library semantic difference
 
-**D2 — entry session** (the five default-timing cases). The legacy engine's
-earliest possible entry is the third bar; reference strategy v1 timing buys on
-the second. At the engine's default `atr_period=14` (case D) the offset is 14
-sessions. Case F closes it with `entry_after_session`.
+**D4 — LumiBot tells a strategy about a fill one session after booking it**
+*(reclassified from adapter defect in review round 2).*
+`_process_pandas_daily_data` runs `process_pending_orders` after
+`on_trading_iteration` within a session, so the fill is booked with the broker's
+clock unmoved, but `on_filled_order` is dispatched on the next iteration — and
+`order.broker_create_date` / `order.broker_update_date` stay `None` in
+backtesting, so the callback clock is the only one a naive adapter sees. The
+legacy engine has no equivalent split: it creates the fill inline in the session
+it is processing. That difference between the two execution loops is permanent
+and is nobody's defect. Reference strategy v1 *published* the lagging clock as
+the fill date, which was an adapter defect; v2 reads the broker's trade-event
+log instead, and the comparator fails if the lagging date ever reappears.
+
+**D15 — a strategy cannot observe its own session's fill**
+*(reclassified from adapter defect in review round 2).* The same split, in the
+state series: the balances a strategy can sample on the booking session
+necessarily exclude that session's own fill, while the legacy engine's state for
+a session reflects everything that happened in it. v1 published the raw sample
+and so reported the entry session flat; v2 re-applies the session's booked fills,
+which is what lets the exact case agree on the entry session too.
+
+**D2 — entry session** (the five default-timing cases). LumiBot cannot book
+before the second bar and the legacy engine cannot enter before the third, both
+structurally. At the engine's default `atr_period=14` (case D) the offset widens
+to 14 sessions. Case F closes it with `entry_after_session`.
 
 **D1 — daily-state series start.** LumiBot's first `on_trading_iteration` lands
 on the second fixture bar, so `backtest_runtime` emits one fewer daily state
@@ -348,13 +418,17 @@ by minimum. **D5** (`fill`/`FILLED`), **D6** (identity schemes) and **D14**
 ## 8. What this does and does not establish
 
 It establishes that, on one genuinely identical buy-and-hold, the two engines
-agree on **every** economic number — entry session, entry price, quantity,
-position, cash, equity, unrealized and realized P&L, drawdown, final value and
-maximum drawdown — with the sole exception of the entry session's own snapshot,
-which is a classified adapter defect with a known mechanism. Across the wider
-set it establishes that both share the fill-price convention, the valuation
-convention and the drawdown definition, and that their other numeric
-differences are fully explained by entry timing plus that same lag.
+agree on **every** economic number and on every co-dated session with none
+excluded — booking session, entry price, quantity, position, cash, equity,
+unrealized and realized P&L, drawdown, final value and maximum drawdown. Across
+the wider set it establishes that both share the fill-price convention, the
+valuation convention and the drawdown definition, and that their remaining
+numeric differences are fully explained by entry timing.
+
+It also establishes something about the evidence itself: fill timing here is
+read from LumiBot's own order-lifecycle record, not deduced from which bar's
+open matches a fill price. The two earlier passes each deduced it differently
+and each got a different answer.
 
 It does **not** establish that `backtest_runtime` could replace
 `backtesting/engine.py`. The adapter capability defects (D7, D8) plus D9 and D11
@@ -377,7 +451,9 @@ docs/library-migration/pr7/
   PARITY_REPORT.md                this file
   build_fixtures.py               builds the fixture set; asserts point-in-time safety
   run_legacy_engine.py            main environment  -> legacy result documents
-  probe_lumibot_fill_timing.py    isolated environment; evidence for D1, D4 and D15
+  probe_lumibot_fill_timing.py    isolated environment; records the broker's own
+                                  event clock against the two lagging clocks
+                                  (evidence for D1, D2, D4 and D15)
   compare_parity.py               reads two documents; classifies; enforces every rule above
   run_parity.sh                   reproduces everything under results/
   fixtures/

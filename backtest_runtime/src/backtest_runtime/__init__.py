@@ -18,5 +18,12 @@ from __future__ import annotations
 # rejects both unknown *and* missing strategy fields: a v1 document is not a
 # valid v2 document and must be told so explicitly, not silently defaulted.
 SCHEMA_VERSION_INPUT = "backtest_runtime.input.v2"
-SCHEMA_VERSION_RESULT = "backtest_runtime.result.v1"
+# v2 changes what a `daily_states` row and a `fills[].market_date` *mean*, not
+# which fields exist. v1 reported both from the strategy callback's clock,
+# which lags the broker's own booking clock by one session; v2 reports the
+# session LumiBot's broker event log says the fill was booked in, and each
+# session's state after that session's fills. A v1 consumer reading a v2
+# document would silently mis-date every fill, so the version is bumped even
+# though the shape is unchanged (docs/library-migration/DECISIONS.md D6).
+SCHEMA_VERSION_RESULT = "backtest_runtime.result.v2"
 LUMIBOT_PINNED_VERSION = "4.5.78"

@@ -1,6 +1,7 @@
 lumibot 4.5.78
 input: case_a_buy_and_hold.input.json
 bars supplied: 5  (2024-01-02 .. 2024-01-08)
+entry_after_session: None
 
 iteration:
     iteration_datetime = 2024-01-03T00:00:00-05:00
@@ -19,9 +20,7 @@ on_filled_order:
     fill_quantity = 10.0
     order_broker_create_date = None
     order_broker_date = None
-    order_status = fill
     cash_at_callback = 98995.0
-    portfolio_value_at_callback = 100000.0
 iteration:
     iteration_datetime = 2024-01-04T00:00:00-05:00
     get_last_price = 101.5
@@ -41,20 +40,26 @@ iteration:
     portfolio_value = 100040.0
     position_quantity = 10.0
 
+AUTHORITATIVE BROKER TRADE-EVENT LOG
+    time=2024-01-03 00:00:00-05:00 id=bt_1 side=buy type=market status=new price=nan filled_quantity=nan
+    time=2024-01-03 00:00:00-05:00 id=bt_1 side=buy type=market status=fill price=100.5 filled_quantity=10.0
+
 FINDINGS
-  first fixture bar date      : 2024-01-02
-  first on_trading_iteration  : 2024-01-03T00:00:00-05:00
-  => D1: the first fixture bar is never an iteration date, so it can never appear as a daily state.
-  on_filled_order observed at : 2024-01-04T00:00:00-05:00
-  order.broker_create_date    : None
-  order.broker_date           : None
-  => D4: compare the callback date against the iteration at which cash first dropped, printed above.
+  first fixture bar date         : 2024-01-02
+  first on_trading_iteration     : 2024-01-03T00:00:00-05:00
+  => D1: the first fixture bar is never a trading iteration, so it can never appear as a daily state, and no order can be submitted on it.
+  [1] broker booked the fill on  : 2024-01-03 at 100.5
+  [2] strategy was told on       : 2024-01-04T00:00:00-05:00
+  [3] first iteration with changed cash : 2024-01-04T00:00:00-05:00
+  => D4: (1) is the booking session and is what backtest_runtime reports. (2) and (3) lag it by one session whenever a later session exists, because `_process_pandas_daily_data` runs `process_pending_orders` *after* `on_trading_iteration` within the same session. Neither lagging clock is evidence that the fill happened later.
+  => D15: the state a strategy can sample on the booking session therefore excludes that session's own fill; backtest_runtime re-applies it from (1).
 
 ================================================================
 
 lumibot 4.5.78
 input: case_e_gapped_opens.input.json
 bars supplied: 5  (2024-01-02 .. 2024-01-08)
+entry_after_session: None
 
 iteration:
     iteration_datetime = 2024-01-03T00:00:00-05:00
@@ -73,9 +78,7 @@ on_filled_order:
     fill_quantity = 10.0
     order_broker_create_date = None
     order_broker_date = None
-    order_status = fill
     cash_at_callback = 98960.0
-    portfolio_value_at_callback = 100000.0
 iteration:
     iteration_datetime = 2024-01-04T00:00:00-05:00
     get_last_price = 106.5
@@ -95,11 +98,74 @@ iteration:
     portfolio_value = 100045.0
     position_quantity = 10.0
 
+AUTHORITATIVE BROKER TRADE-EVENT LOG
+    time=2024-01-03 00:00:00-05:00 id=bt_1 side=buy type=market status=new price=nan filled_quantity=nan
+    time=2024-01-03 00:00:00-05:00 id=bt_1 side=buy type=market status=fill price=104.0 filled_quantity=10.0
+
 FINDINGS
-  first fixture bar date      : 2024-01-02
-  first on_trading_iteration  : 2024-01-03T00:00:00-05:00
-  => D1: the first fixture bar is never an iteration date, so it can never appear as a daily state.
-  on_filled_order observed at : 2024-01-04T00:00:00-05:00
-  order.broker_create_date    : None
-  order.broker_date           : None
-  => D4: compare the callback date against the iteration at which cash first dropped, printed above.
+  first fixture bar date         : 2024-01-02
+  first on_trading_iteration     : 2024-01-03T00:00:00-05:00
+  => D1: the first fixture bar is never a trading iteration, so it can never appear as a daily state, and no order can be submitted on it.
+  [1] broker booked the fill on  : 2024-01-03 at 104.0
+  [2] strategy was told on       : 2024-01-04T00:00:00-05:00
+  [3] first iteration with changed cash : 2024-01-04T00:00:00-05:00
+  => D4: (1) is the booking session and is what backtest_runtime reports. (2) and (3) lag it by one session whenever a later session exists, because `_process_pandas_daily_data` runs `process_pending_orders` *after* `on_trading_iteration` within the same session. Neither lagging clock is evidence that the fill happened later.
+  => D15: the state a strategy can sample on the booking session therefore excludes that session's own fill; backtest_runtime re-applies it from (1).
+
+================================================================
+
+lumibot 4.5.78
+input: case_f_exact_entry_parity.input.json
+bars supplied: 5  (2024-01-02 .. 2024-01-08)
+entry_after_session: 2024-01-03
+
+iteration:
+    iteration_datetime = 2024-01-03T00:00:00-05:00
+    get_last_price = 100.5
+    cash = 100000.0
+    portfolio_value = 100000.0
+    position_quantity = 0.0
+iteration:
+    iteration_datetime = 2024-01-04T00:00:00-05:00
+    get_last_price = 100.5
+    cash = 100000.0
+    portfolio_value = 100000.0
+    position_quantity = 0.0
+submit:
+    iteration_datetime = 2024-01-04T00:00:00-05:00
+    order_id = bt_1
+    status = new
+on_filled_order:
+    callback_get_datetime = 2024-01-05T00:00:00-05:00
+    order_id = bt_1
+    fill_price = 101.0
+    fill_quantity = 10.0
+    order_broker_create_date = None
+    order_broker_date = None
+    cash_at_callback = 98990.0
+iteration:
+    iteration_datetime = 2024-01-05T00:00:00-05:00
+    get_last_price = 99.2
+    cash = 98990.0
+    portfolio_value = 99982.0
+    position_quantity = 10.0
+iteration:
+    iteration_datetime = 2024-01-08T00:00:00-05:00
+    get_last_price = 100.2
+    cash = 98990.0
+    portfolio_value = 99992.0
+    position_quantity = 10.0
+
+AUTHORITATIVE BROKER TRADE-EVENT LOG
+    time=2024-01-04 00:00:00-05:00 id=bt_1 side=buy type=market status=new price=nan filled_quantity=nan
+    time=2024-01-04 00:00:00-05:00 id=bt_1 side=buy type=market status=fill price=101.0 filled_quantity=10.0
+
+FINDINGS
+  first fixture bar date         : 2024-01-02
+  first on_trading_iteration     : 2024-01-03T00:00:00-05:00
+  => D1: the first fixture bar is never a trading iteration, so it can never appear as a daily state, and no order can be submitted on it.
+  [1] broker booked the fill on  : 2024-01-04 at 101.0
+  [2] strategy was told on       : 2024-01-05T00:00:00-05:00
+  [3] first iteration with changed cash : 2024-01-05T00:00:00-05:00
+  => D4: (1) is the booking session and is what backtest_runtime reports. (2) and (3) lag it by one session whenever a later session exists, because `_process_pandas_daily_data` runs `process_pending_orders` *after* `on_trading_iteration` within the same session. Neither lagging clock is evidence that the fill happened later.
+  => D15: the state a strategy can sample on the booking session therefore excludes that session's own fill; backtest_runtime re-applies it from (1).

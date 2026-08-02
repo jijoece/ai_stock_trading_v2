@@ -21,8 +21,35 @@ fetcher and no broker interaction, and it does not touch
 `benchmark_asset=None`, `analyze_backtest=False`, or any credential- or
 network-safety guarantee below. It exists so PR 7 can construct one case in
 which this strategy and `backtesting/engine.py` enter on the same session --
-which is otherwise impossible, because that engine cannot enter before its
-third bar.
+which is otherwise impossible, because LumiBot cannot submit before its
+second bar and that engine cannot enter before its third.
+
+Timing is read from LumiBot's own books, not from the strategy callbacks
+=======================================================================
+`lumibot/strategies/strategy_executor.py::_process_pandas_daily_data` runs
+one session as::
+
+    broker._update_datetime(session)   # the broker's clock is now `session`
+    self._on_trading_iteration()       # the strategy submits; state sampled
+    broker.process_pending_orders(...) # the order fills, clock still `session`
+
+so a fill is booked in the *submission* session, and the strategy sees it
+only at the following iteration -- `on_filled_order` is dispatched one
+session late, and `self.cash`/`self.portfolio_value` inside
+`on_trading_iteration` are always sampled before that session's fills.
+Reference-strategy v1 stamped fills with the callback's clock and reported
+the sampled state verbatim, which mis-dated every fill by one session and
+left the entry session's state showing no position.
+
+v2 reads the broker's own trade-event log instead, whose rows are stamped
+with `data_source._datetime` at the moment the event is processed
+(`lumibot/brokers/broker.py`, the `"time"` column). That is LumiBot's
+authoritative record of when it booked the fill, is independent of callback
+delivery, and is what `_normalize_result` below re-aligns the daily state
+onto. The log is a private attribute, which is why `LUMIBOT_PINNED_VERSION`
+is asserted before it is read and why its absence is a hard error rather
+than a fallback to the callback clock -- a silently wrong date is worse than
+a failed run.
 
 `benchmark_asset=None` and `analyze_backtest=False` are hardcoded below, not
 caller-configurable -- ADR 0009 Decision 3 requires both as a condition of the
@@ -32,6 +59,7 @@ disable.
 from __future__ import annotations
 
 import datetime as dt
+import math
 from typing import Any
 
 from . import LUMIBOT_PINNED_VERSION, SCHEMA_VERSION_RESULT
@@ -40,6 +68,12 @@ from .contract import BacktestInput, StrategyConfig, bars_digest, strategy_diges
 
 class BacktestExecutionError(RuntimeError):
     """Raised when the underlying LumiBot backtest fails or mis-resolves."""
+
+
+# Every reconstructed quantity below is checked against the value LumiBot
+# itself reported, so the tolerance only has to absorb double-rounding in
+# `cash + quantity * price`, not any modelling difference.
+_LEDGER_TOLERANCE = 1e-6
 
 
 def _build_frame(bars):
@@ -61,6 +95,72 @@ def _build_frame(bars):
     return frame.set_index("datetime")
 
 
+def _enum_value(member: object) -> str:
+    return member.value if hasattr(member, "value") else str(member)
+
+
+def _finite_float(value: object, default: float = 0.0) -> float:
+    """LumiBot leaves numeric event-log cells unset as NaN. NaN is not
+    representable in the JSON contract, so it becomes the documented default
+    rather than propagating into a document `contract.py` would reject."""
+    try:
+        number = float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return default
+    return number if math.isfinite(number) else default
+
+
+def _authoritative_fill_events(broker: object, symbol: str) -> list[dict[str, Any]]:
+    """Return LumiBot's own fill records, in the order its broker booked them.
+
+    Read from the broker's trade-event log rather than from `on_filled_order`,
+    because that callback is dispatched a session after the broker books the
+    fill (see the module docstring). Each row's `"time"` is the broker clock at
+    the moment the event was processed, which is the session the fill belongs
+    to.
+    """
+    log = getattr(broker, "_trade_event_log_df", None)
+    if log is None:
+        raise BacktestExecutionError(
+            f"lumibot=={LUMIBOT_PINNED_VERSION} broker exposed no trade-event log; "
+            "refusing to fall back to the strategy callback clock, which mis-dates "
+            "fills by one session"
+        )
+    required = {"time", "identifier", "side", "status", "price", "filled_quantity"}
+    missing = required - set(getattr(log, "columns", ()))
+    if missing:
+        raise BacktestExecutionError(
+            f"lumibot trade-event log is missing columns {sorted(missing)}"
+        )
+
+    events: list[dict[str, Any]] = []
+    counters: dict[str, int] = {}
+    for _, row in log.iterrows():
+        if str(_enum_value(row["status"])).lower() != "fill":
+            continue
+        order_id = str(row["identifier"])
+        counters[order_id] = counters.get(order_id, 0) + 1
+        booked_at = row["time"]
+        if not hasattr(booked_at, "date"):
+            raise BacktestExecutionError(
+                f"lumibot trade-event log stamped fill {order_id} with a "
+                f"non-datetime time {booked_at!r}"
+            )
+        events.append(
+            {
+                "fill_id": f"{order_id}-fill-{counters[order_id]}",
+                "order_id": order_id,
+                "symbol": symbol,
+                "side": str(_enum_value(row["side"])).lower(),
+                "quantity": _finite_float(row["filled_quantity"]),
+                "fill_price": _finite_float(row["price"]),
+                "fees": _finite_float(row.get("trade_cost")),
+                "market_date": booked_at.date().isoformat(),
+            }
+        )
+    return events
+
+
 def run_backtest(backtest_input: BacktestInput) -> dict[str, Any]:
     import lumibot
 
@@ -78,17 +178,17 @@ def run_backtest(backtest_input: BacktestInput) -> dict[str, Any]:
     asset = Asset(strategy_cfg.symbol, asset_type="stock")
 
     orders: dict[str, dict[str, Any]] = {}
-    fills: list[dict[str, Any]] = []
-    raw_daily_states: list[dict[str, Any]] = []
-
-    def _enum_value(member: object) -> str:
-        return member.value if hasattr(member, "value") else str(member)
+    observations: list[dict[str, Any]] = []
+    captured: dict[str, Any] = {}
 
     class ReferenceStrategy(Strategy):  # type: ignore[misc]
         def initialize(self) -> None:
             self.sleeptime = "1D"
             self.set_market("NYSE")
             self._submitted = False
+            # Kept only to read the broker's event log once the run is over.
+            # Nothing is ever submitted through this reference.
+            captured["broker"] = self.broker
 
         def on_trading_iteration(self) -> None:
             current_date = self.get_datetime().date()
@@ -114,40 +214,21 @@ def run_backtest(backtest_input: BacktestInput) -> dict[str, Any]:
                 }
                 self._submitted = True
 
-            equity = float(self.portfolio_value)
-            cash = float(self.cash)
+            # Sampled *before* this session's fills are processed, which is
+            # the only point in the session a strategy gets to run. These are
+            # therefore last session's closing balances marked at this
+            # session's price; `_normalize_result` checks them against the
+            # reconstruction and then adds this session's booked fills.
             position = self.get_position(asset)
-            filled_quantity = float(position.quantity) if position else 0.0
-            avg_fill_price = (
-                float(position.avg_fill_price) if position and position.avg_fill_price else 0.0
-            )
-            unrealized_pnl = (equity - cash) - (filled_quantity * avg_fill_price)
-            raw_daily_states.append(
+            observations.append(
                 {
                     "market_date": current_date.isoformat(),
-                    "cash": cash,
-                    "equity": equity,
-                    "unrealized_pnl": unrealized_pnl,
-                    "position_quantity": filled_quantity,
-                    "position_avg_price": avg_fill_price,
+                    "observed_cash": float(self.cash),
+                    "observed_equity": float(self.portfolio_value),
+                    "observed_quantity": float(position.quantity) if position else 0.0,
+                    "mark_price": float(price) if price else 0.0,
                 }
             )
-
-        def on_filled_order(self, position, order, price, quantity, multiplier) -> None:
-            fills.append(
-                {
-                    "fill_id": f"{order.identifier}-fill-{len(fills) + 1}",
-                    "order_id": order.identifier,
-                    "symbol": strategy_cfg.symbol,
-                    "side": _enum_value(order.side),
-                    "quantity": float(quantity),
-                    "fill_price": float(price),
-                    "fees": 0.0,
-                    "market_date": self.get_datetime().date().isoformat(),
-                }
-            )
-            if order.identifier in orders:
-                orders[order.identifier]["status"] = _enum_value(order.status)
 
     frame = _build_frame(bars)
     pandas_data = {asset: Data(asset, frame, timestep="day", timezone="America/New_York")}
@@ -173,7 +254,25 @@ def run_backtest(backtest_input: BacktestInput) -> dict[str, Any]:
     except Exception as exc:  # noqa: BLE001 - normalized into a contract-level failure
         raise BacktestExecutionError(f"lumibot backtest failed: {exc}") from exc
 
-    return _normalize_result(strategy_cfg, bars, orders, fills, raw_daily_states, lumibot.__version__)
+    broker = captured.get("broker")
+    if broker is None:
+        raise BacktestExecutionError("lumibot never initialized the reference strategy")
+    fills = _authoritative_fill_events(broker, strategy_cfg.symbol)
+    for fill in fills:
+        if fill["order_id"] in orders:
+            orders[fill["order_id"]]["status"] = "fill"
+
+    return _normalize_result(
+        strategy_cfg, bars, orders, fills, observations, lumibot.__version__
+    )
+
+
+def _require_agrees(actual: float, expected: float, what: str) -> None:
+    if abs(actual - expected) > _LEDGER_TOLERANCE * max(1.0, abs(expected)):
+        raise BacktestExecutionError(
+            f"reconstructed {what} ({expected}) disagrees with the value lumibot "
+            f"reported ({actual}); the daily-state realignment cannot be trusted"
+        )
 
 
 def _normalize_result(
@@ -181,43 +280,106 @@ def _normalize_result(
     bars,
     orders: dict[str, dict[str, Any]],
     fills: list[dict[str, Any]],
-    raw_daily_states: list[dict[str, Any]],
+    observations: list[dict[str, Any]],
     lumibot_version: str,
 ) -> dict[str, Any]:
+    """Turn per-iteration samples into end-of-session states.
+
+    Each observation is what LumiBot reported *before* that session's fills
+    were booked. Walking the sessions in order and applying the fills the
+    broker stamped with each session yields the end-of-session balances, which
+    is the state a daily series is normally understood to carry.
+
+    Two invariants keep this from drifting away from LumiBot's own accounting,
+    and both are hard errors rather than warnings:
+
+      * each session's observation must equal the reconstruction as of the
+        *previous* reported session -- if the one-session lag documented above
+        ever stops holding, the realignment is wrong; and
+      * `observed_cash + observed_quantity * mark_price` must equal the
+        `portfolio_value` LumiBot reported -- if it does not, `mark_price` is
+        not the price LumiBot marked at and every reconstructed equity would
+        be wrong.
+    """
+    for fill in fills:
+        if fill["side"] != "buy":
+            raise BacktestExecutionError(
+                f"reference strategy is buy-only but lumibot booked a "
+                f"{fill['side']!r} fill; realized P&L is not modelled"
+            )
+
+    fills_by_session: dict[str, list[dict[str, Any]]] = {}
+    for fill in fills:
+        fills_by_session.setdefault(fill["market_date"], []).append(fill)
+
+    cash = float(strategy_cfg.budget)
+    quantity = 0.0
+    cost_basis = 0.0
     peak_equity = 0.0
     max_drawdown = 0.0
     daily_states: list[dict[str, Any]] = []
-    for state in raw_daily_states:
-        peak_equity = max(peak_equity, state["equity"])
+    expected_cash = float(strategy_cfg.budget)
+    expected_quantity = 0.0
+
+    for observation in observations:
+        session = observation["market_date"]
+        _require_agrees(observation["observed_cash"], expected_cash, f"cash before {session}")
+        _require_agrees(
+            observation["observed_quantity"], expected_quantity, f"quantity before {session}"
+        )
+        _require_agrees(
+            observation["observed_equity"],
+            observation["observed_cash"]
+            + observation["observed_quantity"] * observation["mark_price"],
+            f"mark price on {session}",
+        )
+
+        for fill in fills_by_session.pop(session, ()):
+            cash -= fill["quantity"] * fill["fill_price"] + fill["fees"]
+            quantity += fill["quantity"]
+            cost_basis += fill["quantity"] * fill["fill_price"]
+
+        equity = cash + quantity * observation["mark_price"]
+        peak_equity = max(peak_equity, equity)
         drawdown_fraction = (
-            0.0 if peak_equity <= 0 else min(0.0, (state["equity"] - peak_equity) / peak_equity)
+            0.0 if peak_equity <= 0 else min(0.0, (equity - peak_equity) / peak_equity)
         )
         max_drawdown = min(max_drawdown, drawdown_fraction)
         daily_states.append(
             {
-                "market_date": state["market_date"],
-                "cash": state["cash"],
-                "equity": state["equity"],
+                "market_date": session,
+                "cash": cash,
+                "equity": equity,
                 "realized_pnl": 0.0,
-                "unrealized_pnl": state["unrealized_pnl"],
+                "unrealized_pnl": quantity * observation["mark_price"] - cost_basis,
                 "drawdown_fraction": drawdown_fraction,
             }
         )
+        expected_cash = cash
+        expected_quantity = quantity
 
-    last_raw_state = raw_daily_states[-1] if raw_daily_states else None
+    if fills_by_session:
+        # A fill stamped with a session the strategy never ran on would be
+        # dropped from the daily series while still appearing under `fills`,
+        # leaving a document that contradicts itself.
+        raise BacktestExecutionError(
+            f"lumibot booked fills on sessions with no trading iteration: "
+            f"{sorted(fills_by_session)}"
+        )
+
     positions = []
-    if last_raw_state and last_raw_state["position_quantity"] > 0:
+    if quantity > 0:
         positions.append(
             {
                 "symbol": strategy_cfg.symbol,
-                "quantity": last_raw_state["position_quantity"],
-                "average_price": last_raw_state["position_avg_price"],
+                "quantity": quantity,
+                "average_price": cost_basis / quantity,
             }
         )
 
     final_state = daily_states[-1] if daily_states else None
-    final_cash = final_state["cash"] if final_state else strategy_cfg.budget
-    final_equity = final_state["equity"] if final_state else strategy_cfg.budget
+    final_cash = final_state["cash"] if final_state else float(strategy_cfg.budget)
+    final_equity = final_state["equity"] if final_state else float(strategy_cfg.budget)
 
     return {
         "schema_version": SCHEMA_VERSION_RESULT,

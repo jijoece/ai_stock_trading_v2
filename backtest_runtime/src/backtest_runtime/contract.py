@@ -240,19 +240,32 @@ def parse_input_document(document: object) -> BacktestInput:
                 f"(bars[{i}].date {bars[i].session_date} does not follow "
                 f"bars[{i - 1}].date {bars[i - 1].session_date})"
             )
-    # A delay past the end of the bar set would produce a run that silently
-    # never enters. That is a caller error, not a degenerate-but-valid run:
-    # reject it here rather than return an empty result the caller has to
-    # notice.
-    if (
-        strategy.entry_after_session is not None
-        and strategy.entry_after_session >= bars[-1].session_date
-    ):
-        raise ContractError(
-            f"strategy.entry_after_session {strategy.entry_after_session} leaves no "
-            f"session on which an entry could occur (last bar is "
-            f"{bars[-1].session_date})"
-        )
+    # A delay that leaves no session on which the order can be both submitted
+    # and filled would produce a run that silently never enters. That is a
+    # caller error, not a degenerate-but-valid run: reject it here rather than
+    # return a result whose emptiness the caller has to notice.
+    #
+    # The domain is `bars[1:]`, not `bars`: LumiBot's pandas daily loop seeds
+    # its cursor with the first session strictly after `backtesting_start`, so
+    # the first bar is never a trading iteration and no order can be submitted
+    # on it. Within a session that *is* iterated, submission and fill are the
+    # same event as far as the broker's clock is concerned -- it runs
+    # `process_pending_orders` at the end of that same session -- so one
+    # iterable session strictly after the delay is both necessary and
+    # sufficient (docs/library-migration/pr7/PARITY_REPORT.md, D1 and D4).
+    if strategy.entry_after_session is not None:
+        submittable = [
+            bar.session_date
+            for bar in bars[1:]
+            if bar.session_date > strategy.entry_after_session
+        ]
+        if not submittable:
+            raise ContractError(
+                f"strategy.entry_after_session {strategy.entry_after_session} leaves no "
+                f"session on which the entry could be submitted and filled (the last "
+                f"bar is {bars[-1].session_date}, and the first bar "
+                f"{bars[0].session_date} is never a trading iteration)"
+            )
     return BacktestInput(strategy=strategy, bars=bars)
 
 

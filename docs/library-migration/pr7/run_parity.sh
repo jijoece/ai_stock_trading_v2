@@ -23,6 +23,30 @@ MAIN_PYTHON="${2:-.venv/bin/python}"
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${HERE}/../../.." && pwd)"
 RESULTS="${HERE}/results"
+
+# Both interpreters are resolved to absolute paths HERE, before anything below
+# changes directory. The documented invocation passes them relative to the
+# repository root (`.venv/bin/python`), and step 2 runs the isolated
+# interpreter from a scratch directory -- a relative path would resolve
+# against that scratch directory and fail.
+absolute_interpreter() {
+    case "$1" in
+        /*) printf '%s\n' "$1" ;;
+        */*) printf '%s\n' "${PWD}/$1" ;;
+        # A bare name is a PATH lookup, which `env -i PATH=...` preserves,
+        # but pin it now so both steps use the same interpreter.
+        *) command -v -- "$1" ;;
+    esac
+}
+
+BT_PYTHON="$(absolute_interpreter "${BT_PYTHON}")"
+MAIN_PYTHON="$(absolute_interpreter "${MAIN_PYTHON}")"
+for interpreter in "${BT_PYTHON}" "${MAIN_PYTHON}"; do
+    if [ ! -x "${interpreter}" ]; then
+        echo "not an executable interpreter: ${interpreter}" >&2
+        exit 2
+    fi
+done
 # LumiBot writes a `logs/` directory relative to the process CWD during a real
 # backtest run, independent of `save_logfile=False`; run it somewhere
 # disposable so nothing lands in the repository.
@@ -64,16 +88,22 @@ echo "== 4/5 compare and classify =="
 "${MAIN_PYTHON}" "${HERE}/compare_parity.py" "${RESULTS}" >/dev/null
 
 echo "== 5/5 LumiBot fill-timing probe (isolated environment) =="
+# Three fixtures, because one is not enough to separate the clocks: A is the
+# undelayed default, E has gapped opens so a fill price identifies exactly one
+# bar, and F is the delayed exact-parity case where the booking session moves.
 {
-    (cd "${SCRATCH}" && env -i PATH="${PATH}" "${BT_PYTHON}" \
-        "${HERE}/probe_lumibot_fill_timing.py" \
-        "${HERE}/fixtures/case_a_buy_and_hold.input.json" 2>/dev/null)
-    echo
-    echo "================================================================"
-    echo
-    (cd "${SCRATCH}" && env -i PATH="${PATH}" "${BT_PYTHON}" \
-        "${HERE}/probe_lumibot_fill_timing.py" \
-        "${HERE}/fixtures/case_e_gapped_opens.input.json" 2>/dev/null)
+    first=1
+    for probe_case in case_a_buy_and_hold case_e_gapped_opens case_f_exact_entry_parity; do
+        if [ "${first}" -eq 0 ]; then
+            echo
+            echo "================================================================"
+            echo
+        fi
+        first=0
+        (cd "${SCRATCH}" && env -i PATH="${PATH}" "${BT_PYTHON}" \
+            "${HERE}/probe_lumibot_fill_timing.py" \
+            "${HERE}/fixtures/${probe_case}.input.json" 2>/dev/null)
+    done
 } > "${RESULTS}/probe_output.txt"
 
 echo

@@ -9,7 +9,7 @@ engine (docs/adr/0009-lumibot-backtest-distribution-boundary.md Decision 5 --
 engines"). Pure standard library.
 
 Inputs per case:
-  * `<case_id>.backtest_runtime.json` -- `backtest_runtime.result.v1`
+  * `<case_id>.backtest_runtime.json` -- `backtest_runtime.result.v2`
   * `<case_id>.legacy_engine.json`    -- `pr7.legacy_engine.result.v1`, the
     faithful serialization of `backtesting/models.py`'s `BacktestResult` /
     `BacktestFill` / `BacktestDailyState` produced by `run_legacy_engine.py`
@@ -37,6 +37,7 @@ each family, so a reader can see directly how much the bounds are absorbing.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import sys
 from decimal import Decimal
@@ -87,10 +88,34 @@ SUBCATEGORY_LABELS = {
     "CAPABILITY": "cannot express a capability the legacy engine has",
 }
 SUBCATEGORIES = {
-    "D4-fill-market-date-lag": "BEHAVIOR",
-    "D15-entry-session-state-lag": "BEHAVIOR",
     "D7-fees-and-slippage-model": "CAPABILITY",
     "D8-realized-pnl-and-exit-support": "CAPABILITY",
+}
+
+# Differences that reference strategy v1 produced and reference strategy v2
+# does not. They are recorded rather than deleted because the *library*
+# behaviour that caused them is unchanged and still has to be understood by
+# anyone reading this report; what changed is that the adapter no longer
+# reports the lagging clock as if it were the booking clock. `main` fails if
+# any of them is emitted again, so this is a regression barrier and not a
+# footnote.
+RESOLVED_BY_REFERENCE_STRATEGY_V2 = {
+    "D4-fill-observation-lag": (
+        "reference strategy v1 stamped fills with `self.get_datetime()` inside "
+        "`on_filled_order`, which LumiBot dispatches one session after its broker "
+        "books the fill, so every fill carried a date one session too late. v2 reads "
+        "the booking session from the broker's own trade-event log instead. The "
+        "underlying LumiBot behaviour is unchanged and is a library semantic "
+        "difference, not a defect of either engine."
+    ),
+    "D15-entry-session-state-lag": (
+        "the same lag in the daily-state series: `on_trading_iteration` runs before "
+        "`process_pending_orders` within a session, so the state a strategy can "
+        "sample on the booking session necessarily excludes that session's own fill. "
+        "v1 reported the sample verbatim, which left the entry session showing no "
+        "position and untouched cash. v2 re-applies the session's authoritative "
+        "fills, so a state row means end-of-session on both sides."
+    ),
 }
 
 # Vocabulary pairs that carry no economic content: the same fact spelled two
@@ -126,33 +151,42 @@ CLASSIFICATIONS: dict[str, tuple[str, str]] = {
     ),
     "D2-entry-session": (
         "LIBRARY_SEMANTIC",
-        "The legacy engine's earliest expressible entry is the third bar: a signal is "
-        "eligible only on the session after generated_after_session, and "
-        "average_true_range needs atr_period+1 bars of history before that. LumiBot's "
-        "reference strategy buys on its first iteration. A one-session offset is "
-        "structural on the narrowest Option A construction and cannot be tuned away.",
+        "The two engines have different, non-overlapping floors on how early they can "
+        "book an entry, both structural. LumiBot's pandas daily loop seeds its cursor "
+        "with the first session strictly after backtesting_start, so the first bar is "
+        "never a trading iteration and the earliest submission -- and therefore the "
+        "earliest booking, since process_pending_orders runs in the same session -- is "
+        "the second bar. The legacy engine's earliest entry is the third bar: a signal "
+        "is eligible only on the session after generated_after_session, and "
+        "average_true_range needs atr_period+1 bars before that, which with the "
+        "smallest legal atr_period of 1 still puts generated_after_session no earlier "
+        "than the second bar. The one-session offset therefore cannot be closed by any "
+        "fixture or configuration, which is precisely why the exact-parity case needs "
+        "reference strategy v2's entry_after_session (DECISIONS.md D6).",
     ),
     "D3-entry-fill-price": (
         "LIBRARY_SEMANTIC",
-        "Both engines fill at the *open of the entry session* -- measured, not assumed: "
-        "case E gaps its opens away from the previous closes, and LumiBot still filled "
-        "at 104.0, the submission session's open, not 100.0, the previous close "
-        "(probe_output.txt). The legacy engine fills at min(entry session open, limit "
-        "price), and the fixture's limit is non-binding. The price difference is "
-        "therefore entirely the entry-session offset of D2, not a second, independent "
-        "execution-model difference.",
+        "Both engines fill an entry at the open of the session they book it in -- "
+        "measured, not assumed: case E gaps its opens away from the previous closes, "
+        "and LumiBot still filled at 104.0, the 2024-01-03 open, rather than 100.0, the "
+        "2024-01-02 close (probe_output.txt). The legacy engine fills at min(entry "
+        "session open, limit price), and every fixture limit is constructed to be "
+        "non-binding. The price difference is therefore entirely the entry-session "
+        "offset of D2, not a second, independent execution-model difference.",
     ),
-    "D4-fill-market-date-lag": (
-        "ADAPTER_DEFECT",
-        "backtest_runtime stamps a fill with self.get_datetime() inside "
-        "on_filled_order, which LumiBot invokes on the iteration *after* the fill is "
-        "booked. Measured on case E: the fill price is 104.0, the 2024-01-03 open, but "
-        "the recorded market_date is 2024-01-04 -- a session whose own open is 106.0. "
-        "The stamped date is provably not the session the fill priced against, and the "
-        "01-03 daily state still reports zero position and untouched cash. LumiBot "
-        "leaves order.broker_date/broker_create_date as None in backtesting, which is "
-        "what makes the wrong timestamp easy to reach for, but the adapter already "
-        "observes the correct session inside on_trading_iteration.",
+    "D4-fill-observation-lag": (
+        "LIBRARY_SEMANTIC",
+        "LumiBot books a fill at the end of the session the order was submitted in "
+        "(`_process_pandas_daily_data` calls `process_pending_orders` after "
+        "`on_trading_iteration`), but dispatches `on_filled_order` on the following "
+        "iteration, and leaves order.broker_create_date/broker_update_date unset in "
+        "backtesting. A strategy callback therefore observes every fill one session "
+        "late. The legacy engine has no equivalent split: it creates the fill inline in "
+        "the session it is processing. This is a difference between the two execution "
+        "loops, not a defect of either -- but reference strategy v1 reported the "
+        "lagging clock as the fill date, which was an adapter defect and is fixed in "
+        "v2 by reading the broker's own trade-event log "
+        "(RESOLVED_BY_REFERENCE_STRATEGY_V2).",
     ),
     "D5-enum-vocabulary": (
         "LIBRARY_SEMANTIC",
@@ -191,15 +225,16 @@ CLASSIFICATIONS: dict[str, tuple[str, str]] = {
         "requirement -- one side already does this.",
     ),
     "D15-entry-session-state-lag": (
-        "ADAPTER_DEFECT",
+        "LIBRARY_SEMANTIC",
         "Same root cause as D4, in the daily-state series rather than the fill "
-        "record. backtest_runtime's daily state for session D reflects fills "
-        "booked through D-1, because the snapshot is taken inside "
-        "on_trading_iteration before LumiBot's broker processes that session's "
-        "order; the legacy engine's state for D reflects fills through D. On the "
-        "exact-parity case this is the *only* daily-state disagreement: cash, "
-        "equity, unrealized P&L and drawdown all match on every session except "
-        "the entry session itself.",
+        "record: within a session LumiBot runs the strategy before the broker "
+        "processes that session's orders, so the balances a strategy can sample on "
+        "the booking session necessarily exclude that session's own fill, while the "
+        "legacy engine's state for a session reflects everything that happened in it. "
+        "Reference strategy v1 published the raw sample and so reported the entry "
+        "session flat; v2 re-applies the session's authoritative fills, which is what "
+        "lets the exact-parity case agree on the entry session too "
+        "(RESOLVED_BY_REFERENCE_STRATEGY_V2).",
     ),
     "D16-order-type-model": (
         "LIBRARY_SEMANTIC",
@@ -279,13 +314,14 @@ FIELD_MAPPING = [
      "independently recomputed on the legacy side; equality proves identical input"),
     ("orders", "orders[]", "derived.orders_from_fills[]",
      "legacy `orders` is null: BacktestResult has no order records (D11)"),
-    ("fills", "fills[]", "fills[]", "aligned by index in engine execution order"),
+    ("fills", "fills[]", "fills[]", "aligned by index in booking order on both sides"),
     ("fill: quantity", "fills[].quantity", "fills[].quantity", "float vs Decimal, whole shares"),
     ("fill: price", "fills[].fill_price", "fills[].fill_price", "float vs Decimal"),
-    ("fill: fees", "fills[].fees", "fills[].fees", "constant 0.0 on the runtime side (D7)"),
+    ("fill: fees", "fills[].fees", "fills[].fees",
+     "runtime value is the broker event log's trade_cost; no cost model to set (D7)"),
     ("fill: slippage", "(absent)", "fills[].slippage", "no runtime counterpart (D7)"),
     ("fill: timestamp", "fills[].market_date", "fills[].market_date",
-     "runtime value is the on_filled_order observation date (D4)"),
+     "both sides' own booking session: the runtime's comes from LumiBot's broker\n     trade-event log, the legacy engine's is assigned as it creates the fill"),
     ("fill: exit reason", "(absent)", "fills[].exit_reason", "runtime never sells (D8/D9)"),
     ("positions", "positions[]", "derived.end_positions_from_fills[]", "see D11"),
     ("daily: cash", "daily_states[].cash", "daily_states[].cash", "aligned by market_date"),
@@ -549,30 +585,42 @@ class CaseComparison:
                          runtime_fill["fill_id"], legacy_fill["fill_id"])
         self.add(
             "D7-fees-and-slippage-model", "fills: slippage field",
-            "absent from backtest_runtime.result.v1",
+            "absent from backtest_runtime.result.v2",
             [fill["slippage"] for fill in legacy_fills],
         )
         self.add(
             "D8-realized-pnl-and-exit-support", "fills: exit_reason field",
-            "absent from backtest_runtime.result.v1 (the reference strategy never sells)",
+            "absent from backtest_runtime.result.v2 (the reference strategy never sells)",
             [fill["exit_reason"] for fill in legacy_fills],
         )
 
     def _sessions_whose_open_matches(self, price) -> list[str]:
-        return [
-            bar["date"] for bar in self.bars if _close(bar["open"], price, "price")
-        ]
+        """Informational only: which sessions open at this price.
+
+        Deliberately **not** used to decide when a fill happened. A price is
+        evidence about a price; several sessions can open at the same level,
+        and a fixture that revisits a level makes the mapping ambiguous. The
+        booking session comes from each engine's own authoritative record.
+        """
+        return [bar["date"] for bar in self.bars if _close(bar["open"], price, "price")]
 
     def compare_entry_timing(self):
-        """Derives the entry session each side actually priced against, from the
-        checked-in bars rather than from either document's own claim.
+        """Compares the session each engine says it booked its entry in.
 
-        Both engines fill an entry at a session's open (established by case E,
-        which gaps opens away from the previous closes -- see probe_output.txt),
-        so the session whose open equals the entry fill price *is* the session
-        the fill happened on. Comparing that against the `market_date` each
-        document reports is what separates a genuine entry-timing difference
-        (D2) from a mis-stamped timestamp (D4).
+        Both `market_date` values are now authoritative records rather than
+        observations:
+
+          * `backtest_runtime` reports the `"time"` LumiBot's own broker
+            trade-event log stamped on the fill, which is the broker clock at
+            the moment `process_pending_orders` booked it (reference strategy
+            v2; reference strategy v1 reported the `on_filled_order` callback
+            clock instead, one session later).
+          * the legacy engine assigns `market_date` as it creates the fill,
+            inside the session it is processing.
+
+        So the two dates are directly comparable and no session is inferred
+        from a price. The open-matching below is recorded as supporting
+        evidence about the *price*, never as the determinant of the session.
         """
         runtime_fills = self.runtime["fills"]
         legacy_entries = [fill for fill in self.legacy["fills"] if fill["side"] == "BUY"]
@@ -580,59 +628,52 @@ class CaseComparison:
             return
         runtime_entry, legacy_entry = runtime_fills[0], legacy_entries[0]
 
-        runtime_sessions = self._sessions_whose_open_matches(runtime_entry["fill_price"])
-        legacy_sessions = self._sessions_whose_open_matches(legacy_entry["fill_price"])
+        runtime_booked = runtime_entry["market_date"]
+        legacy_booked = legacy_entry["market_date"]
+        self.runtime_entry_session = runtime_booked
 
-        # A price can be the open of more than one session in a fixture that
-        # revisits a level, so neither list is resolved by position. A fill
-        # cannot happen after the callback that reported it, so the priced
-        # session is the latest match at or before the reported market_date.
-        def resolve(sessions: list[str], market_date: str) -> str | None:
-            if market_date in sessions:
-                return market_date
-            earlier = [session for session in sessions if session < market_date]
-            return earlier[-1] if earlier else (sessions[0] if sessions else None)
+        session_dates = [bar["date"] for bar in self.bars]
+        for label, booked, price in (
+            ("backtest_runtime", runtime_booked, runtime_entry["fill_price"]),
+            ("legacy engine", legacy_booked, legacy_entry["fill_price"]),
+        ):
+            opens_at = self._sessions_whose_open_matches(price)
+            # Corroboration, not derivation: each engine fills an entry at a
+            # session open, so its own booking session should be among the
+            # sessions that open at its own fill price. If it is not, the
+            # document contradicts itself and that is worth saying out loud.
+            if booked in opens_at:
+                self.agreements.append(
+                    f"entry: {label} booked {booked} at {price}, which is that "
+                    "session's own open (self-consistent)"
+                )
+            else:
+                self.add(
+                    "D4-fill-observation-lag", "entry: booked session vs. its own fill price",
+                    f"{label} booked {booked} at {price}",
+                    f"sessions opening at {price}: {opens_at or 'none'}",
+                    "the document's booking session is not a session that opens at the "
+                    "price it says it filled at",
+                )
 
-        runtime_priced = resolve(runtime_sessions, runtime_entry["market_date"])
-        legacy_priced = resolve(legacy_sessions, legacy_entry["market_date"])
-        self.runtime_entry_session = runtime_priced
-
-        if runtime_entry["market_date"] not in runtime_sessions:
+        if runtime_booked != legacy_booked:
             self.add(
-                "D4-fill-market-date-lag", "fills[0]: reported market_date vs. priced session",
-                f"market_date {runtime_entry['market_date']}, but fill_price "
-                f"{runtime_entry['fill_price']} is the open of {runtime_priced} "
-                f"(sessions matching that open: {runtime_sessions})",
-                f"market_date {legacy_entry['market_date']}, fill_price "
-                f"{legacy_entry['fill_price']} is the open of {legacy_priced} "
-                f"(sessions matching that open: {legacy_sessions})",
-                "the runtime document's own fill price and fill date disagree about "
-                "which session the entry happened on",
+                "D2-entry-session", "entry: session the fill was booked in",
+                f"{runtime_booked} (bar index {session_dates.index(runtime_booked)})",
+                f"{legacy_booked} (bar index {session_dates.index(legacy_booked)})",
+                f"offset {session_dates.index(legacy_booked) - session_dates.index(runtime_booked)} "
+                "session(s). LumiBot cannot submit before the second bar (the first is "
+                "never a trading iteration) and books the fill in the submission "
+                "session; the legacy engine cannot enter before the third (a signal is "
+                "eligible only on the session after generated_after_session, and ATR "
+                "needs atr_period+1 prior bars). Both dates are the engines' own "
+                "records, not inferred from prices",
             )
         else:
             self.agreements.append(
-                f"fills[0]: backtest_runtime's market_date ({runtime_entry['market_date']}) "
-                "is consistent with the session whose open it priced against"
+                f"entry: both engines booked the entry in {runtime_booked} "
+                "(each engine's own authoritative record)"
             )
-        if legacy_entry["market_date"] in legacy_sessions:
-            self.agreements.append(
-                f"fills[0]: the legacy engine's market_date ({legacy_entry['market_date']}) "
-                "is consistent with the session whose open it priced against"
-            )
-
-        if runtime_priced and legacy_priced and runtime_priced != legacy_priced:
-            session_dates = [bar["date"] for bar in self.bars]
-            self.add(
-                "D2-entry-session", "entry: session actually priced against",
-                f"{runtime_priced} (bar index {session_dates.index(runtime_priced)})",
-                f"{legacy_priced} (bar index {session_dates.index(legacy_priced)})",
-                f"offset {session_dates.index(legacy_priced) - session_dates.index(runtime_priced)} "
-                "session(s); the legacy engine cannot enter earlier than this on this "
-                "fixture (a signal is eligible only on the session after "
-                "generated_after_session, and ATR needs atr_period+1 prior bars)",
-            )
-        elif runtime_priced and legacy_priced:
-            self.agreements.append(f"entry: both engines entered on {runtime_priced}")
 
     def compare_positions(self):
         runtime_positions = self.runtime["positions"]
@@ -739,27 +780,20 @@ class CaseComparison:
         for field, kind, difference_id in field_rules:
             summary = summaries[field]
             if summary["differing"]:
-                # When the *only* session that disagrees is the one
-                # backtest_runtime priced its entry against, the cause is the
-                # snapshot lag (D15), not a divergent equity path.
-                lagged_only = (
-                    self.runtime_entry_session is not None
-                    and summary["sessions"] == [self.runtime_entry_session]
-                )
+                # Reference strategy v1 needed a special case here: the entry
+                # session alone would differ because the runtime sampled its
+                # state before that session's fill. v2 re-applies the fill from
+                # the broker's booking record, so a differing session now means
+                # a genuinely divergent equity path and is classified as one.
                 self.add(
-                    "D15-entry-session-state-lag" if lagged_only else difference_id,
+                    difference_id,
                     f"daily_states[].{field}",
                     "see comparison.json for the per-session table",
                     "see comparison.json for the per-session table",
-                    (
-                        f"the entry session {self.runtime_entry_session} is the only "
-                        f"co-dated session that differs (of {summary['compared']}); "
-                        f"|difference| {summary['max_abs']}"
-                        if lagged_only else
-                        f"{summary['differing']} of {summary['compared']} co-dated session(s) "
-                        f"differ by more than {_describe(kind)}; first at "
-                        f"{summary['first']}; largest |difference| {summary['max_abs']}"
-                    ),
+                    f"{summary['differing']} of {summary['compared']} co-dated session(s) "
+                    f"differ by more than {_describe(kind)}; first at "
+                    f"{summary['first']}; largest |difference| {summary['max_abs']}; "
+                    f"differing sessions {summary['sessions']}",
                 )
             elif summary["compared"]:
                 self.agreements.append(
@@ -795,10 +829,12 @@ class CaseComparison:
         each dimension the revised D6 decision promises.
 
         Anything that fails here is a real parity failure, not a classified
-        difference, and `main` exits non-zero on it. The two dimensions
-        deliberately excluded are the ones with their own classified defect
-        ids: the fill's reported `market_date` (D4) and the entry session's own
-        daily state (D15), both the same LumiBot fill-observation lag.
+        difference, and `main` exits non-zero on it. **No session is excluded**:
+        every co-dated session is compared, the entry session included. The
+        entry session used to be exempted on the grounds of a fill-observation
+        lag (D15); reference strategy v2 removes the lag from the reported
+        document, so exempting it would now be hiding a result rather than
+        classifying a defect.
         """
         runtime_fill = self.runtime["fills"][0]
         legacy_entries = [fill for fill in self.legacy["fills"] if fill["side"] == "BUY"]
@@ -806,7 +842,11 @@ class CaseComparison:
         entry_session = self.runtime_entry_session
         runtime_states = {state["market_date"]: state for state in self.runtime["daily_states"]}
         legacy_states = {state["market_date"]: state for state in self.legacy["daily_states"]}
-        shared = sorted(set(runtime_states) & set(legacy_states) - {entry_session})
+        shared = sorted(set(runtime_states) & set(legacy_states))
+        assert entry_session in shared, (
+            f"{self.case['case_id']}: the entry session {entry_session} is not a "
+            "co-dated session, so exact parity cannot be claimed for it"
+        )
 
         def series_equal(field: str, kind: str) -> bool:
             return all(
@@ -817,10 +857,9 @@ class CaseComparison:
         runtime_position = self.runtime["positions"]
         legacy_position = self.legacy["derived"]["end_positions_from_fills"]
         checks = {
-            "entry session": (
-                self.runtime_entry_session is not None
-                and self.runtime_entry_session
-                == self._resolve_legacy_entry_session(legacy_fill)
+            # Both sides' own authoritative booking records, compared directly.
+            "entry session (authoritative booking date)": (
+                entry_session is not None and entry_session == legacy_fill["market_date"]
             ),
             "entry price": _close(runtime_fill["fill_price"], legacy_fill["fill_price"], "price"),
             "quantity": _close(runtime_fill["quantity"], legacy_fill["quantity"], "exact"),
@@ -832,7 +871,9 @@ class CaseComparison:
             and _close(
                 runtime_position[0]["average_price"], legacy_position[0]["average_price"], "price"
             ),
-            "cash (every co-dated session but the entry session)": series_equal("cash", "money"),
+            "cash (every co-dated session, entry session included)": series_equal(
+                "cash", "money"
+            ),
             "equity (same)": series_equal("equity", "money"),
             "unrealized P&L (same)": series_equal("unrealized_pnl", "money"),
             "realized P&L (same)": series_equal("realized_pnl", "money"),
@@ -855,19 +896,10 @@ class CaseComparison:
         return {
             "entry_session": entry_session,
             "sessions_compared": shared,
-            "excluded_by_classified_defect": {
-                entry_session: "D15-entry-session-state-lag (and D4 for the fill's own date)"
-            },
+            "excluded_sessions": [],
             "checks": checks,
             "all_passed": all(checks.values()),
         }
-
-    def _resolve_legacy_entry_session(self, legacy_fill: dict) -> str | None:
-        sessions = self._sessions_whose_open_matches(legacy_fill["fill_price"])
-        if legacy_fill["market_date"] in sessions:
-            return legacy_fill["market_date"]
-        earlier = [session for session in sessions if session < legacy_fill["market_date"]]
-        return earlier[-1] if earlier else (sessions[0] if sessions else None)
 
     def run(self) -> dict:
         self.compare_input_identity()
@@ -960,6 +992,47 @@ def find_cross_case_identity_collisions(cases: list[dict]) -> list[dict]:
     return findings
 
 
+def fixture_bars_digest(raw_bars: list[dict]) -> str:
+    """A third, independent computation of the canonical bar-set checksum.
+
+    `backtest_runtime.contract.bars_digest` computes one; `run_legacy_engine.py`
+    re-implements it; this recomputes it straight from the checked-in fixture.
+    Requiring all three to agree is what binds a result document to the fixture
+    it claims to describe: a stale result left behind by an earlier fixture
+    revision still carries a valid, self-consistent checksum of its *own* bars,
+    and nothing but comparison against the current fixture can catch it.
+    """
+    payload = [
+        {
+            "date": bar["date"],
+            "open": bar["open"],
+            "high": bar["high"],
+            "low": bar["low"],
+            "close": bar["close"],
+            "volume": bar["volume"],
+        }
+        for bar in raw_bars
+    ]
+    canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"), allow_nan=False)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def check_results_match_fixtures(
+    case_id: str, fixture_checksum: str, runtime: dict, legacy: dict
+) -> list[str]:
+    """Return one message per side whose result does not describe this fixture."""
+    stale = []
+    for label, document in (("backtest_runtime", runtime), ("legacy engine", legacy)):
+        reported = document["historical_bar_dataset_checksum"]
+        if reported != fixture_checksum:
+            stale.append(
+                f"{case_id}: the {label} result was produced from a different bar set "
+                f"than the checked-in fixture (result {reported[:16]}..., fixture "
+                f"{fixture_checksum[:16]}...); regenerate it with run_parity.sh"
+            )
+    return stale
+
+
 def main(argv: list[str]) -> int:
     if len(argv) != 1:
         print("usage: compare_parity.py <results_dir>", file=sys.stderr)
@@ -969,6 +1042,7 @@ def main(argv: list[str]) -> int:
     manifest = json.loads((fixtures_dir / "parity_manifest.json").read_text(encoding="utf-8"))
 
     unknown = set()
+    stale: list[str] = []
     cases = []
     for case in manifest["cases"]:
         runtime = json.loads(
@@ -977,10 +1051,22 @@ def main(argv: list[str]) -> int:
         legacy = json.loads(
             (results_dir / f"{case['case_id']}.legacy_engine.json").read_text(encoding="utf-8")
         )
-        assert runtime["schema_version"] == "backtest_runtime.result.v1", runtime["schema_version"]
+        assert runtime["schema_version"] == "backtest_runtime.result.v2", runtime["schema_version"]
         assert legacy["schema_version"] == "pr7.legacy_engine.result.v1", legacy["schema_version"]
         document = json.loads((fixtures_dir / case["input"]).read_text(encoding="utf-8"))
+        # Bind both results to the fixture *before* comparing them: two stale
+        # documents can agree with each other perfectly while describing bars
+        # that no longer exist.
+        fixture_checksum = fixture_bars_digest(document["bars"])
+        stale.extend(
+            check_results_match_fixtures(case["case_id"], fixture_checksum, runtime, legacy)
+        )
         cases.append(CaseComparison(case, runtime, legacy, document["bars"]).run())
+
+    if stale:
+        for message in stale:
+            print(f"STALE RESULT: {message}", file=sys.stderr)
+        return 6
 
     cross_case = find_cross_case_identity_collisions(cases)
 
@@ -1008,6 +1094,18 @@ def main(argv: list[str]) -> int:
         for case in cases
         if case["exact_parity"] is not None and not case["exact_parity"]["all_passed"]
     ]
+
+    # Regression barrier: reference strategy v2 removed these from the emitted
+    # vocabulary. If one is ever emitted again, the adapter has gone back to
+    # reporting an observation clock as a booking clock.
+    regressed = sorted(
+        {
+            difference["difference_id"]
+            for case in cases
+            for difference in case["differences"]
+            if difference["difference_id"] in RESOLVED_BY_REFERENCE_STRATEGY_V2
+        }
+    )
 
     document = {
         "schema_version": "pr7.parity_comparison.v2",
@@ -1067,6 +1165,17 @@ def main(argv: list[str]) -> int:
                 "away as a SELL."
             ),
         },
+        "resolved_by_reference_strategy_v2": RESOLVED_BY_REFERENCE_STRATEGY_V2,
+        "fixture_binding": {
+            "note": (
+                "every result document's historical_bar_dataset_checksum was compared "
+                "against a checksum recomputed here directly from the checked-in "
+                "fixture, so a stale result cannot be reported as current"
+            ),
+            "checksums": {
+                case["case_id"]: case["historical_bar_dataset_checksum"] for case in cases
+            },
+        },
         "cross_case_findings": cross_case,
         "cases": cases,
     }
@@ -1108,9 +1217,9 @@ def main(argv: list[str]) -> int:
             exact = case["exact_parity"]
             lines.append("")
             lines.append(
-                "  EXACT-PARITY CHECKS (entry session "
-                f"{exact['entry_session']}; the entry session's own daily state is "
-                "excluded and classified as D15)"
+                f"  EXACT-PARITY CHECKS (entry session {exact['entry_session']}; "
+                f"all {len(exact['sessions_compared'])} co-dated session(s) compared, "
+                "none excluded)"
             )
             for name, passed in exact["checks"].items():
                 lines.append(f"    [{'PASS' if passed else 'FAIL'}] {name}")
@@ -1156,6 +1265,17 @@ def main(argv: list[str]) -> int:
     for key, count in subcategory_tally.items():
         lines.append(f"    {count:3d}  {key.lower()}: {SUBCATEGORY_LABELS[key]}")
     lines.append("")
+    lines.append(
+        "Adapter defects reference strategy v2 resolved (no longer emitted; the "
+        "comparator fails if any reappears):"
+    )
+    for difference_id, note in RESOLVED_BY_REFERENCE_STRATEGY_V2.items():
+        lines.append(f"  - {difference_id}")
+        lines.append(f"      {note}")
+    lines.append("")
+    lines.append("Every result document was checked against the current fixture's own")
+    lines.append("recomputed bar checksum before comparison; none was stale.")
+    lines.append("")
     (results_dir / "comparison_output.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
     print("\n".join(lines))
 
@@ -1181,6 +1301,14 @@ def main(argv: list[str]) -> int:
             file=sys.stderr,
         )
         return 5
+    if regressed:
+        print(
+            f"REGRESSED: {regressed} were resolved by reference strategy v2 and must "
+            "not be emitted again; the adapter is reporting an observation clock as a "
+            "booking clock",
+            file=sys.stderr,
+        )
+        return 7
     return 0
 
 

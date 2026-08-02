@@ -173,10 +173,10 @@ def test_bars_must_be_array():
 # --- result-document validation -------------------------------------------
 
 _VALID_RESULT = {
-    "schema_version": "backtest_runtime.result.v1",
+    "schema_version": "backtest_runtime.result.v2",
     "historical_bar_dataset_checksum": "a" * 64,
     "run_configuration_checksum": "b" * 64,
-    "strategy_identity": "backtest_runtime.reference_strategy.v1",
+    "strategy_identity": "backtest_runtime.reference_strategy.v2",
     "lumibot_version": "4.5.78",
     "orders": [],
     "fills": [],
@@ -191,6 +191,25 @@ _VALID_RESULT = {
 
 def test_valid_result_document_passes():
     validate_result_document(copy.deepcopy(_VALID_RESULT))
+
+
+@pytest.mark.parametrize(
+    "schema_version",
+    [
+        "backtest_runtime.result.v3",
+        # v1 carried the same field names but different meanings: its
+        # `fills[].market_date` was the strategy callback's clock, a session
+        # after the broker booked the fill, and its daily states excluded the
+        # fills booked that session. A consumer that accepted a v1 document
+        # here would silently mis-date every entry (DECISIONS.md D6).
+        "backtest_runtime.result.v1",
+    ],
+)
+def test_result_document_rejects_other_schema_versions(schema_version):
+    document = copy.deepcopy(_VALID_RESULT)
+    document["schema_version"] = schema_version
+    with pytest.raises(ContractError, match="unsupported schema_version"):
+        validate_result_document(document)
 
 
 def test_result_document_rejects_unknown_field():

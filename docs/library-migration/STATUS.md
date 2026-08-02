@@ -1342,11 +1342,10 @@ distribution's blocking suite.
 **2024-01-04 at 101.0 for 10 shares** and agree exactly on final cash (98 990),
 final equity (99 992), final value, end position (10 @ 101.0), maximum drawdown
 (−0.00018), and on cash, equity, unrealized P&L, realized P&L and drawdown for
-**every co-dated session except the entry session**. The comparator asserts all
-fifteen dimensions and exits non-zero if any fails; all fifteen pass. The one
-excluded session is the classified adapter defect `D15-entry-session-state-lag`
-(the same LumiBot fill-observation lag as D4), reported rather than worked
-around.
+**every co-dated session except the entry session**. *(Superseded by review
+round 2: the entry session is no longer excluded, and the exclusion's premise —
+that `backtest_runtime`'s state lagged by one session — was itself derived from
+an inferred fill session rather than from LumiBot's own record.)*
 
 **2. Look-ahead removed from the legacy fixture.** Each signal's `limit_price`
 was the *entry* session's high — a bar that had not happened when the signal was
@@ -1388,11 +1387,10 @@ reserved for a case *neither* side can express. Fees/slippage (D7) and
 realized-P&L/exit support (D8) are capabilities the legacy engine has and
 `backtest_runtime` does not, so they are **adapter capability defects**; the
 comparator carries a `BEHAVIOR`/`CAPABILITY` subcategory and exits non-zero if a
-capability gap is labelled `UNSUPPORTED`. Corrected tally across all six cases
-plus the cross-case finding: **13** old-engine defect, **24** adapter defect
-(10 behavior, 14 capability), **93** intentional library semantic difference,
-**0** unsupported requirement — legitimately zero, since nothing in this fixture
-set is beyond both sides.
+capability gap is labelled `UNSUPPORTED`. Tally at the end of round 1: **13**
+old-engine defect, **24** adapter defect (10 behavior, 14 capability), **93**
+intentional library semantic difference, **0** unsupported requirement.
+*(Superseded by review round 2, which reclassified the 10 behavior defects.)*
 
 **6. Fixture set** (`pr7/fixtures/`, six cases, all `SPKE`/10 shares/100 000):
 `case_a`/`case_b`/`case_c` reuse `backtest_runtime/tests/support/fixtures.py`'s
@@ -1411,9 +1409,9 @@ in its own Python 3.11 venv (`pip install -e backtest_runtime/[dev]`), the
 legacy engine in the main `.venv`. The comparator reads two result documents and
 imports neither engine.
 
-**Other findings, unchanged from the first pass:** both engines fill an entry at
-the **open of the entry session** (measured on the gapped fixture: LumiBot
-filled at 104.0, the submission session's open, not 100.0, the previous close);
+**Other findings, unchanged across both rounds:** both engines fill an entry at
+the **open of the session they book it in** (measured on the gapped fixture:
+LumiBot filled at 104.0, the 2024-01-03 open, not 100.0, the 2024-01-02 close);
 quantity was exactly equal in every case; the drawdown definition and sign
 convention are identical; the legacy engine's **mandatory** ATR stop / trailing
 stop / target / holding period fire in cases B and C while the reference
@@ -1429,24 +1427,105 @@ Smallest non-zero difference measured: 1.0 (money), 0.1 (price), 2.0e-10
 (fraction, correctly reported as differing), so no "equal" verdict rests on a
 bound.
 
+### Review round 2 (2026-08-02)
+
+**1. Fill timing re-derived from authoritative evidence.** Both earlier passes
+inferred when a fill happened — round 1 from the `on_filled_order` callback,
+the comparator from which bar's open matched the fill price — and the two
+disagree. LumiBot does keep an authoritative record: its broker stamps every
+order event with `data_source._datetime` as it processes it, in the trade-event
+log (`lumibot/brokers/broker.py`). It says the fill is booked in the
+**submission** session, because
+`strategy_executor.py::_process_pandas_daily_data` runs a session as
+`_update_datetime` → `_on_trading_iteration` → `process_pending_orders`. Case A:
+booked 2024-01-03 @ 100.5; callback 2024-01-04; cash first changes 2024-01-04.
+The two lagging clocks are observation delay, not execution delay.
+
+`probe_lumibot_fill_timing.py` now records all three clocks (and says
+"UNRESOLVED" if the authoritative log is ever absent, rather than falling back
+silently), across three fixtures including the exact case.
+
+**2. Option A re-evaluated and Option B retained, on authoritative timing.** The
+round asked specifically whether a fixture with intentionally matching
+consecutive opens could give Option A genuine parity. It cannot: matching opens
+equalise the two fill *prices* while leaving the two *booking sessions* one
+apart, and the exact case must agree on the authoritative fill date. Both floors
+are structural — LumiBot cannot submit before bar 2 (bar 1 is never a trading
+iteration) and books in the submission session; the legacy engine cannot enter
+before bar 3 (next-session eligibility, and ATR needs `atr_period + 1` prior
+bars, so even `atr_period = 1` puts `generated_after_session` no earlier than
+bar 2). `entry_after_session` is therefore kept, not reverted.
+
+**D4 and D15 are reclassified from adapter defect to library semantic
+difference**, and reference strategy v2 stops reporting the lagging clocks: fill
+dates come from the broker's event log, and each session's state re-applies the
+fills booked in that session. The result schema is bumped to
+`backtest_runtime.result.v2` (same field names, different meaning). Two
+invariants guard the realignment as hard errors — each session's observed
+balances must equal the reconstruction as of the previous reported session, and
+`observed cash + observed quantity × mark price` must equal the reported
+`portfolio_value`. The comparator records both ids under
+`RESOLVED_BY_REFERENCE_STRATEGY_V2` and exits non-zero if either is emitted
+again.
+
+**The exact case is now exact with no session excluded.** Both engines book
+2024-01-04 @ 101.0 for 10 shares — each from its own record — and agree on final
+cash (98 990), final equity (99 992), final value, end position (10 @ 101.0),
+maximum drawdown (−0.00018), and on cash, equity, unrealized P&L, realized P&L
+and drawdown for **every** co-dated session, the entry session included. All
+fifteen comparator dimensions pass and `excluded_sessions` is empty.
+
+**3. `entry_after_session` boundary closed.** The rule is now that at least one
+*iterable* session must remain strictly after the delay (domain `bars[1:]`,
+since the first bar is never an iteration); submission and booking are the same
+session, so one such session is necessary and sufficient. A penultimate-session
+value is accepted, and a new regression test proves accepted input cannot finish
+without a fill — it asserts a real fill, a real end position and a reduced final
+cash on the last session, which reference strategy v1 would have reported flat.
+
+**4. Results bound to the current fixtures.** The comparator now recomputes each
+fixture's canonical bar checksum itself and requires both result documents to
+carry it, exiting 6 otherwise. Two stale results agree with each other
+perfectly, so mutual agreement proves nothing about currency. A regression test
+edits one fixture's *volume* — changing no number either engine computes — and
+asserts the previously valid results are rejected.
+
+**5. `run_parity.sh` path resolution fixed.** `BT_PYTHON` and `MAIN_PYTHON` are
+resolved to absolute paths (and checked executable) before anything changes
+directory. The documented invocation passes `.venv/bin/python` relative to the
+repository root, while step 2 runs the isolated interpreter from a scratch
+directory so LumiBot's `logs/` never lands in the repo — a relative path
+resolved against that scratch directory instead. Verified with the documented
+relative invocation.
+
+**Corrected tally** across all six cases plus the cross-case finding: **13**
+old-engine defect, **14** adapter defect (**0** behavior, 14 capability), **93**
+intentional library semantic difference, **0** unsupported requirement. The
+behavior subcategory is empty because it held only D4 and D15.
+
 **Tests run:**
 
 - `backtest_runtime/` in its own isolated Python 3.11 venv — `pip check` clean,
-  `lumibot 4.5.78`, `pytest tests/ -q --tb=short` — **70 passed, 0 failed**
-  (56 before this PR, plus 13 in the new `test_entry_timing.py` and one added
-  schema-version case). `test_entry_timing.py` asserts both halves of the
-  bounded extension: the delay works, and the strategy is still exactly one
-  buy-and-hold order with no sell.
-- `pytest tests/ -q --tb=short` in the main project's `.venv` — **2871 passed,
+  `lumibot 4.5.78`, `pytest tests/ -q --tb=short` — **75 passed, 0 failed**
+  (70 after round 1, plus three authoritative-timing/penultimate-boundary tests
+  in `test_entry_timing.py` and two result-schema-version cases).
+  `test_entry_timing.py` asserts both halves of the bounded extension — the
+  delay works, and the strategy is still exactly one buy-and-hold order with no
+  sell — plus that the fill carries the booking session and never the callback
+  session.
+- `pytest tests/ -q --tb=short` in the main project's `.venv` — **2878 passed,
   57 skipped, 0 failed**: the 2850 PR 6 recorded on the same `.venv`, plus the
-  21 new PR 7 regression tests. No pre-existing test changed behavior, and
+  28 PR 7 regression tests. No pre-existing test changed behavior, and
   `backtesting/engine.py`'s own tests are unaffected because the engine is
   untouched.
-- `tests/unit/test_pr7_parity_report.py` — **21 passed**: order alignment and
+- `tests/unit/test_pr7_parity_report.py` — **28 passed**: order alignment and
   role pairing, vocabulary rules that cannot conceal BUY/SELL or market/limit,
   cross-case identity-collision detection (including a negative case), exact-case
   parity checked both through the comparator and directly against the two raw
-  documents, classification-category validity, and fixture point-in-time safety.
+  documents with no session excluded, booking dates corroborated against each
+  engine's own fill price, the resolved-defect regression barrier, fixture
+  binding and the volume-only staleness case, `run_parity.sh` path resolution,
+  classification-category validity, and fixture point-in-time safety.
 - Reproducibility: `run_parity.sh` runs every `backtest_runtime` case **twice**
   and fails if the two result documents are not byte-identical; all six were,
   and a second full run of the script leaves a clean `git diff`.
