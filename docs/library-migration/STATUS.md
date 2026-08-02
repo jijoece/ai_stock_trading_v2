@@ -1,11 +1,13 @@
 # Migration Status
 
-**Current phase: PR 6 — LumiBot backtest evaluation adapter — IMPLEMENTED,
-NOT MERGED** (branch `migration/06-lumibot-backtest-adapter`).
-**Next phase: PR 7 — backtest parity report (see
-`docs/library-migration/pr7-prompt.md`; not started).**
+**Current phase: PR 7 — backtest parity report — IMPLEMENTED, NOT MERGED**
+(branch `migration/07-backtest-parity-report`; report at
+`docs/library-migration/pr7/PARITY_REPORT.md`).
+**Next phase: PR 8 — the removal-decision gate, which PR 7's report is the
+input to.**
 
-PR 6 delivers everything ADR 0009 Decision 4 requires for merge:
+PR 6 is **merged** (`bbd7a1f`, PR #18) and delivered everything ADR 0009
+Decision 4 requires:
 
 ```text
 [x] backtest_runtime/ exists, implementing ADR 0009 Decisions 1-3
@@ -16,7 +18,7 @@ PR 6 delivers everything ADR 0009 Decision 4 requires for merge:
 ```
 
 See "Completed work (PR 6)" below for the full record, evidence, and test
-results. It has not yet been reviewed or merged into `main`.
+results, and "Completed work (PR 7)" for the parity report that followed it.
 
 The pre-step before PR 6 is complete. All of its gates were met:
 
@@ -1301,7 +1303,115 @@ renamed to `entry_signals`/`exit_signals` as part of fix 1 above. This is a
 breaking rename of a function that has zero callers anywhere in the
 repository (confirmed by the import-boundary test in fix 4), so it carries
 no migration cost.
-## Completed work (PR 6) — IMPLEMENTED, NOT MERGED
+## Completed work (PR 7) — IMPLEMENTED, NOT MERGED
+
+**Scope:** `docs/library-migration/pr7/` only — a checked-in fixture set, two
+runner scripts, a LumiBot timing probe, a comparator, a shell driver, and the
+written report. Plus `DECISIONS.md` D6 (the Option A decision), this file, and
+the `MASTER_PLAN.md` PR 7 row. **No engine behavior changed:**
+`backtesting/engine.py`, `backtesting/models.py`, every `paper_books` module,
+and all of `backtest_runtime/` are byte-unchanged on this branch (`git diff
+main -- src/ backtest_runtime/` is empty).
+
+**Decision: Option A**, recorded in `DECISIONS.md` D6 before any comparison
+code was written. The legacy run is expressed as the narrowest possible
+equivalent of `backtest_runtime`'s reference strategy — one `EntrySignal`, one
+symbol, no `initial_stop_reference`/`target_reference`/
+`maximum_holding_sessions`, the same whole-share quantity, a non-binding limit
+(the legacy engine has no market order type), zero fees and slippage. Option B
+(extending `backtest_runtime` first) was **not** taken: it was conditional on
+Option A being unable to express a case, and Option A expressed every case.
+
+**Fixture set** (`pr7/fixtures/`, five cases, all `SPKE`/10 shares/100 000
+budget): `case_a_buy_and_hold`, `case_b_perturbed_last_close` and
+`case_c_falling_equity` reuse `backtest_runtime/tests/support/fixtures.py`'s
+`BARS`, `perturbed_input_document()` and `FALLING_BARS` **verbatim**, so the
+runtime side is already covered by that distribution's own determinism and
+drawdown tests. `case_e_gapped_opens` gaps its opens (every array above has
+`open[i] == close[i-1]`, which makes two different fill-price models produce
+the same number). `case_d_long_hold_default_atr` is 30 bars, long enough for
+the legacy engine's **default** `atr_period=14`.
+
+Each `*.input.json` is the single source of bars for both engines, and
+identical input is *proved*: each side computes the bar-set SHA-256
+independently (`backtest_runtime.contract.bars_digest` on one side, a separate
+re-implementation in `run_legacy_engine.py` on the other, since the main
+environment must never import `backtest_runtime`). All five matched.
+
+**Two environments, never combined** (ADR 0009 Decision 5): `backtest_runtime`
+in its own Python 3.11 venv (`pip install -e backtest_runtime/[dev]`, `pip
+check` clean, `lumibot 4.5.78`), `backtesting/engine.py` in the main `.venv`.
+The comparator reads two result documents and imports neither engine.
+
+**Headline findings** (full argument in `pr7/PARITY_REPORT.md`):
+
+* Both engines fill an entry at the **open of the entry session** — measured,
+  not assumed: on the gapped fixture LumiBot filled at 104.0, the submission
+  session's open, not 100.0, the previous close.
+* Share quantity was **exactly equal** in every case; fees equal; realized P&L
+  equal across every co-dated session; the drawdown definition and sign
+  convention identical.
+* **Adapter defect (5 occurrences)** — a fill's `market_date` is stamped one
+  session late. `strategy.py` uses `self.get_datetime()` inside
+  `on_filled_order`, which LumiBot invokes on the iteration *after* the fill.
+  Case E is decisive: fill price 104.0 is the 2024-01-03 open, but the recorded
+  `market_date` is 2024-01-04, whose own open is 106.0, and the 01-03 daily
+  state still shows zero position. LumiBot leaves `order.broker_date` as `None`
+  in backtesting, which is what makes the wrong timestamp easy to reach for.
+  **Not fixed here** — PR 7 is a report.
+* **Old-engine defect (10)** — `BacktestResult` carries no order records and no
+  position records, two of the dimensions ADR 0009 Decision 3 names as parity
+  dimensions. Both had to be reconstructed from the fill stream, labelled as
+  such. A defect of the result *type*; no computed value is wrong.
+* **Unsupported requirement (12)** — `backtest_runtime` hardcodes `fees: 0.0`,
+  has no slippage concept, and writes `realized_pnl: 0.0` as a constant.
+* **Intentional library semantic difference (82)** — chiefly the structural
+  entry-session offset (the legacy engine cannot enter before the third bar:
+  eligibility is next-session-only and ATR needs `atr_period + 1` prior bars;
+  at the default `atr_period=14` the offset is 14 sessions), LumiBot's first
+  iteration landing on the second bar (so one fewer daily state), and the
+  legacy engine's **mandatory** ATR stop / ratcheting trailing stop / ATR
+  target / maximum holding period, which Option A cannot switch off. Two
+  fixtures touch one: case B exits `FINAL_TARGET` at 109.5 and case C exits
+  `STOP_GAP` at 90.0 after the trailing stop ratchets 87.0 → 97.0, while the
+  reference strategy holds in both.
+
+Every difference is classified, and the comparator **exits non-zero if any
+emitted difference is missing from its classification table**, so this is
+enforced mechanically rather than by review attention.
+
+**Comparator's numeric rule** (inherited from neither side): both sides into
+exact `Decimal` — legacy from its decimal string, runtime through `repr()` of
+the double — exact difference, no rounding, against ±1e-6 absolute for
+money/prices, ±1e-9 **relative** (1e-15 floor) for fractions, and exact for
+share quantities. The relative rule for fractions is deliberate: drawdowns here
+run as small as ~1e-5, and an absolute 1e-9 bound hid real case-D differences
+on the comparator's first pass. The smallest non-zero difference measured
+anywhere was 1.0 (money), 0.1 (price) and 2.0e-10 (fraction, correctly reported
+as differing), so no "equal" verdict rests on a tolerance.
+
+**Tests run:**
+
+- `backtest_runtime/` unmodified, in its own isolated Python 3.11 venv —
+  `pip check` clean, `lumibot 4.5.78`, `pytest tests/ -q --tb=short` —
+  **56 passed, 0 failed**, identical to PR 6's recorded count.
+- Reproducibility: `run_parity.sh` runs every `backtest_runtime` case
+  **twice** and fails if the two result documents are not byte-identical. All
+  five cases were byte-identical, extending the determinism guarantee to the
+  two fixtures that distribution's own tests do not cover.
+- `pytest tests/ -q --tb=short` in the main project's `.venv` — **2850
+  passed, 57 skipped, 0 failed**, exactly the counts PR 6 recorded on the same
+  `.venv`. `pytest tests/ -q -k backtest` — **17 passed**:
+  `backtesting/engine.py`'s existing tests are unaffected, as they must be,
+  since the engine is untouched.
+- The whole comparison is reproducible from the checked-in fixtures alone:
+  `run_parity.sh` regenerates every file under `pr7/results/` from
+  `pr7/fixtures/` and the two environments, with no network access and no
+  broker credential anywhere (`backtest_runtime`'s own credential guard runs
+  as it does for the real entry point, and the driver additionally launches it
+  under `env -i`).
+
+## Completed work (PR 6) — MERGED (`bbd7a1f`, PR #18)
 
 **Scope:** new top-level distribution `backtest_runtime/` (`pyproject.toml`;
 `src/backtest_runtime/{__init__.py,__main__.py,credential_guard.py,
@@ -1536,6 +1646,15 @@ including both `backtest-runtime-tests (3.10)` and
 
 ## Next PR
 
-**PR 7 — backtest parity report. Not started.** Exact bounded prompt:
-`docs/library-migration/pr7-prompt.md`. Depends on PR 6 (above) being
-merged first. Must not begin in the same branch/session as PR 6.
+**PR 8 — decide whether the custom backtest component can be safely removed.
+Not started.** A decision gate only, not a pre-committed removal. Its input is
+`docs/library-migration/pr7/PARITY_REPORT.md` and the raw data under
+`pr7/results/`. The report explicitly does **not** establish that
+`backtest_runtime` could replace `backtesting/engine.py`: its *unsupported
+requirement* findings plus D9 (mandatory risk exits) and D11 (no order or
+position records) are the list of things that would have to be built or
+accepted first, most of them on the `backtest_runtime` side — no sells, no
+exits, no stops or targets, no maximum holding period, no fees, no slippage,
+no realized P&L, no rejected entries, no multi-symbol, no risk-based sizing,
+no daily-loss or drawdown limits. Must not begin in the same branch/session as
+PR 7.

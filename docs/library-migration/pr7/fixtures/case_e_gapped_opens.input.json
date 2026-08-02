@@ -1,0 +1,51 @@
+{
+  "bars": [
+    {
+      "close": 100.0,
+      "date": "2024-01-02",
+      "high": 101.0,
+      "low": 99.5,
+      "open": 100.0,
+      "volume": 1000000
+    },
+    {
+      "close": 104.5,
+      "date": "2024-01-03",
+      "high": 105.0,
+      "low": 103.5,
+      "open": 104.0,
+      "volume": 1000000
+    },
+    {
+      "close": 106.5,
+      "date": "2024-01-04",
+      "high": 107.0,
+      "low": 105.5,
+      "open": 106.0,
+      "volume": 1000000
+    },
+    {
+      "close": 107.5,
+      "date": "2024-01-05",
+      "high": 108.0,
+      "low": 106.5,
+      "open": 107.0,
+      "volume": 1000000
+    },
+    {
+      "close": 108.5,
+      "date": "2024-01-08",
+      "high": 109.0,
+      "low": 107.5,
+      "open": 108.0,
+      "volume": 1000000
+    }
+  ],
+  "schema_version": "backtest_runtime.input.v1",
+  "strategy": {
+    "budget": 100000.0,
+    "quantity": 10,
+    "strategy_id": "backtest_runtime.reference_strategy.v1",
+    "symbol": "SPKE"
+  }
+}

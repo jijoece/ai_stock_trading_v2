@@ -1,0 +1,324 @@
+{
+  "backtest_run_id": "backtest-4f4046e887c7b9c5690e45ebda2adac7",
+  "case_id": "case_d_long_hold_default_atr",
+  "configuration_hash": "55a1fb91131f3e795b2b0ce1e415583103a24ec7789803f054cc8dbd753602be",
+  "daily_states": [
+    {
+      "cash": "100000",
+      "drawdown_fraction": "0",
+      "equity": "100000",
+      "market_date": "2024-01-02",
+      "realized_pnl": "0",
+      "unrealized_pnl": "0"
+    },
+    {
+      "cash": "100000",
+      "drawdown_fraction": "0",
+      "equity": "100000",
+      "market_date": "2024-01-03",
+      "realized_pnl": "0",
+      "unrealized_pnl": "0"
+    },
+    {
+      "cash": "100000",
+      "drawdown_fraction": "0",
+      "equity": "100000",
+      "market_date": "2024-01-04",
+      "realized_pnl": "0",
+      "unrealized_pnl": "0"
+    },
+    {
+      "cash": "100000",
+      "drawdown_fraction": "0",
+      "equity": "100000",
+      "market_date": "2024-01-05",
+      "realized_pnl": "0",
+      "unrealized_pnl": "0"
+    },
+    {
+      "cash": "100000",
+      "drawdown_fraction": "0",
+      "equity": "100000",
+      "market_date": "2024-01-08",
+      "realized_pnl": "0",
+      "unrealized_pnl": "0"
+    },
+    {
+      "cash": "100000",
+      "drawdown_fraction": "0",
+      "equity": "100000",
+      "market_date": "2024-01-09",
+      "realized_pnl": "0",
+      "unrealized_pnl": "0"
+    },
+    {
+      "cash": "100000",
+      "drawdown_fraction": "0",
+      "equity": "100000",
+      "market_date": "2024-01-10",
+      "realized_pnl": "0",
+      "unrealized_pnl": "0"
+    },
+    {
+      "cash": "100000",
+      "drawdown_fraction": "0",
+      "equity": "100000",
+      "market_date": "2024-01-11",
+      "realized_pnl": "0",
+      "unrealized_pnl": "0"
+    },
+    {
+      "cash": "100000",
+      "drawdown_fraction": "0",
+      "equity": "100000",
+      "market_date": "2024-01-12",
+      "realized_pnl": "0",
+      "unrealized_pnl": "0"
+    },
+    {
+      "cash": "100000",
+      "drawdown_fraction": "0",
+      "equity": "100000",
+      "market_date": "2024-01-16",
+      "realized_pnl": "0",
+      "unrealized_pnl": "0"
+    },
+    {
+      "cash": "100000",
+      "drawdown_fraction": "0",
+      "equity": "100000",
+      "market_date": "2024-01-17",
+      "realized_pnl": "0",
+      "unrealized_pnl": "0"
+    },
+    {
+      "cash": "100000",
+      "drawdown_fraction": "0",
+      "equity": "100000",
+      "market_date": "2024-01-18",
+      "realized_pnl": "0",
+      "unrealized_pnl": "0"
+    },
+    {
+      "cash": "100000",
+      "drawdown_fraction": "0",
+      "equity": "100000",
+      "market_date": "2024-01-19",
+      "realized_pnl": "0",
+      "unrealized_pnl": "0"
+    },
+    {
+      "cash": "100000",
+      "drawdown_fraction": "0",
+      "equity": "100000",
+      "market_date": "2024-01-22",
+      "realized_pnl": "0",
+      "unrealized_pnl": "0"
+    },
+    {
+      "cash": "100000",
+      "drawdown_fraction": "0",
+      "equity": "100000",
+      "market_date": "2024-01-23",
+      "realized_pnl": "0",
+      "unrealized_pnl": "0"
+    },
+    {
+      "cash": "98991.0",
+      "drawdown_fraction": "0",
+      "equity": "100008.0",
+      "market_date": "2024-01-24",
+      "realized_pnl": "0",
+      "unrealized_pnl": "8.0"
+    },
+    {
+      "cash": "98991.0",
+      "drawdown_fraction": "-0.00004999600031997440204783617311",
+      "equity": "100003.0",
+      "market_date": "2024-01-25",
+      "realized_pnl": "0",
+      "unrealized_pnl": "3.0"
+    },
+    {
+      "cash": "98991.0",
+      "drawdown_fraction": "-0.00001999840012798976081913446924",
+      "equity": "100006.0",
+      "market_date": "2024-01-26",
+      "realized_pnl": "0",
+      "unrealized_pnl": "6.0"
+    },
+    {
+      "cash": "98991.0",
+      "drawdown_fraction": "-0.0001099912007039436845052395808",
+      "equity": "99997.0",
+      "market_date": "2024-01-29",
+      "realized_pnl": "0",
+      "unrealized_pnl": "-3.0"
+    },
+    {
+      "cash": "98991.0",
+      "drawdown_fraction": "-0.00004999600031997440204783617311",
+      "equity": "100003.0",
+      "market_date": "2024-01-30",
+      "realized_pnl": "0",
+      "unrealized_pnl": "3.0"
+    },
+    {
+      "cash": "98991.0",
+      "drawdown_fraction": "0",
+      "equity": "100011.0",
+      "market_date": "2024-01-31",
+      "realized_pnl": "0",
+      "unrealized_pnl": "11.0"
+    },
+    {
+      "cash": "98991.0",
+      "drawdown_fraction": "-0.00004999450060493345731969483357",
+      "equity": "100006.0",
+      "market_date": "2024-02-01",
+      "realized_pnl": "0",
+      "unrealized_pnl": "6.0"
+    },
+    {
+      "cash": "98991.0",
+      "drawdown_fraction": "-0.00001999780024197338292787793343",
+      "equity": "100009.0",
+      "market_date": "2024-02-02",
+      "realized_pnl": "0",
+      "unrealized_pnl": "9.0"
+    },
+    {
+      "cash": "98991.0",
+      "drawdown_fraction": "-0.0001099879013308536061033286339",
+      "equity": "100000.0",
+      "market_date": "2024-02-05",
+      "realized_pnl": "0",
+      "unrealized_pnl": "0.0"
+    },
+    {
+      "cash": "98991.0",
+      "drawdown_fraction": "-0.00004999450060493345731969483357",
+      "equity": "100006.0",
+      "market_date": "2024-02-06",
+      "realized_pnl": "0",
+      "unrealized_pnl": "6.0"
+    },
+    {
+      "cash": "98991.0",
+      "drawdown_fraction": "0",
+      "equity": "100014.0",
+      "market_date": "2024-02-07",
+      "realized_pnl": "0",
+      "unrealized_pnl": "14.0"
+    },
+    {
+      "cash": "98991.0",
+      "drawdown_fraction": "-0.00004999300097986281920531125642",
+      "equity": "100009.0",
+      "market_date": "2024-02-08",
+      "realized_pnl": "0",
+      "unrealized_pnl": "9.0"
+    },
+    {
+      "cash": "98991.0",
+      "drawdown_fraction": "-0.00001999720039194512768212450257",
+      "equity": "100012.0",
+      "market_date": "2024-02-09",
+      "realized_pnl": "0",
+      "unrealized_pnl": "12.0"
+    },
+    {
+      "cash": "98991.0",
+      "drawdown_fraction": "-0.0001099846021556982022516847641",
+      "equity": "100003.0",
+      "market_date": "2024-02-12",
+      "realized_pnl": "0",
+      "unrealized_pnl": "3.0"
+    },
+    {
+      "cash": "98991.0",
+      "drawdown_fraction": "-0.00004999300097986281920531125642",
+      "equity": "100009.0",
+      "market_date": "2024-02-13",
+      "realized_pnl": "0",
+      "unrealized_pnl": "9.0"
+    }
+  ],
+  "derived": {
+    "end_positions_from_fills": [
+      {
+        "average_price": "100.9",
+        "quantity": "10",
+        "symbol": "SPKE"
+      }
+    ],
+    "note": "Reconstructed by run_legacy_engine.py from the engine's fills; not reported by BacktestResult itself.",
+    "orders_from_fills": [
+      {
+        "order_id": "bt-order-pr7-entry",
+        "order_type": "LIMIT",
+        "quantity": "10",
+        "side": "BUY",
+        "status": "FILLED",
+        "symbol": "SPKE"
+      }
+    ]
+  },
+  "engine": "src/trading_research/backtesting/engine.py",
+  "engine_code_version": "advanced-risk-backtest-v2-fill-sequence",
+  "fills": [
+    {
+      "exit_reason": null,
+      "fees": "0",
+      "fill_id": "bt-fill-6b7e0b584557e0b3967e9fee1f6d5523",
+      "fill_price": "100.9",
+      "fill_sequence": 1,
+      "market_date": "2024-01-24",
+      "order_id": "bt-order-pr7-entry",
+      "position_id": "bt-fill-6b7e0b584557e0b3967e9fee1f6d5523",
+      "quantity": "10",
+      "side": "BUY",
+      "slippage": "0.0",
+      "symbol": "SPKE"
+    }
+  ],
+  "final_cash": "98991.0",
+  "final_equity": "100009.0",
+  "final_value": "100009.0",
+  "historical_bar_dataset_checksum": "18b84bec7a1196197328c3a6b78b81c5b4e482718b8e6bcb67f95f5cb8f8dd9f",
+  "initial_cash": "100000",
+  "input_document": "case_d_long_hold_default_atr.input.json",
+  "max_drawdown_fraction": "-0.0001099912007039436845052395808",
+  "metrics": {
+    "ambiguity_policy": "CONSERVATIVE_STOP_FIRST",
+    "benchmark_return": null,
+    "breakeven_exits": 0,
+    "code_version": "advanced-risk-backtest-v2-fill-sequence",
+    "completed_trades": 0,
+    "configuration_hash": "55a1fb91131f3e795b2b0ce1e415583103a24ec7789803f054cc8dbd753602be",
+    "daily_loss_blocks": 0,
+    "drawdown_blocks": 0,
+    "economic_event_blocks": 0,
+    "end_date": "2024-02-13",
+    "ending_equity": "100009.0",
+    "final_target_exits": 0,
+    "initial_equity": "100000",
+    "maximum_drawdown": "-0.0001099912007039436845052395808",
+    "partial_profit_fills": 0,
+    "realized_pnl": "0",
+    "rejected_signals": 0,
+    "start_date": "2024-01-02",
+    "stop_exits": 0,
+    "symbols": [
+      "SPKE"
+    ],
+    "total_return": "0.00009",
+    "trailing_stop_exits": 0,
+    "unresolved_or_incomplete_evaluations": 0
+  },
+  "orders": null,
+  "positions": null,
+  "rejected_entries": [],
+  "schema_version": "pr7.legacy_engine.result.v1",
+  "unresolved_evaluations": []
+}

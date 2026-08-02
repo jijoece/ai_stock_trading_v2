@@ -1,0 +1,105 @@
+lumibot 4.5.78
+input: case_a_buy_and_hold.input.json
+bars supplied: 5  (2024-01-02 .. 2024-01-08)
+
+iteration:
+    iteration_datetime = 2024-01-03T00:00:00-05:00
+    get_last_price = 102.0
+    cash = 100000.0
+    portfolio_value = 100000.0
+    position_quantity = 0.0
+submit:
+    iteration_datetime = 2024-01-03T00:00:00-05:00
+    order_id = bt_1
+    status = new
+on_filled_order:
+    callback_get_datetime = 2024-01-04T00:00:00-05:00
+    order_id = bt_1
+    fill_price = 100.5
+    fill_quantity = 10.0
+    order_broker_create_date = None
+    order_broker_date = None
+    order_status = fill
+    cash_at_callback = 98995.0
+    portfolio_value_at_callback = 100000.0
+iteration:
+    iteration_datetime = 2024-01-04T00:00:00-05:00
+    get_last_price = 101.5
+    cash = 98995.0
+    portfolio_value = 100010.0
+    position_quantity = 10.0
+iteration:
+    iteration_datetime = 2024-01-05T00:00:00-05:00
+    get_last_price = 103.5
+    cash = 98995.0
+    portfolio_value = 100030.0
+    position_quantity = 10.0
+iteration:
+    iteration_datetime = 2024-01-08T00:00:00-05:00
+    get_last_price = 104.5
+    cash = 98995.0
+    portfolio_value = 100040.0
+    position_quantity = 10.0
+
+FINDINGS
+  first fixture bar date      : 2024-01-02
+  first on_trading_iteration  : 2024-01-03T00:00:00-05:00
+  => D1: the first fixture bar is never an iteration date, so it can never appear as a daily state.
+  on_filled_order observed at : 2024-01-04T00:00:00-05:00
+  order.broker_create_date    : None
+  order.broker_date           : None
+  => D4: compare the callback date against the iteration at which cash first dropped, printed above.
+
+================================================================
+
+lumibot 4.5.78
+input: case_e_gapped_opens.input.json
+bars supplied: 5  (2024-01-02 .. 2024-01-08)
+
+iteration:
+    iteration_datetime = 2024-01-03T00:00:00-05:00
+    get_last_price = 104.5
+    cash = 100000.0
+    portfolio_value = 100000.0
+    position_quantity = 0.0
+submit:
+    iteration_datetime = 2024-01-03T00:00:00-05:00
+    order_id = bt_1
+    status = new
+on_filled_order:
+    callback_get_datetime = 2024-01-04T00:00:00-05:00
+    order_id = bt_1
+    fill_price = 104.0
+    fill_quantity = 10.0
+    order_broker_create_date = None
+    order_broker_date = None
+    order_status = fill
+    cash_at_callback = 98960.0
+    portfolio_value_at_callback = 100000.0
+iteration:
+    iteration_datetime = 2024-01-04T00:00:00-05:00
+    get_last_price = 106.5
+    cash = 98960.0
+    portfolio_value = 100025.0
+    position_quantity = 10.0
+iteration:
+    iteration_datetime = 2024-01-05T00:00:00-05:00
+    get_last_price = 107.5
+    cash = 98960.0
+    portfolio_value = 100035.0
+    position_quantity = 10.0
+iteration:
+    iteration_datetime = 2024-01-08T00:00:00-05:00
+    get_last_price = 108.5
+    cash = 98960.0
+    portfolio_value = 100045.0
+    position_quantity = 10.0
+
+FINDINGS
+  first fixture bar date      : 2024-01-02
+  first on_trading_iteration  : 2024-01-03T00:00:00-05:00
+  => D1: the first fixture bar is never an iteration date, so it can never appear as a daily state.
+  on_filled_order observed at : 2024-01-04T00:00:00-05:00
+  order.broker_create_date    : None
+  order.broker_date           : None
+  => D4: compare the callback date against the iteration at which cash first dropped, printed above.

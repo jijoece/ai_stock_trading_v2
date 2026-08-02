@@ -496,3 +496,54 @@ CI-verified for the first time.
 "Sole dependency *authority*" in the sense that mattered when it was written —
 "the main project does not own, declare, or install LumiBot" — remains true
 without qualification.
+
+---
+
+## D6 — PR 7 parity comparison: Option A (narrowest legacy-engine equivalent)
+
+**Decision date:** 2026-08-02, at the start of PR 7, before any comparison code
+was written (`docs/library-migration/pr7-prompt.md`, "The scope trap this
+prompt exists to prevent").
+
+**The choice.** PR 7 compares `backtest_runtime`'s `ReferenceStrategy` against
+`src/trading_research/backtesting/engine.py` by constructing the legacy run as
+the **narrowest expressible equivalent** — Option A — rather than extending
+`backtest_runtime`'s reference strategy first (Option B).
+
+**The Option A construction, exactly:** one `EntrySignal` for one symbol, with
+`initial_stop_reference=None`, `target_reference=None`,
+`maximum_holding_sessions=None`, `quantity_hint` equal to the input document's
+`strategy.quantity`, and a `limit_price` set to the entry session's own high so
+the limit can never bind (the legacy engine has no market order type). The
+`BacktestConfiguration` differs from its dataclass defaults in exactly two
+fields — `atr_period`, lowered on the five-bar fixtures so the engine can enter
+as early as it structurally can, and the dates/symbol/cash that describe the
+fixture. Slippage and per-order fees stay at their zero defaults, which is what
+makes them directly comparable to `backtest_runtime`'s hardcoded `fees: 0.0`.
+
+**Why not Option B.** Option B was to be taken "only if Option A cannot express
+a case the parity report actually needs." Option A expressed every case: a
+single-symbol whole-share buy held to the end of the fixture is exactly what
+`EntrySignal` plus a non-binding limit produces. What Option A *cannot* do is
+suppress the legacy engine's mandatory ATR stop, ratcheting trailing stop, ATR
+target and maximum holding period — but that is a finding the report must
+record (classified `D9-mandatory-risk-exit`), not a defect in the construction.
+Extending `backtest_runtime` to chase it would have broadened that
+distribution's scope speculatively, in the exact way ADR 0009 Decision 3 and
+PR 6's recorded scope boundary forbid, and would have made the comparison
+measure a strategy written for the comparison rather than the one PR 6
+shipped.
+
+**What was therefore not done.** `backtest_runtime/src/` and
+`backtest_runtime/tests/` are unchanged by PR 7 — no new sell path, no
+scheduler, no data fetcher, no order type, and `benchmark_asset=None` /
+`analyze_backtest=False` / the credential-safety guarantees are untouched.
+`backtesting/engine.py`, `backtesting/models.py` and every `paper_books`
+module are likewise unchanged: PR 7 adds a fixture set, two runner scripts, a
+comparator and a report under `docs/library-migration/pr7/`, and nothing else.
+
+**Consequence for PR 8.** The comparison establishes what the two engines do
+differently under the narrowest common case. It deliberately does **not**
+establish that `backtest_runtime` could replace `backtesting/engine.py`: the
+report's `UNSUPPORTED` and `D9` findings are the list of things that would have
+to be built first, and PR 8 is the gate that weighs them.
