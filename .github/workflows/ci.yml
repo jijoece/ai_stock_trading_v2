@@ -218,7 +218,8 @@ jobs:
         run: pip check
       - name: Assert resolved LumiBot version is exactly 4.5.78
         working-directory: backtest_runtime
-        run: pip show lumibot | grep -qx "Version: 4.5.78"
+        run: |
+          pip show lumibot | grep -qx "Version: 4.5.78"
       - name: Run backtest_runtime test suite
         working-directory: backtest_runtime
         # Exercises all five ADR 0009 Decision 2 credential-safety
