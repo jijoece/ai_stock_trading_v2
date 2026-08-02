@@ -1779,6 +1779,31 @@ exits, no stops or targets, no maximum holding period, no fees, no slippage,
 no realized P&L, no rejected entries, no multi-symbol, no risk-based sizing,
 no daily-loss or drawdown limits.
 
+**A general replacement adapter must also address peak-equity seeding and
+state-series start (D13 + D1).** PR 7's exact case agrees on drawdown, but it
+does so by *construction*, not because the two aggregations are equivalent:
+`case_f_exact_entry_parity` is built so that `backtest_runtime`'s first reported
+session is still flat and therefore marks at exactly the budget. Underneath
+that:
+
+- the legacy engine seeds its running peak equity with `initial_cash`, so a
+  drawdown is measurable from the first session in the dataset;
+- `backtest_runtime` seeds its peak with `0.0` and raises it on the first
+  session it reports;
+- by **D1** those are not the same session — LumiBot's first trading iteration
+  is the second bar, so the runtime's series never contains the first.
+
+On the five default-timing cases the entry is already booked in the runtime's
+first reported session, so its seed carries the entry's mark and the legacy seed
+does not, and the two peaks stay apart for the whole run (case A:
+−0.0000499925… vs −0.00005). **Aligning entry timing does not fix this.** Any
+adapter intended to replace `backtesting/engine.py` in general — rather than on
+one hand-built fixture — has to decide what its peak is seeded with and which
+session its state series starts on, or its drawdown and any limit derived from
+it will disagree with the legacy engine on ordinary data. PR 7 classifies it as
+a library semantic difference (neither seed contradicts its own run) and leaves
+the decision to PR 8.
+
 PR 8 must also weigh **D17** independently of any migration decision: the
 legacy engine's run identity ignores the historical bar dataset, so two runs
 over provably different bars share one `backtest_run_id` and

@@ -272,11 +272,13 @@ the 2024-01-02 close (`results/probe_output.txt`). Outside case F the entry
 engine entered on.
 
 The drawdown columns are close but unequal on the default-timing cases for a
-reason unrelated to timing: the legacy engine seeds its running peak equity with
-`initial_cash`, while `backtest_runtime` seeds it with zero and raises it on the
-first session it reports — and on those cases the entry is already booked in
-that first reported session, so the two peaks differ by the entry's mark. Case F
-avoids this by construction (§5), which is why it is the case that can be exact.
+reason that is **not** entry timing and would survive aligning it: the legacy
+engine seeds its running peak equity with `initial_cash`, while
+`backtest_runtime` seeds it with zero and raises it on the first session it
+reports — which, by D1, is not the first session in the dataset. On these cases
+the entry is already booked in that first reported session, so the runtime's
+seed includes the entry's mark and the legacy seed does not. Case F avoids it by
+construction (§5), which is why it is the case that can be exact. See D13 in §7.
 
 ---
 
@@ -405,13 +407,42 @@ fact spelled two ways. It has no effect on fills here only because every limit
 is constructed to be non-binding.
 
 **D10** (end position: flat vs. held) follows from D9. **D3** (entry fill price)
-reduces to D2, since both engines fill at the entry session's open.
-**D12 / D13** (the daily cash, equity, unrealized-P&L and drawdown series) are
-consequences of D2 and D3 on the default-timing cases; both engines mark open
-positions at the session's close and both define drawdown as
-`(equity − running peak equity) / running peak equity`, non-positive, aggregated
-by minimum. **D5** (`fill`/`FILLED`), **D6** (identity schemes) and **D14**
-(run-identity fields) are representational only.
+reduces to D2, since both engines fill at the open of the session they book in.
+**D12** (the daily cash, equity and unrealized-P&L series) is a consequence of
+D2 and D3 on the default-timing cases; both engines mark open positions at the
+session's close.
+
+**D13 — the drawdown series — is not fully explained by entry timing, and this
+is the one place where saying so would be wrong.** Both engines use the same
+formula, `(equity − running peak equity) / running peak equity`, non-positive,
+aggregated by minimum: that much is genuinely aligned, and PR 6's review round
+aligned it. But the *running peak* is seeded differently, and that is a second,
+independent cause:
+
+- the legacy engine seeds its peak with `initial_cash`, so a drawdown can be
+  measured from the very first session;
+- `backtest_runtime` seeds its peak with `0.0` and raises it on the **first
+  session it reports**;
+- by **D1**, that is not the first session in the dataset — the two series do
+  not start from the same session at all.
+
+On the default-timing cases the entry is already booked in `backtest_runtime`'s
+first reported session, so its seed includes the entry's mark while the legacy
+seed does not, and the two peaks stay apart for the rest of the run. That is why
+case A reports −0.0000499925… against the legacy −0.00005 rather than an exact
+match, even though both engines agree on cash, on the equity path after the
+entry, and on the formula. Aligning entry timing in general would *not* remove
+it; the exact-parity case avoids it only by construction (§5), by guaranteeing
+that `backtest_runtime`'s first reported session is still flat and therefore
+marks at exactly the budget.
+
+It stays classified as a library semantic difference rather than an adapter
+defect, because it is a consequence of D1 — which session series each engine can
+report at all — and neither seed contradicts its own run. It is carried into the
+PR 8 handoff as an explicit item for any general replacement adapter.
+
+**D5** (`fill`/`FILLED`), **D6** (identity schemes) and **D14** (run-identity
+fields) are representational only.
 
 ---
 
@@ -422,8 +453,14 @@ agree on **every** economic number and on every co-dated session with none
 excluded — booking session, entry price, quantity, position, cash, equity,
 unrealized and realized P&L, drawdown, final value and maximum drawdown. Across
 the wider set it establishes that both share the fill-price convention, the
-valuation convention and the drawdown definition, and that their remaining
-numeric differences are fully explained by entry timing.
+valuation convention and the drawdown *formula*.
+
+It does **not** establish that entry timing explains everything else. The
+default-timing cases' drawdowns differ for a second reason that survives any
+timing alignment: the two engines seed their running peak equity differently and
+start their state series on different sessions (D13 above, a consequence of D1).
+Cash, equity and unrealized P&L on those cases *are* fully explained by entry
+timing; the drawdown series is not.
 
 It also establishes something about the evidence itself: fill timing here is
 read from LumiBot's own order-lifecycle record, not deduced from which bar's
@@ -460,13 +497,14 @@ docs/library-migration/pr7/
     case_*.input.json             6 input documents (the only source of bars)
     parity_manifest.json          per-case legacy-engine parameters and entry timing
   results/
-    case_*.backtest_runtime.json  raw result documents, backtest_runtime.result.v1
+    case_*.backtest_runtime.json  raw result documents, backtest_runtime.result.v2
     case_*.legacy_engine.json     raw result documents, pr7.legacy_engine.result.v1
     comparison.json               field-by-field data, per-session tables, classifications,
-                                  exact-parity checks, cross-case findings
+                                  exact-parity checks, cross-case findings, fixture binding
     comparison_output.txt         human-readable comparison
-    probe_output.txt              LumiBot iteration/fill-timing transcripts (cases A and E)
+    probe_output.txt              LumiBot iteration/fill-timing transcripts, three clocks
+                                  per fill, for cases A, E and F
 
-tests/unit/test_pr7_parity_report.py   21 regression tests over the committed artifacts
-backtest_runtime/tests/test_entry_timing.py   13 tests over the v2 entry-timing control
+tests/unit/test_pr7_parity_report.py   28 regression tests over the committed artifacts
+backtest_runtime/tests/test_entry_timing.py   16 tests over the v2 entry-timing control
 ```

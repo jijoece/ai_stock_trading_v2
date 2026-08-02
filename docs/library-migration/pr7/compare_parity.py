@@ -289,14 +289,33 @@ CLASSIFICATIONS: dict[str, tuple[str, str]] = {
         "Daily cash/equity/unrealized values differ wherever the two sides hold "
         "different quantities at different cost bases, which follows from D2 and D3. "
         "Both mark open positions at the session's close, so no separate valuation "
-        "difference exists beyond entry timing and entry price.",
+        "difference exists beyond entry timing and entry price. This is true of "
+        "cash, equity and unrealized P&L only -- the drawdown series has a second, "
+        "independent cause on top of this one; see D13.",
     ),
     "D13-drawdown-series-values": (
         "LIBRARY_SEMANTIC",
         "Both sides define drawdown as (equity - running peak equity) / running peak "
         "equity, non-positive, and both aggregate by taking the minimum -- the "
-        "convention PR 6's review round aligned. Remaining differences are consequences "
-        "of the differing equity series (D12), not of the drawdown definition.",
+        "convention PR 6's review round aligned. The formula is not the difference. "
+        "Two independent causes are, and only the first is entry timing: (a) the "
+        "differing equity series (D12), which follows from D2/D3; and (b) how the "
+        "running peak is SEEDED. The legacy engine seeds its peak with "
+        "`initial_cash`, so a drawdown can be measured from session one. "
+        "backtest_runtime seeds its peak with 0.0 and raises it on the first session "
+        "it reports -- and by D1 that is not the first session in the dataset, so the "
+        "two series do not even start from the same session. On the default-timing "
+        "cases the entry is already booked in backtest_runtime's first reported "
+        "session, so its seed includes the entry's mark while the legacy seed does "
+        "not, and the two peaks differ for the rest of the run. Cause (b) is a "
+        "property of the adapter's aggregation, not of LumiBot, and it would not "
+        "disappear if entry timing were aligned in general; the exact-parity case "
+        "avoids it by construction, by guaranteeing that backtest_runtime's first "
+        "reported session is still flat and therefore marks at exactly the budget. "
+        "Classified as a library semantic difference rather than an adapter defect "
+        "because it is a consequence of D1 -- which session series each engine can "
+        "report at all -- and neither seed contradicts its own run. PR 8 has it as "
+        "an explicit item for any general replacement adapter.",
     ),
     "D14-run-identity-fields": (
         "LIBRARY_SEMANTIC",
