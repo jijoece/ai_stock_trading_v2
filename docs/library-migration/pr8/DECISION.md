@@ -1,8 +1,15 @@
 # PR 8 — Removal decision: the custom event-driven backtest engine
 
-**Date:** 2026-08-02 · **Branch:** `migration/08-backtest-removal-decision` ·
-**Input:** `docs/library-migration/pr7/PARITY_REPORT.md` and the raw data under
-`pr7/results/` · **Depends on:** PR 7 (implemented, not merged, PR #19)
+**Date:** 2026-08-02 · **Branch:** `migration/08-backtest-removal-decision`
+(PR #20, based on `5b9e1e3`) · **Input:**
+`docs/library-migration/pr7/PARITY_REPORT.md` and the raw data under
+`pr7/results/` · **Depends on:** PR 7, **merged** (PR #19, `5b9e1e3`)
+
+> **Revision, 2026-08-02.** §3, §4 and §8 were corrected after review. An
+> earlier revision claimed the legacy engine guarantees that no bar is used
+> before it was knowable. It does not: the availability check is **run-level,
+> not per-session** (§4.3). The verdict is unchanged but is re-derived below
+> without that property.
 
 This is the gate ADR 0009 and `MASTER_PLAN.md` row 8 defined: decide whether
 `src/trading_research/backtesting/engine.py` (and `models.py`) can be safely
@@ -29,13 +36,14 @@ here so "additional option" does not decay into "second authority": it is an
 **independent offline cross-check and parity harness with no execution
 authority and no callers in `src/`**.
 
-**3. Two defects on the legacy side are now mandatory follow-ups, not optional
+**3. Three items on the legacy side are now mandatory follow-ups, not optional
 ones.** Because the component is being kept rather than replaced, D17 (run
-identity ignores the dataset) and the never-written `backtest_orders` table
-stop being "defects in a component we may delete" and become live correctness
-bugs in the authoritative implementation. Both are recorded in §8 with the fix
-each needs. Neither is fixed here — both are behavior changes to the legacy
-engine and belong to a PR with its own review, exactly as PR 7 said.
+identity ignores the dataset), the never-written `backtest_orders` table, and
+the run-level-only availability check (§4.3) stop being "defects in a component
+we may delete" and become live correctness gaps in the authoritative
+implementation. All three are recorded in §8 with the fix each needs. None is
+fixed here — all three are behavior changes to the legacy engine and belong to
+a PR with its own review, exactly as PR 7 said.
 
 **4. This verdict preserves the status quo and therefore needs no superseding
 ADR.** Under `DECISIONS.md`'s governing principle, an ADR is required to
@@ -57,9 +65,23 @@ re-run.
 - `BacktestResult` carries no order or position records — **(verified here**,
   `models.py`, and see §8.2: the `backtest_orders` table exists and is never
   written).
-- `backtest_runtime` books a single buy of a single symbol, hardcodes
-  `fees: 0.0`, and writes `realized_pnl: 0.0` as a constant — **(verified
-  here**, `backtest_runtime/src/backtest_runtime/strategy.py:164-260, 338-354`).
+- The legacy availability check is run-level only, so a bar available after a
+  signal or session but on or before the run's end can still be used in that
+  earlier simulated period — **(verified here**, `engine.py:140-156`,
+  `data_provider.py:25-30`, `models.py:26-30`,
+  `strategies/backtest_adapter.py:44`; see §4.3). This is a **correction to an
+  earlier revision of this record**, not a PR 7 claim: PR 7 asserted fixture
+  point-in-time safety, which is a property of the fixtures, not of the engine.
+- `backtest_runtime` books a single buy of a single symbol
+  (`strategy.py:178`), takes its per-fill `fees` from whatever LumiBot's
+  trade-event log reports as `trade_cost` (`strategy.py:157`) — `0.0` in every
+  parity run, because the contract has no fee or slippage input to configure one
+  (`contract.py:38`) — and writes `realized_pnl: 0.0` as a literal constant
+  (`strategy.py:353`) — **(verified here**,
+  `backtest_runtime/src/backtest_runtime/strategy.py:164-260, 338-354`). The
+  earlier revision of this record said `fees` was hardcoded; it is read, and it
+  is zero for want of a commission model, which is the same practical gap by a
+  different mechanism.
 - The exact-parity case (`case_f_exact_entry_parity`), the fifteen asserted
   dimensions, the fill-timing evidence from LumiBot's broker trade-event log,
   and the 13/14/93/0 classification tally — **taken from PR 7**, not re-run.
@@ -82,7 +104,8 @@ Line references are to this branch.
 
 | Capability | Legacy engine | `backtest_runtime` |
 |---|---|---|
-| Point-in-time bar availability (`available_at`, `point_in_time_safe`) | enforced at three layers — `models.py:26-30`, `data_provider.py:27-29`, plus a future-bar guard at `engine.py:148-149` | **no availability axis in the contract at all** — `_BAR_FIELDS` is `{date, open, high, low, close, volume}` (`contract.py:38`) |
+| Bar-availability axis (`available_at`, `point_in_time_safe`) | present in the contract, but enforced only as a **single run-level cutoff** at `end_date 23:59:59 UTC` (`engine.py:140-149`), plus a trusted caller-set flag (`models.py:26-30`) — **not** a per-session knowability guarantee (§4.3) | **no availability axis in the contract at all** — `_BAR_FIELDS` is `{date, open, high, low, close, volume}` (`contract.py:38`) |
+| Session-ordering discipline (independent of `available_at`) | entry only on the first session strictly after `generated_after_session` (`engine.py:164-171`); entry ATR uses only bars with `session_date <= generated_after_session` (`engine.py:303-306`) | one-bar warm-up only; no signal-session concept |
 | Money representation | `Decimal` end to end; persisted as exact decimal strings into `TEXT` columns | `float` throughout |
 | Multi-symbol | yes — `config.symbols`, per-symbol bar maps (`engine.py:141-156`) | single symbol (`strategy.py:178`) |
 | Sells / exits | five reasons: `STOP_GAP`, `HARD_OR_TRAILING_STOP`, `MAXIMUM_HOLDING_PERIOD`, `PARTIAL_PROFIT`, `FINAL_TARGET` | none — no sell is submitted at all |
@@ -95,8 +118,8 @@ Line references are to this branch.
 | Daily-loss limit, drawdown limit | `engine.py:285-290` | absent |
 | Economic-event blackout | `engine.py:291-298` | absent |
 | Rejected-entry audit trail | 11 distinct reasons | absent — no rejection concept |
-| Fees, slippage | per-order fee and bps slippage, per-fill `slippage` amount | `fees: 0.0` hardcoded; no slippage concept |
-| Realized P&L | computed per sell (`engine.py:110`) | constant `0.0` |
+| Fees, slippage | per-order fee and bps slippage, per-fill `slippage` amount | `fees` copied from LumiBot's `trade_cost` (`strategy.py:157`), `0.0` in every parity run — no fee or slippage input exists in the contract to set one (`contract.py:38`) |
+| Realized P&L | computed per sell (`engine.py:110`) | literal constant `0.0` (`strategy.py:353`) |
 | Order records, position records | **absent** (D11 — the one capability the runtime has and the legacy result type does not) | `orders[]`, `positions[]` present |
 | Persistence and run identity | four tables, idempotent replay, collision guard | none — emits a JSON document |
 | Unresolved-evaluation reporting | `unresolved_evaluations` | absent |
@@ -112,30 +135,14 @@ larger than that.
 
 ---
 
-## 4. Three properties that are not feature gaps
+## 4. Two properties that are not feature gaps, and one corrected claim
 
-Most of §3 is missing features, and missing features can be built. These three
-are different in kind, and they are what the verdict actually turns on.
+Most of §3 is missing features, and missing features can be built. The two
+properties in §4.1 and §4.2 are different in kind, and they are what the verdict
+actually turns on. §4.3 records a third property this record previously claimed
+and no longer claims.
 
-**4.1 Point-in-time safety is a structural property of the legacy contract, and
-is not expressible in the current file contract.** `HistoricalBar` refuses to
-construct unless `available_at` is timezone-aware and `point_in_time_safe` is
-true (`models.py:26-30`); the provider refuses to return look-ahead bars
-(`data_provider.py:27-29`); the engine refuses a dataset containing a
-future-available bar (`engine.py:148-149`). Three independent refusals, at
-three layers. `backtest_runtime`'s bar has six fields and no notion of when a
-value became knowable, so a look-ahead dataset is not detectable on that side —
-it is simply data. This is the same class of invariant `PRESERVATION_MANIFEST.md`
-already protects for `paper_books/valuation.py` ("never leaking a future or
-current price into a historical snapshot"), and it is why the backtest engine
-belongs in that manifest, which this PR adds it to.
-
-Closing this gap is not a matter of adding a field. The availability axis has
-to be enforced *inside* the engine that consumes the bars, and LumiBot's
-`_process_pandas_daily_data` loop consumes a pandas frame that has no such
-axis.
-
-**4.2 `Decimal` versus `float` is an accounting boundary, not a rounding
+**4.1 `Decimal` versus `float` is an accounting boundary, not a rounding
 preference.** The legacy engine computes cash, equity, realized and unrealized
 P&L in `Decimal` and persists exact decimal strings; the runtime computes in
 double precision. PR 7 handled this correctly *for comparison* by converting
@@ -146,7 +153,7 @@ authoritative: the repository's accounting layer is `Decimal`-based by
 `DECISIONS.md` D1, and a replacement would put a float equity series into the
 same tables that today hold exact strings.
 
-**4.3 The engine shares partial-close arithmetic with the preserved accounting
+**4.2 The engine shares partial-close arithmetic with the preserved accounting
 layer.** `engine.py:17` imports `calculate_partial_close_quantity` from
 `paper_books/lifecycle_state.py` — the backtest computes a partial close with
 the *same function* the paper-books lifecycle uses, including its
@@ -155,6 +162,61 @@ Re-implementing exits inside a LumiBot strategy would fork that arithmetic away
 from the preserved layer, in a distribution that by ADR 0009 must never import
 `trading_research`. The boundary that makes `backtest_runtime` safe is exactly
 the boundary that prevents it from reusing this code.
+
+**4.3 Correction — point-in-time enforcement is run-level, not per-session, so
+it is withdrawn as a decisive property.** An earlier revision of this record
+said the legacy engine enforces "no bar may be used before it was knowable" at
+three layers. That overstated what the code does. Verified on this branch:
+
+- `HistoricalBar.__post_init__` (`models.py:26-30`) requires `available_at` to
+  be timezone-aware and raises when `point_in_time_safe` is false. It **trusts**
+  the flag — the flag is set by whoever builds the bar, and nothing derives or
+  cross-checks it against `session_date` or `available_at`.
+- `FixtureHistoricalDataProvider.bars` (`data_provider.py:25-30`) filters on
+  `available_at <= as_of`, then re-asserts the same condition — against whatever
+  `as_of` the caller passes, not against any per-session clock.
+- `run_backtest` passes exactly one `as_of` for the whole run:
+  `final_as_of = end_date 23:59:59 UTC` (`engine.py:140`, used at
+  `engine.py:144`), and its own guard (`engine.py:148-149`) repeats that same
+  run-wide cutoff. The bars are then loaded once into `bars_by_symbol` /
+  `bar_maps` (`engine.py:141-156`) and consumed at every simulated session with
+  **no further availability filtering** — the per-session loop
+  (`engine.py:194`ff) reads `bar_maps` directly.
+- `strategy_signal_to_entry_signal` reduces `signal.data_as_of` to a date
+  (`strategies/backtest_adapter.py:44`), so intraday knowability is dropped at
+  the signal boundary as well.
+
+**Consequence:** a bar whose `available_at` falls *after* a signal's session, or
+after the simulated session in which the bar is used, but on or before
+`end_date 23:59:59 UTC`, passes every check and is used in that earlier
+simulated period. The three checks are one cutoff applied three times, not three
+independent guarantees. The engine does not currently guarantee per-signal or
+per-session knowability.
+
+What the engine does guarantee is a separate, weaker property that does not
+depend on `available_at` at all: **session-date ordering**. An entry can only be
+placed on the first session strictly after `generated_after_session`
+(`engine.py:164-171`), and the entry's ATR is computed only from bars with
+`session_date <= generated_after_session` (`engine.py:303-306`). That rule is
+real and is what the engine's tests actually exercise. It is a date-granularity
+rule about *which session* a bar belongs to, not about *when* its values became
+knowable.
+
+**Effect on this decision:** the property is withdrawn from the decisive list.
+The verdict in §1 is re-derived from §3's capability gap, §4.1 and §4.2 alone,
+and it does not change — none of those three depends on the availability axis.
+Two things are worth stating explicitly, because this correction cuts both ways:
+
+1. **Against the verdict:** the preservation case is weaker than the earlier
+   revision claimed. "Point-in-time safe" is, today, partly an aspiration
+   carried in field names and a trusted flag rather than an enforced invariant,
+   and this record should not have cited it as an enforced one.
+2. **Not in favour of replacement:** the gap is not closed by migrating. The
+   legacy contract at least carries an availability axis and a run-level cutoff
+   that a wholly-outside-the-window dataset cannot pass; `backtest_runtime`'s
+   bar has six fields and no availability concept at all
+   (`contract.py:38`), so a replacement would delete the axis rather than
+   complete it. Completing it is a change to the legacy engine, tracked in §8.3.
 
 ---
 
@@ -172,7 +234,7 @@ backtesting/models.py  ->  strategies/contracts.py       (HistoricalBar)
                            strategies/backtest_adapter.py (BacktestResult, EntrySignal, BacktestError)
 ```
 
-`strategies/contracts.py:112` states the intent explicitly — reuse
+`strategies/contracts.py:111-113` states the intent explicitly — reuse
 `backtesting.models.HistoricalBar` "rather than introducing a second bar" type.
 So "remove the engine" means either keeping `models.py` as a types-only module
 whose engine is gone, or rewriting six strategy modules against a new bar type.
@@ -245,10 +307,10 @@ answer if the argument fails.
 
 ---
 
-## 8. The two legacy defects, weighed independently
+## 8. The legacy-side items, weighed independently
 
 PR 7's handoff requires D17 to be weighed independently of any migration
-decision. Both items below are exactly that: they are wrong whether or not
+decision. All three items below are exactly that: they are wrong whether or not
 anything is ever migrated, and keeping the component makes fixing them
 obligatory.
 
@@ -307,21 +369,52 @@ into the table the schema already defines, or delete the table and record that
 order-level backtest history is deliberately not retained. An empty table that
 looks like an audit surface is worse than either.
 
+### 8.3 Availability is enforced once per run, not per session (new finding)
+
+The mechanism and the source lines are in §4.3; this section records it as a
+tracked follow-up rather than as an argument in the decision.
+
+Why it belongs here rather than in §3's capability gap: the field names
+(`available_at`, `point_in_time_safe`), the provider's `as_of` parameter, and
+`data_provider.py`'s own module docstring ("Point-in-time historical data
+contract") all describe an availability invariant the run-level cutoff does not
+deliver. That mismatch between stated contract and enforced behavior is a defect
+in the component this gate has chosen to keep, and it is a defect regardless of
+what any library does.
+
+**Required fix (its own PR; may share the row 8a PR):** thread a per-session (or
+per-signal) `as_of` through the simulation instead of one run-wide
+`final_as_of`, so a bar is visible in session *t* only when its `available_at`
+is at or before that session's decision time; keep the signal's own
+`data_as_of` at full timestamp resolution rather than reducing it to a date; and
+decide whether `point_in_time_safe` should remain a caller-asserted flag or be
+derived. Back it with a test in which a bar carrying a late `available_at`
+inside the run window is *excluded* from the earlier session that would
+otherwise consume it. Note the expected blast radius: existing fixtures and the
+23 engine/adapter tests are all built against the current run-level semantics,
+so this is a behavior change with test churn, not a localized fix — which is
+precisely why it is not attempted in a decision-only PR.
+
+**Not implemented in this PR.** PR 8 changes no code.
+
 ---
 
 ## 9. What would reopen this decision
 
 Numbered so a future PR can cite one:
 
-1. **A replacement proposal that closes §3 and §4.** Concretely: exits and
+1. **A replacement proposal that closes §3 and §4.1–§4.2.** Concretely: exits and
    sells, risk-fraction sizing with a cash cap, daily-loss and drawdown limits,
    the economic-event blackout, rejected-entry records, fees and slippage,
    realized P&L, multi-symbol, and a stated resolution of §6's peak-seeding and
    series-start question — with parity demonstrated on ordinary data rather
    than on a fixture constructed to avoid a known divergence.
 2. **A point-in-time availability axis that is enforceable on the runtime
-   side** (§4.1), not merely carried as an unused field.
-3. **An accounting-boundary decision for `float` equity series** (§4.2),
+   side** — one that is actually checked per session, not merely carried as an
+   unused field. Note that after §4.3 this is a bar the legacy engine does not
+   clear either; a proposal that meets it would be proposing something stronger
+   than what exists today, and §8.3 is the corresponding legacy-side work.
+3. **An accounting-boundary decision for `float` equity series** (§4.1),
    consistent with `DECISIONS.md` D1.
 4. **A LumiBot capability change** that makes any of the above cheap — e.g. a
    documented risk-exit model expressible without re-implementing the legacy
@@ -349,6 +442,12 @@ docs/library-migration/MASTER_PLAN.md    PR 8 marked decided; PR 17's conditiona
 docs/library-migration/STATUS.md         completed work and next phase
 docs/INDEX.md                            one row pointing at this record
 ```
+
+The review round (PR #20) changed no file outside that list: it corrected §2,
+§3, §4 and §8 of this record and the same claims in `DECISIONS.md` D7,
+`STATUS.md`, `COMPONENT_MATRIX.md` and `PRESERVATION_MANIFEST.md`, added item
+(c) to `MASTER_PLAN.md` row 8a, and reconciled PR 6 and PR 7 to their merged
+commits (`bbd7a1f`, `5b9e1e3`).
 
 No behavior changed anywhere. `src/`, `scripts/`, `paper_runtime/src/`,
 `backtest_runtime/src/`, `config/` and `tests/` are byte-unchanged on this
