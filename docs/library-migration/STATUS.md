@@ -14,8 +14,10 @@ and is PR #20's base.
 
 **Next phase: PR 9 — strengthen the LumiBot runtime normalization contract**
 (`MASTER_PLAN.md` row 9). PR 8 also created row **8a**, the tracked follow-up
-for the two legacy-engine defects it decided must now be fixed rather than
-tolerated.
+for the three legacy-side items it decided must now be fixed rather than
+tolerated: run identity ignores the bar dataset (PR 7 D17), the
+`backtest_orders` table is created and never written, and bar availability is
+enforced once per run rather than per session.
 
 PR 6 is **merged** (`bbd7a1f`, PR #18) and delivered everything ADR 0009
 Decision 4 requires:
