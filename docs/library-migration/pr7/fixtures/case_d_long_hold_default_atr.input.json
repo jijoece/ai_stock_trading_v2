@@ -241,11 +241,12 @@
       "volume": 1029000
     }
   ],
-  "schema_version": "backtest_runtime.input.v1",
+  "schema_version": "backtest_runtime.input.v2",
   "strategy": {
     "budget": 100000.0,
+    "entry_after_session": null,
     "quantity": 10,
-    "strategy_id": "backtest_runtime.reference_strategy.v1",
+    "strategy_id": "backtest_runtime.reference_strategy.v2",
     "symbol": "SPKE"
   }
 }

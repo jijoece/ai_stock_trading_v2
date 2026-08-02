@@ -499,51 +499,98 @@ without qualification.
 
 ---
 
-## D6 — PR 7 parity comparison: Option A (narrowest legacy-engine equivalent)
+## D6 — PR 7 parity comparison: bounded Option B
 
-**Decision date:** 2026-08-02, at the start of PR 7, before any comparison code
-was written (`docs/library-migration/pr7-prompt.md`, "The scope trap this
-prompt exists to prevent").
+**Decision date:** 2026-08-02 (PR 7). **Revised the same day**, in PR 7's first
+review round, from Option A to a bounded Option B. The Option A record is
+superseded by this section and is not restated; the reasoning that replaced it
+is below.
 
-**The choice.** PR 7 compares `backtest_runtime`'s `ReferenceStrategy` against
-`src/trading_research/backtesting/engine.py` by constructing the legacy run as
-the **narrowest expressible equivalent** — Option A — rather than extending
-`backtest_runtime`'s reference strategy first (Option B).
+### What the first pass got wrong
 
-**The Option A construction, exactly:** one `EntrySignal` for one symbol, with
-`initial_stop_reference=None`, `target_reference=None`,
-`maximum_holding_sessions=None`, `quantity_hint` equal to the input document's
-`strategy.quantity`, and a `limit_price` set to the entry session's own high so
-the limit can never bind (the legacy engine has no market order type). The
-`BacktestConfiguration` differs from its dataclass defaults in exactly two
-fields — `atr_period`, lowered on the five-bar fixtures so the engine can enter
-as early as it structurally can, and the dates/symbol/cash that describe the
-fixture. Slippage and per-order fees stay at their zero defaults, which is what
-makes them directly comparable to `backtest_runtime`'s hardcoded `fees: 0.0`.
+PR 7 initially took **Option A** — express the legacy run as the narrowest
+`backtesting/engine.py` equivalent and change nothing in `backtest_runtime/` —
+and claimed its `case_a_buy_and_hold` was "the single-symbol buy-and-hold case
+that matches the reference strategy exactly." It was not. Measured:
+`backtest_runtime` entered on **2024-01-03 at 100.5**; the legacy engine entered
+on **2024-01-04 at 102.0**. Every downstream number — cash, equity, position
+cost basis, drawdown, final value — differed by that one-session, 1.50-per-share
+offset, and the report's central claim of a like-for-like case was unsupported.
 
-**Why not Option B.** Option B was to be taken "only if Option A cannot express
-a case the parity report actually needs." Option A expressed every case: a
-single-symbol whole-share buy held to the end of the fixture is exactly what
-`EntrySignal` plus a non-binding limit produces. What Option A *cannot* do is
-suppress the legacy engine's mandatory ATR stop, ratcheting trailing stop, ATR
-target and maximum holding period — but that is a finding the report must
-record (classified `D9-mandatory-risk-exit`), not a defect in the construction.
-Extending `backtest_runtime` to chase it would have broadened that
-distribution's scope speculatively, in the exact way ADR 0009 Decision 3 and
-PR 6's recorded scope boundary forbid, and would have made the comparison
-measure a strategy written for the comparison rather than the one PR 6
-shipped.
+The offset is structural, not a tuning error. The legacy engine cannot enter
+before its **third** bar: a signal is eligible only on the session *after*
+`generated_after_session`, and `average_true_range` needs `atr_period + 1` bars
+of history before that. `backtest_runtime`'s reference strategy v1 always bought
+on its first iteration, which is the **second** bar. No configuration of either
+side closes that gap, so Option A could never produce an identical case — which
+is exactly the condition `pr7-prompt.md` set for taking Option B.
 
-**What was therefore not done.** `backtest_runtime/src/` and
-`backtest_runtime/tests/` are unchanged by PR 7 — no new sell path, no
-scheduler, no data fetcher, no order type, and `benchmark_asset=None` /
-`analyze_backtest=False` / the credential-safety guarantees are untouched.
-`backtesting/engine.py`, `backtesting/models.py` and every `paper_books`
-module are likewise unchanged: PR 7 adds a fixture set, two runner scripts, a
-comparator and a report under `docs/library-migration/pr7/`, and nothing else.
+### The bounded extension
 
-**Consequence for PR 8.** The comparison establishes what the two engines do
-differently under the narrowest common case. It deliberately does **not**
-establish that `backtest_runtime` could replace `backtesting/engine.py`: the
-report's `UNSUPPORTED` and `D9` findings are the list of things that would have
-to be built first, and PR 8 is the gate that weighs them.
+`backtest_runtime`'s reference strategy is now **v2**, adding exactly one
+control:
+
+```text
+strategy.entry_after_session : null | "YYYY-MM-DD"
+```
+
+`null` reproduces v1 behavior exactly — submit on the first iteration with a
+resolvable price. A date defers that same single buy to the first iteration
+strictly after it. That is the whole extension.
+
+**Versioned, not defaulted.** `SCHEMA_VERSION_INPUT` becomes
+`backtest_runtime.input.v2` and `REFERENCE_STRATEGY_ID` becomes
+`backtest_runtime.reference_strategy.v2`. `contract.py` rejects both unknown
+*and* missing strategy fields, so a v1 document is not a valid v2 document and
+is told so explicitly rather than silently defaulted. The field participates in
+`strategy_digest`, so two runs that differ only in entry timing have different
+`run_configuration_checksum` values. A value at or after the last bar is
+rejected, rather than producing a run that silently never enters.
+
+**What was deliberately not added.** No sell, no stop, no target, no second
+order, no order type, no scheduler, no data fetcher, no broker interaction, no
+multi-symbol, no sizing rule. `benchmark_asset=None` and
+`analyze_backtest=False` remain hardcoded, and every ADR 0009 Decision 2
+credential-, network-, and isolation-safety property is untouched and still
+asserted by that distribution's own blocking test suite (`70 passed`, including
+`test_entry_timing.py`'s explicit "no sell and no second order" assertion).
+
+### What it bought
+
+`case_f_exact_entry_parity` pairs `entry_after_session = 2024-01-03` with the
+legacy engine's earliest possible entry. Both engines enter on **2024-01-04 at
+101.0 for 10 shares**, and agree exactly on final cash (98 990), final equity
+(99 992), final value, end position (10 @ 101.0), maximum drawdown (−0.00018),
+and on cash, equity, unrealized P&L, realized P&L and drawdown for **every
+co-dated session except the entry session itself**. The comparator asserts all
+fifteen of those dimensions and exits non-zero if any fails.
+
+The single excluded session is the classified adapter defect
+`D15-entry-session-state-lag`: `backtest_runtime`'s daily state for session D
+reflects fills booked through D−1, because the snapshot is taken inside
+`on_trading_iteration` before LumiBot's broker processes that session's order.
+It is the same fill-observation lag as `D4-fill-market-date-lag`, and it is
+reported, not worked around.
+
+The other five cases keep `entry_after_session = null`, so the default-timing
+behavior PR 6 shipped remains measured and reported rather than being replaced
+by the extension.
+
+### Classification semantics, corrected in the same round
+
+"Unsupported requirement" is reserved for a case **neither** side can express.
+Fees/slippage and realized-P&L/exit support are capabilities the legacy engine
+has and `backtest_runtime` does not, so they are **adapter capability defects**,
+not unsupported requirements — the requirement is demonstrably supportable
+because one side already supports it. The comparator carries a subcategory
+(`BEHAVIOR` — reports a value that contradicts its own run; `CAPABILITY` —
+cannot express something the legacy engine can) and fails if a `CAPABILITY`
+difference is labelled `UNSUPPORTED`.
+
+### Consequence for PR 8
+
+The exact case establishes that, on one identical buy-and-hold, the two engines
+agree on every economic number. It does **not** establish that
+`backtest_runtime` could replace `backtesting/engine.py`: the adapter capability
+defects, plus the legacy engine's mandatory risk exits, are the list of things
+that would have to be built first. PR 8 is the gate that weighs them.

@@ -31,8 +31,16 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-SCHEMA_VERSION_INPUT = "backtest_runtime.input.v1"
-REFERENCE_STRATEGY_ID = "backtest_runtime.reference_strategy.v1"
+SCHEMA_VERSION_INPUT = "backtest_runtime.input.v2"
+REFERENCE_STRATEGY_ID = "backtest_runtime.reference_strategy.v2"
+
+# The legacy engine has no market order type, so every entry must be a limit
+# order. A limit derived from the entry session's own high would be
+# look-ahead: at the moment the signal is generated, that session has not
+# happened. The limit is therefore a fixed band above the last close the
+# signal could actually have seen -- wide enough never to bind, and computed
+# from information available strictly at signal time.
+NON_BINDING_LIMIT_BAND = 1.10
 
 FIXTURES_DIR = Path(__file__).resolve().parent / "fixtures"
 
@@ -73,6 +81,35 @@ GAPPED_BARS = [
     ("2024-01-04", 106.0, 107.0, 105.5, 106.5, 1_000_000),
     ("2024-01-05", 107.0, 108.0, 106.5, 107.5, 1_000_000),
     ("2024-01-08", 108.0, 109.0, 107.5, 108.5, 1_000_000),
+]
+
+
+# Case F: the one genuinely identical buy-and-hold case (DECISIONS.md D6,
+# revised to bounded Option B). It pairs `strategy.entry_after_session =
+# 2024-01-03` on the backtest_runtime side with the legacy engine's earliest
+# possible entry, so both enter on 2024-01-04 at that session's open of 101.0.
+#
+# Two properties of the bar levels are load-bearing, and both are consequences
+# of `backtest_runtime`'s daily state at date D reflecting fills through D-1
+# while the legacy engine's reflects fills through D:
+#
+#  * the entry session's close (100.5) is BELOW the entry price (101.0), so the
+#    position is marked at a small loss on the entry session and neither side's
+#    running peak equity ever rises above the starting 100 000. Had the entry
+#    session closed higher, only the legacy engine would have recorded the
+#    higher peak, and every later drawdown would have diverged.
+#  * a LATER session (2024-01-05, close 99.2) is a strictly deeper drawdown
+#    than the entry session, so the aggregate `max_drawdown_fraction` is set by
+#    a session both engines report identically.
+#
+# Neither engine's exits fire: the ATR(1) stop sits at 98.0 and its target at
+# 105.5, and no bar reaches either.
+EXACT_PARITY_BARS = [
+    ("2024-01-02", 100.0, 100.5, 99.5, 100.0, 1_000_000),
+    ("2024-01-03", 100.0, 101.0, 99.5, 100.5, 1_000_000),
+    ("2024-01-04", 101.0, 101.5, 100.0, 100.5, 1_000_000),
+    ("2024-01-05", 100.5, 100.8, 99.0, 99.2, 1_000_000),
+    ("2024-01-08", 99.2, 100.5, 99.0, 100.2, 1_000_000),
 ]
 
 
@@ -126,7 +163,7 @@ QUANTITY = 10
 BUDGET = 100_000.0
 
 
-def input_document(bars: list[tuple]) -> dict:
+def input_document(bars: list[tuple], *, entry_after_session: str | None = None) -> dict:
     return {
         "schema_version": SCHEMA_VERSION_INPUT,
         "strategy": {
@@ -134,6 +171,7 @@ def input_document(bars: list[tuple]) -> dict:
             "symbol": SYMBOL,
             "quantity": QUANTITY,
             "budget": BUDGET,
+            "entry_after_session": entry_after_session,
         },
         "bars": [
             {
@@ -149,16 +187,55 @@ def input_document(bars: list[tuple]) -> dict:
     }
 
 
+def assert_point_in_time_safe(bars: list[tuple], signal: dict, signal_index: int) -> None:
+    """Every legacy signal parameter must derive only from bars the signal
+    could have seen.
+
+    A backtest signal is generated after the close of
+    `generated_after_session`, so no bar after that index may contribute to
+    any of its fields. This is asserted rather than commented because the
+    first version of this fixture set violated it: `limit_price` was the
+    *entry* session's high, a bar that had not happened yet when the signal
+    was generated. `tests/unit/test_pr7_parity_report.py` re-checks the same
+    property against the committed fixtures.
+    """
+    visible = bars[: signal_index + 1]
+    future = bars[signal_index + 1 :]
+    assert signal["generated_after_session"] == visible[-1][0], (
+        "generated_after_session must be the last visible session"
+    )
+    limit = float(signal["limit_price"])
+    expected = round(float(visible[-1][4]) * NON_BINDING_LIMIT_BAND, 2)
+    assert limit == expected, (
+        f"limit_price {limit} is not the point-in-time band "
+        f"{NON_BINDING_LIMIT_BAND} x the last visible close {visible[-1][4]} = {expected}"
+    )
+    # The strongest form of the check: no future OHLC value can reproduce the
+    # limit, so it cannot have been derived from one even by coincidence.
+    for session, open_, high, low, close, _volume in future:
+        for label, value in (("open", open_), ("high", high), ("low", low), ("close", close)):
+            assert limit != float(value), (
+                f"limit_price {limit} equals the future {session} {label} -- "
+                "that is look-ahead"
+            )
+    # A binding limit would change the entry price away from the session open
+    # and break the comparison with a market buy; a limit below the entry
+    # session's low would reject the signal outright.
+    entry_open, entry_low = float(future[0][1]), float(future[0][3])
+    assert limit >= entry_open, f"limit {limit} would bind against the entry open {entry_open}"
+    assert limit >= entry_low, f"limit {limit} would reject the signal (below entry low {entry_low})"
+
+
 def legacy_parameters(bars: list[tuple], *, atr_period: int, signal_index: int) -> dict:
     """The Option A legacy-engine construction for one case.
 
     `signal_index` is the index of the bar used as `generated_after_session`;
     the engine then becomes eligible on the *next* session, which is the
     earliest session at which `average_true_range` has `atr_period + 1` bars
-    of history available. `limit_price` is the entry bar's own high: the
-    legacy engine has no market order type, and a limit at the bar's high can
-    never bind, so the fill lands on the entry bar's open -- the closest
-    available equivalent of the reference strategy's market buy.
+    of history available. `limit_price` is a fixed band above the last close
+    visible at signal time -- see `NON_BINDING_LIMIT_BAND`: the legacy engine
+    has no market order type, and a limit that cannot bind puts the fill on
+    the entry session's open, which is where a market buy lands too.
     """
     entry_index = signal_index + 1
     return {
@@ -182,7 +259,7 @@ def legacy_parameters(bars: list[tuple], *, atr_period: int, signal_index: int) 
             "signal_id": "pr7-entry",
             "symbol": SYMBOL,
             "generated_after_session": bars[signal_index][0],
-            "limit_price": str(bars[entry_index][2]),
+            "limit_price": str(round(bars[signal_index][4] * NON_BINDING_LIMIT_BAND, 2)),
             "quantity_hint": str(QUANTITY),
             # Option A: no initial_stop_reference, no target_reference, no
             # maximum_holding_sessions -- the narrowest expressible entry.
@@ -196,8 +273,20 @@ def legacy_parameters(bars: list[tuple], *, atr_period: int, signal_index: int) 
 
 CASES = [
     {
+        "case_id": "case_f_exact_entry_parity",
+        "title": "Exact parity: both engines enter on the same session at the same price",
+        "provenance": "synthetic, generated by this script (see `EXACT_PARITY_BARS`)",
+        "bars": EXACT_PARITY_BARS,
+        "atr_period": 1,
+        "signal_index": 1,
+        # The bounded Option B control: defer backtest_runtime's single buy to
+        # the first session after 2024-01-03, which is the earliest session the
+        # legacy engine can enter on.
+        "entry_after_session": "2024-01-03",
+    },
+    {
         "case_id": "case_a_buy_and_hold",
-        "title": "Single-symbol buy-and-hold on backtest_runtime's own BARS fixture",
+        "title": "Default entry timing: backtest_runtime enters a session earlier than the engine can",
         "provenance": "backtest_runtime/tests/support/fixtures.py::BARS (verbatim)",
         "bars": BARS,
         "atr_period": 1,
@@ -249,27 +338,34 @@ CASES = [
 def main() -> None:
     FIXTURES_DIR.mkdir(parents=True, exist_ok=True)
     manifest = {
-        "manifest_version": "pr7.parity_manifest.v1",
+        "manifest_version": "pr7.parity_manifest.v2",
         "description": (
             "Canonical PR 7 parity fixture set. Each case's `input` file is the "
             "single source of bars for BOTH engines. `legacy_engine` holds the "
-            "Option A construction used to express the same run through "
-            "src/trading_research/backtesting/engine.py; backtest_runtime needs "
-            "no extra parameters because the input document's `strategy` object "
-            "is its whole run configuration."
+            "construction used to express the same run through "
+            "src/trading_research/backtesting/engine.py. The backtest_runtime "
+            "side is configured entirely by the input document's `strategy` "
+            "object, including `entry_after_session`, the one control reference "
+            "strategy v2 adds (DECISIONS.md D6)."
         ),
         "symbol": SYMBOL,
         "quantity": QUANTITY,
         "budget": BUDGET,
+        "non_binding_limit_band": NON_BINDING_LIMIT_BAND,
         "cases": [],
     }
     for case in CASES:
         bars = case["bars"]
-        document = input_document(bars)
+        entry_after_session = case.get("entry_after_session")
+        document = input_document(bars, entry_after_session=entry_after_session)
         filename = f"{case['case_id']}.input.json"
         (FIXTURES_DIR / filename).write_text(
             json.dumps(document, indent=2, sort_keys=True) + "\n", encoding="utf-8"
         )
+        legacy = legacy_parameters(
+            bars, atr_period=case["atr_period"], signal_index=case["signal_index"]
+        )
+        assert_point_in_time_safe(bars, legacy["signal"], case["signal_index"])
         manifest["cases"].append(
             {
                 "case_id": case["case_id"],
@@ -277,9 +373,11 @@ def main() -> None:
                 "provenance": case["provenance"],
                 "input": filename,
                 "bar_count": len(bars),
-                "legacy_engine": legacy_parameters(
-                    bars, atr_period=case["atr_period"], signal_index=case["signal_index"]
-                ),
+                "backtest_runtime_entry_after_session": entry_after_session,
+                # Set only for the case built to enter on the same session on
+                # both sides; the comparator asserts exact agreement there.
+                "expects_exact_entry_parity": bool(entry_after_session),
+                "legacy_engine": legacy,
             }
         )
     (FIXTURES_DIR / "parity_manifest.json").write_text(

@@ -11,9 +11,18 @@ The reference strategy itself is intentionally minimal: buy the
 caller-specified whole-share quantity of one symbol on the first bar with a
 price, then hold. This is the same shape as the pre-step feasibility spike's
 `SpikeStrategy` (docs/library-migration/pre-step-06/spike_backtest.py) --
-deterministic, no execution authority, no scheduler, no data fetcher. It
-exists to prove the isolated LumiBot backtest boundary end-to-end; PR 7 is
-responsible for comparing it against `backtesting/engine.py`, not this PR.
+deterministic, no execution authority, no scheduler, no data fetcher.
+
+PR 7 added exactly one control to it, `strategy.entry_after_session`
+(reference strategy v2, `docs/library-migration/DECISIONS.md` D6): it moves
+*when* that same single buy is submitted, and nothing else. It adds no sell,
+no stop, no target, no second order, no order type, no scheduler, no data
+fetcher and no broker interaction, and it does not touch
+`benchmark_asset=None`, `analyze_backtest=False`, or any credential- or
+network-safety guarantee below. It exists so PR 7 can construct one case in
+which this strategy and `backtesting/engine.py` enter on the same session --
+which is otherwise impossible, because that engine cannot enter before its
+third bar.
 
 `benchmark_asset=None` and `analyze_backtest=False` are hardcoded below, not
 caller-configurable -- ADR 0009 Decision 3 requires both as a condition of the
@@ -82,8 +91,17 @@ def run_backtest(backtest_input: BacktestInput) -> dict[str, Any]:
             self._submitted = False
 
         def on_trading_iteration(self) -> None:
+            current_date = self.get_datetime().date()
+            # The only control this strategy has. `None` reproduces v1
+            # exactly: submit on the first iteration with a resolvable price.
+            # A date defers that same single buy to the first iteration
+            # strictly after it. There is no second order either way.
+            entry_allowed = (
+                strategy_cfg.entry_after_session is None
+                or current_date > strategy_cfg.entry_after_session
+            )
             price = self.get_last_price(asset)
-            if not self._submitted and price:
+            if not self._submitted and entry_allowed and price:
                 order = self.create_order(asset, strategy_cfg.quantity, "buy")
                 submitted = self.submit_order(order)
                 orders[submitted.identifier] = {
@@ -96,7 +114,6 @@ def run_backtest(backtest_input: BacktestInput) -> dict[str, Any]:
                 }
                 self._submitted = True
 
-            current_date = self.get_datetime().date()
             equity = float(self.portfolio_value)
             cash = float(self.cash)
             position = self.get_position(asset)

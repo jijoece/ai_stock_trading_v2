@@ -1,15 +1,431 @@
 {
+  "adapter_defect_subcategory_tally": {
+    "BEHAVIOR": 10,
+    "CAPABILITY": 14
+  },
   "cases": [
     {
       "agreements": [
+        "bar set: identical input, sha256 4634c176d27e63fc... (computed independently on each side)",
+        "orders[BUY#0]: side (BUY) and quantity (10 shares) both equal",
+        "fills[0]: quantity equal (10 shares, exact)",
+        "fills[0]: fill_price equal (101.0)",
+        "fills[0]: fees equal (0) -- but see D7",
+        "fills[0]: the legacy engine's market_date (2024-01-04) is consistent with the session whose open it priced against",
+        "entry: both engines entered on 2024-01-04",
+        "positions[0]: quantity equal (10 shares, exact)",
+        "positions[0]: average_price equal (101.0)",
+        "daily_states[].realized_pnl: all 4 co-dated session(s) equal within +/-0.000001 absolute",
+        "final_cash: equal within +/-0.000001 absolute (98990.0)",
+        "final_equity: equal within +/-0.000001 absolute (99992.0)",
+        "final_value: equal within +/-0.000001 absolute (99992.0)",
+        "max_drawdown_fraction: equal within +/-1E-9 relative (absolute floor 1E-15) (-0.00018)",
+        "EXACT PARITY OK: entry session",
+        "EXACT PARITY OK: entry price",
+        "EXACT PARITY OK: quantity",
+        "EXACT PARITY OK: no exit on either side",
+        "EXACT PARITY OK: position quantity",
+        "EXACT PARITY OK: position average price",
+        "EXACT PARITY OK: cash (every co-dated session but the entry session)",
+        "EXACT PARITY OK: equity (same)",
+        "EXACT PARITY OK: unrealized P&L (same)",
+        "EXACT PARITY OK: realized P&L (same)",
+        "EXACT PARITY OK: drawdown (same)",
+        "EXACT PARITY OK: final cash",
+        "EXACT PARITY OK: final equity",
+        "EXACT PARITY OK: final value",
+        "EXACT PARITY OK: max drawdown"
+      ],
+      "backtest_runtime_entry_after_session": "2024-01-03",
+      "case_id": "case_f_exact_entry_parity",
+      "daily_state_table": [
+        {
+          "cash": {
+            "backtest_runtime": null,
+            "legacy_engine": "100000",
+            "status": "one side only"
+          },
+          "drawdown_fraction": {
+            "backtest_runtime": null,
+            "legacy_engine": "0",
+            "status": "one side only"
+          },
+          "equity": {
+            "backtest_runtime": null,
+            "legacy_engine": "100000",
+            "status": "one side only"
+          },
+          "market_date": "2024-01-02",
+          "realized_pnl": {
+            "backtest_runtime": null,
+            "legacy_engine": "0",
+            "status": "one side only"
+          },
+          "unrealized_pnl": {
+            "backtest_runtime": null,
+            "legacy_engine": "0",
+            "status": "one side only"
+          }
+        },
+        {
+          "cash": {
+            "backtest_runtime": 100000.0,
+            "delta_legacy_minus_runtime": "0.0",
+            "legacy_engine": "100000",
+            "status": "equal"
+          },
+          "drawdown_fraction": {
+            "backtest_runtime": 0.0,
+            "delta_legacy_minus_runtime": "0.0",
+            "legacy_engine": "0",
+            "status": "equal"
+          },
+          "equity": {
+            "backtest_runtime": 100000.0,
+            "delta_legacy_minus_runtime": "0.0",
+            "legacy_engine": "100000",
+            "status": "equal"
+          },
+          "market_date": "2024-01-03",
+          "realized_pnl": {
+            "backtest_runtime": 0.0,
+            "delta_legacy_minus_runtime": "0.0",
+            "legacy_engine": "0",
+            "status": "equal"
+          },
+          "unrealized_pnl": {
+            "backtest_runtime": 0.0,
+            "delta_legacy_minus_runtime": "0.0",
+            "legacy_engine": "0",
+            "status": "equal"
+          }
+        },
+        {
+          "cash": {
+            "backtest_runtime": 100000.0,
+            "delta_legacy_minus_runtime": "-1010.0",
+            "legacy_engine": "98990.0",
+            "status": "differs"
+          },
+          "drawdown_fraction": {
+            "backtest_runtime": 0.0,
+            "delta_legacy_minus_runtime": "-0.00005",
+            "legacy_engine": "-0.00005",
+            "status": "differs"
+          },
+          "equity": {
+            "backtest_runtime": 100000.0,
+            "delta_legacy_minus_runtime": "-5.0",
+            "legacy_engine": "99995.0",
+            "status": "differs"
+          },
+          "market_date": "2024-01-04",
+          "realized_pnl": {
+            "backtest_runtime": 0.0,
+            "delta_legacy_minus_runtime": "0.0",
+            "legacy_engine": "0",
+            "status": "equal"
+          },
+          "unrealized_pnl": {
+            "backtest_runtime": 0.0,
+            "delta_legacy_minus_runtime": "-5.0",
+            "legacy_engine": "-5.0",
+            "status": "differs"
+          }
+        },
+        {
+          "cash": {
+            "backtest_runtime": 98990.0,
+            "delta_legacy_minus_runtime": "0.0",
+            "legacy_engine": "98990.0",
+            "status": "equal"
+          },
+          "drawdown_fraction": {
+            "backtest_runtime": -0.00018,
+            "delta_legacy_minus_runtime": "0.00000",
+            "legacy_engine": "-0.00018",
+            "status": "equal"
+          },
+          "equity": {
+            "backtest_runtime": 99982.0,
+            "delta_legacy_minus_runtime": "0.0",
+            "legacy_engine": "99982.0",
+            "status": "equal"
+          },
+          "market_date": "2024-01-05",
+          "realized_pnl": {
+            "backtest_runtime": 0.0,
+            "delta_legacy_minus_runtime": "0.0",
+            "legacy_engine": "0",
+            "status": "equal"
+          },
+          "unrealized_pnl": {
+            "backtest_runtime": -18.0,
+            "delta_legacy_minus_runtime": "0.0",
+            "legacy_engine": "-18.0",
+            "status": "equal"
+          }
+        },
+        {
+          "cash": {
+            "backtest_runtime": 98990.0,
+            "delta_legacy_minus_runtime": "0.0",
+            "legacy_engine": "98990.0",
+            "status": "equal"
+          },
+          "drawdown_fraction": {
+            "backtest_runtime": -8e-05,
+            "delta_legacy_minus_runtime": "0.00000",
+            "legacy_engine": "-0.00008",
+            "status": "equal"
+          },
+          "equity": {
+            "backtest_runtime": 99992.0,
+            "delta_legacy_minus_runtime": "0.0",
+            "legacy_engine": "99992.0",
+            "status": "equal"
+          },
+          "market_date": "2024-01-08",
+          "realized_pnl": {
+            "backtest_runtime": 0.0,
+            "delta_legacy_minus_runtime": "0.0",
+            "legacy_engine": "0",
+            "status": "equal"
+          },
+          "unrealized_pnl": {
+            "backtest_runtime": -8.0,
+            "delta_legacy_minus_runtime": "0.0",
+            "legacy_engine": "-8.0",
+            "status": "equal"
+          }
+        }
+      ],
+      "differences": [
+        {
+          "backtest_runtime": {
+            "lumibot_version": "4.5.78",
+            "run_configuration_checksum": "e62b361f1bbcffda9cca043d35808d3e60145757b099885eb2420906fc8c707b",
+            "strategy_identity": "backtest_runtime.reference_strategy.v2"
+          },
+          "classification": "LIBRARY_SEMANTIC",
+          "classification_label": "intentional library semantic difference (LumiBot vs. the custom engine)",
+          "detail": "different identity schemes; not comparable by value",
+          "difference_id": "D14-run-identity-fields",
+          "dimension": "run identity",
+          "legacy_engine": {
+            "backtest_run_id": "backtest-71bbaa4c5e9e0f2b1946b8d4d0b284db",
+            "configuration_hash": "514ff2d880c2bbc665596e22537f9847b264f69cc29bddb90315b9f608684d48",
+            "engine_code_version": "advanced-risk-backtest-v2-fill-sequence"
+          },
+          "rationale": "The two documents identify a run differently: backtest_runtime carries strategy_identity plus a bar-set and run-configuration checksum; the legacy engine carries backtest_run_id and configuration_hash over a much larger configuration surface. Only the bar-set checksum is comparable, and it is compared (and equal) as the proof of identical input."
+        },
+        {
+          "backtest_runtime": "1 order record(s) reported",
+          "classification": "OLD_ENGINE_DEFECT",
+          "classification_label": "old-engine defect",
+          "detail": "structural gap in the legacy result type",
+          "difference_id": "D11-order-and-position-records",
+          "dimension": "orders",
+          "legacy_engine": "null -- BacktestResult reports no orders; 1 reconstructed from fills",
+          "rationale": "`BacktestResult` carries fills, daily states, rejected entries, metrics and unresolved evaluations -- but no order records and no position records, so two of the dimensions ADR 0009 Decision 3 names as parity dimensions have no first-class representation on the legacy side. run_legacy_engine.py reconstructs both from the fill stream, but a consumer of BacktestResult alone cannot. Reported as a defect of the old engine's result type, not of its arithmetic."
+        },
+        {
+          "backtest_runtime": "market",
+          "classification": "LIBRARY_SEMANTIC",
+          "classification_label": "intentional library semantic difference (LumiBot vs. the custom engine)",
+          "detail": "economically different order models, not a vocabulary difference",
+          "difference_id": "D16-order-type-model",
+          "dimension": "orders[BUY#0]: order_type",
+          "legacy_engine": "LIMIT",
+          "rationale": "The reference strategy submits a LumiBot market order; the legacy engine has no market order type and can only express an entry as a limit order. This is an economic difference in the order model, deliberately kept separate from the representational D5 -- a market order and a limit order are not the same fact spelled two ways. It has no effect on the fills in this fixture set only because every limit is constructed to be non-binding."
+        },
+        {
+          "backtest_runtime": "fill",
+          "classification": "LIBRARY_SEMANTIC",
+          "classification_label": "intentional library semantic difference (LumiBot vs. the custom engine)",
+          "detail": "same status, different spelling",
+          "difference_id": "D5-enum-vocabulary",
+          "dimension": "orders[BUY#0]: status",
+          "legacy_engine": "FILLED",
+          "rationale": "Status vocabularies differ: LumiBot emits lowercase enum values ('fill'), the legacy engine uppercase domain strings ('FILLED'). Representational only, and enforced to be so: a difference may carry this id only if both values normalize to the same token in VOCABULARY_EQUIVALENCE. Sides and order types are compared as economic fields instead (see D16), so a BUY can never be reported as vocabulary-equivalent to a SELL."
+        },
+        {
+          "backtest_runtime": "bt_1",
+          "classification": "LIBRARY_SEMANTIC",
+          "classification_label": "intentional library semantic difference (LumiBot vs. the custom engine)",
+          "detail": "",
+          "difference_id": "D6-identity-scheme",
+          "dimension": "orders[BUY#0]: order_id",
+          "legacy_engine": "bt-order-pr7-entry",
+          "rationale": "Order/fill identities are generated by different schemes (LumiBot's incrementing 'bt_N' vs. the legacy engine's signal-derived 'bt-order-<signal_id>' and sha256-derived 'bt-fill-<digest>'). Neither is reconstructible from the other; identity is not a parity dimension."
+        },
+        {
+          "backtest_runtime": "bt_1-fill-1",
+          "classification": "LIBRARY_SEMANTIC",
+          "classification_label": "intentional library semantic difference (LumiBot vs. the custom engine)",
+          "detail": "",
+          "difference_id": "D6-identity-scheme",
+          "dimension": "fills[0]: fill_id",
+          "legacy_engine": "bt-fill-cded6473157ae851f8b3be05e46e544d",
+          "rationale": "Order/fill identities are generated by different schemes (LumiBot's incrementing 'bt_N' vs. the legacy engine's signal-derived 'bt-order-<signal_id>' and sha256-derived 'bt-fill-<digest>'). Neither is reconstructible from the other; identity is not a parity dimension."
+        },
+        {
+          "backtest_runtime": "absent from backtest_runtime.result.v1",
+          "classification": "ADAPTER_DEFECT",
+          "classification_label": "adapter defect (in backtest_runtime)",
+          "detail": "",
+          "difference_id": "D7-fees-and-slippage-model",
+          "dimension": "fills: slippage field",
+          "legacy_engine": [
+            "0.0"
+          ],
+          "rationale": "The legacy engine models a per-order fee and a bps slippage and reports a per-fill `slippage` amount. backtest_runtime hardcodes fees=0.0 and has no slippage concept or field at all, so a non-zero cost model cannot be expressed on its side. Both are zero in this fixture set only because the legacy configuration was deliberately set to its zero-cost defaults. This is an adapter capability gap, not an unsupported requirement: the requirement is demonstrably supportable, because the legacy engine supports it today.",
+          "subcategory": "CAPABILITY",
+          "subcategory_label": "cannot express a capability the legacy engine has"
+        },
+        {
+          "backtest_runtime": "absent from backtest_runtime.result.v1 (the reference strategy never sells)",
+          "classification": "ADAPTER_DEFECT",
+          "classification_label": "adapter defect (in backtest_runtime)",
+          "detail": "",
+          "difference_id": "D8-realized-pnl-and-exit-support",
+          "dimension": "fills: exit_reason field",
+          "legacy_engine": [
+            null
+          ],
+          "rationale": "backtest_runtime's `_normalize_result` writes realized_pnl=0.0 as a constant and its result schema has no exit_reason field; its reference strategy never sells, so it has no realized-P&L path at all. The legacy engine computes realized P&L per exit and records why each exit happened. Again an adapter capability gap rather than an unsupported requirement -- one side already does this.",
+          "subcategory": "CAPABILITY",
+          "subcategory_label": "cannot express a capability the legacy engine has"
+        },
+        {
+          "backtest_runtime": "market_date 2024-01-05, but fill_price 101.0 is the open of 2024-01-04 (sessions matching that open: ['2024-01-04'])",
+          "classification": "ADAPTER_DEFECT",
+          "classification_label": "adapter defect (in backtest_runtime)",
+          "detail": "the runtime document's own fill price and fill date disagree about which session the entry happened on",
+          "difference_id": "D4-fill-market-date-lag",
+          "dimension": "fills[0]: reported market_date vs. priced session",
+          "legacy_engine": "market_date 2024-01-04, fill_price 101.0 is the open of 2024-01-04 (sessions matching that open: ['2024-01-04'])",
+          "rationale": "backtest_runtime stamps a fill with self.get_datetime() inside on_filled_order, which LumiBot invokes on the iteration *after* the fill is booked. Measured on case E: the fill price is 104.0, the 2024-01-03 open, but the recorded market_date is 2024-01-04 -- a session whose own open is 106.0. The stamped date is provably not the session the fill priced against, and the 01-03 daily state still reports zero position and untouched cash. LumiBot leaves order.broker_date/broker_create_date as None in backtesting, which is what makes the wrong timestamp easy to reach for, but the adapter already observes the correct session inside on_trading_iteration.",
+          "subcategory": "BEHAVIOR",
+          "subcategory_label": "reports a value that contradicts its own run"
+        },
+        {
+          "backtest_runtime": "1 position record(s) reported",
+          "classification": "OLD_ENGINE_DEFECT",
+          "classification_label": "old-engine defect",
+          "detail": "structural gap in the legacy result type",
+          "difference_id": "D11-order-and-position-records",
+          "dimension": "positions",
+          "legacy_engine": "null -- BacktestResult reports no positions; 1 reconstructed from fills",
+          "rationale": "`BacktestResult` carries fills, daily states, rejected entries, metrics and unresolved evaluations -- but no order records and no position records, so two of the dimensions ADR 0009 Decision 3 names as parity dimensions have no first-class representation on the legacy side. run_legacy_engine.py reconstructs both from the fill stream, but a consumer of BacktestResult alone cannot. Reported as a defect of the old engine's result type, not of its arithmetic."
+        },
+        {
+          "backtest_runtime": "4 state(s), 2024-01-03..2024-01-08",
+          "classification": "LIBRARY_SEMANTIC",
+          "classification_label": "intentional library semantic difference (LumiBot vs. the custom engine)",
+          "detail": "legacy-only session(s): ['2024-01-02']; runtime-only session(s): none",
+          "difference_id": "D1-daily-state-series-start",
+          "dimension": "daily_states: covered sessions",
+          "legacy_engine": "5 state(s), 2024-01-02..2024-01-08",
+          "rationale": "LumiBot's first on_trading_iteration lands on the second fixture bar, so backtest_runtime emits one fewer daily state than there are bars and never reports the first session. The legacy engine emits one state per session in the dataset, including the first. Neither engine loses the first bar as *data* (both use it), but only the legacy engine reports it as a state."
+        },
+        {
+          "backtest_runtime": "see comparison.json for the per-session table",
+          "classification": "ADAPTER_DEFECT",
+          "classification_label": "adapter defect (in backtest_runtime)",
+          "detail": "the entry session 2024-01-04 is the only co-dated session that differs (of 4); |difference| 1010.0",
+          "difference_id": "D15-entry-session-state-lag",
+          "dimension": "daily_states[].cash",
+          "legacy_engine": "see comparison.json for the per-session table",
+          "rationale": "Same root cause as D4, in the daily-state series rather than the fill record. backtest_runtime's daily state for session D reflects fills booked through D-1, because the snapshot is taken inside on_trading_iteration before LumiBot's broker processes that session's order; the legacy engine's state for D reflects fills through D. On the exact-parity case this is the *only* daily-state disagreement: cash, equity, unrealized P&L and drawdown all match on every session except the entry session itself.",
+          "subcategory": "BEHAVIOR",
+          "subcategory_label": "reports a value that contradicts its own run"
+        },
+        {
+          "backtest_runtime": "see comparison.json for the per-session table",
+          "classification": "ADAPTER_DEFECT",
+          "classification_label": "adapter defect (in backtest_runtime)",
+          "detail": "the entry session 2024-01-04 is the only co-dated session that differs (of 4); |difference| 5.0",
+          "difference_id": "D15-entry-session-state-lag",
+          "dimension": "daily_states[].equity",
+          "legacy_engine": "see comparison.json for the per-session table",
+          "rationale": "Same root cause as D4, in the daily-state series rather than the fill record. backtest_runtime's daily state for session D reflects fills booked through D-1, because the snapshot is taken inside on_trading_iteration before LumiBot's broker processes that session's order; the legacy engine's state for D reflects fills through D. On the exact-parity case this is the *only* daily-state disagreement: cash, equity, unrealized P&L and drawdown all match on every session except the entry session itself.",
+          "subcategory": "BEHAVIOR",
+          "subcategory_label": "reports a value that contradicts its own run"
+        },
+        {
+          "backtest_runtime": "see comparison.json for the per-session table",
+          "classification": "ADAPTER_DEFECT",
+          "classification_label": "adapter defect (in backtest_runtime)",
+          "detail": "the entry session 2024-01-04 is the only co-dated session that differs (of 4); |difference| 5.0",
+          "difference_id": "D15-entry-session-state-lag",
+          "dimension": "daily_states[].unrealized_pnl",
+          "legacy_engine": "see comparison.json for the per-session table",
+          "rationale": "Same root cause as D4, in the daily-state series rather than the fill record. backtest_runtime's daily state for session D reflects fills booked through D-1, because the snapshot is taken inside on_trading_iteration before LumiBot's broker processes that session's order; the legacy engine's state for D reflects fills through D. On the exact-parity case this is the *only* daily-state disagreement: cash, equity, unrealized P&L and drawdown all match on every session except the entry session itself.",
+          "subcategory": "BEHAVIOR",
+          "subcategory_label": "reports a value that contradicts its own run"
+        },
+        {
+          "backtest_runtime": "see comparison.json for the per-session table",
+          "classification": "ADAPTER_DEFECT",
+          "classification_label": "adapter defect (in backtest_runtime)",
+          "detail": "the entry session 2024-01-04 is the only co-dated session that differs (of 4); |difference| 0.00005",
+          "difference_id": "D15-entry-session-state-lag",
+          "dimension": "daily_states[].drawdown_fraction",
+          "legacy_engine": "see comparison.json for the per-session table",
+          "rationale": "Same root cause as D4, in the daily-state series rather than the fill record. backtest_runtime's daily state for session D reflects fills booked through D-1, because the snapshot is taken inside on_trading_iteration before LumiBot's broker processes that session's order; the legacy engine's state for D reflects fills through D. On the exact-parity case this is the *only* daily-state disagreement: cash, equity, unrealized P&L and drawdown all match on every session except the entry session itself.",
+          "subcategory": "BEHAVIOR",
+          "subcategory_label": "reports a value that contradicts its own run"
+        }
+      ],
+      "exact_parity": {
+        "all_passed": true,
+        "checks": {
+          "cash (every co-dated session but the entry session)": true,
+          "drawdown (same)": true,
+          "entry price": true,
+          "entry session": true,
+          "equity (same)": true,
+          "final cash": true,
+          "final equity": true,
+          "final value": true,
+          "max drawdown": true,
+          "no exit on either side": true,
+          "position average price": true,
+          "position quantity": true,
+          "quantity": true,
+          "realized P&L (same)": true,
+          "unrealized P&L (same)": true
+        },
+        "entry_session": "2024-01-04",
+        "excluded_by_classified_defect": {
+          "2024-01-04": "D15-entry-session-state-lag (and D4 for the fill's own date)"
+        },
+        "sessions_compared": [
+          "2024-01-03",
+          "2024-01-05",
+          "2024-01-08"
+        ]
+      },
+      "final_equity_legacy": "99992.0",
+      "historical_bar_dataset_checksum": "4634c176d27e63fcb70f74bca58c02e084507eec7b44033d4191f983f42f64db",
+      "input": "case_f_exact_entry_parity.input.json",
+      "legacy_backtest_run_id": "backtest-71bbaa4c5e9e0f2b1946b8d4d0b284db",
+      "legacy_configuration_hash": "514ff2d880c2bbc665596e22537f9847b264f69cc29bddb90315b9f608684d48",
+      "provenance": "synthetic, generated by this script (see `EXACT_PARITY_BARS`)",
+      "title": "Exact parity: both engines enter on the same session at the same price"
+    },
+    {
+      "agreements": [
         "bar set: identical input, sha256 e5cf5f68b4d18beb... (computed independently on each side)",
-        "orders[0]: quantity equal (10 shares)",
+        "orders[BUY#0]: side (BUY) and quantity (10 shares) both equal",
         "fills[0]: quantity equal (10 shares, exact)",
         "fills[0]: fees equal (0) -- but see D7",
         "fills[0]: the legacy engine's market_date (2024-01-04) is consistent with the session whose open it priced against",
         "positions[0]: quantity equal (10 shares, exact)",
         "daily_states[].realized_pnl: all 4 co-dated session(s) equal within +/-0.000001 absolute"
       ],
+      "backtest_runtime_entry_after_session": null,
       "case_id": "case_a_buy_and_hold",
       "daily_state_table": [
         {
@@ -177,8 +593,8 @@
         {
           "backtest_runtime": {
             "lumibot_version": "4.5.78",
-            "run_configuration_checksum": "57b2c40ef0a8571f93ca72f050944a4f02addc5ecde7b6c99a2ca09a9ce9a77a",
-            "strategy_identity": "backtest_runtime.reference_strategy.v1"
+            "run_configuration_checksum": "2f5177e301a263e810579326f0968991a40a88e54ddb6776fd510c960097c049",
+            "strategy_identity": "backtest_runtime.reference_strategy.v2"
           },
           "classification": "LIBRARY_SEMANTIC",
           "classification_label": "intentional library semantic difference (LumiBot vs. the custom engine)",
@@ -186,7 +602,7 @@
           "difference_id": "D14-run-identity-fields",
           "dimension": "run identity",
           "legacy_engine": {
-            "backtest_run_id": "backtest-6f8bd8f4868deb0a579f8760c277f889",
+            "backtest_run_id": "backtest-fdc36c96d992abb14b40e584ef477a42",
             "configuration_hash": "514ff2d880c2bbc665596e22537f9847b264f69cc29bddb90315b9f608684d48",
             "engine_code_version": "advanced-risk-backtest-v2-fill-sequence"
           },
@@ -203,20 +619,24 @@
           "rationale": "`BacktestResult` carries fills, daily states, rejected entries, metrics and unresolved evaluations -- but no order records and no position records, so two of the dimensions ADR 0009 Decision 3 names as parity dimensions have no first-class representation on the legacy side. run_legacy_engine.py reconstructs both from the fill stream, but a consumer of BacktestResult alone cannot. Reported as a defect of the old engine's result type, not of its arithmetic."
         },
         {
-          "backtest_runtime": {
-            "order_type": "market",
-            "status": "fill"
-          },
+          "backtest_runtime": "market",
           "classification": "LIBRARY_SEMANTIC",
           "classification_label": "intentional library semantic difference (LumiBot vs. the custom engine)",
-          "detail": "",
+          "detail": "economically different order models, not a vocabulary difference",
+          "difference_id": "D16-order-type-model",
+          "dimension": "orders[BUY#0]: order_type",
+          "legacy_engine": "LIMIT",
+          "rationale": "The reference strategy submits a LumiBot market order; the legacy engine has no market order type and can only express an entry as a limit order. This is an economic difference in the order model, deliberately kept separate from the representational D5 -- a market order and a limit order are not the same fact spelled two ways. It has no effect on the fills in this fixture set only because every limit is constructed to be non-binding."
+        },
+        {
+          "backtest_runtime": "fill",
+          "classification": "LIBRARY_SEMANTIC",
+          "classification_label": "intentional library semantic difference (LumiBot vs. the custom engine)",
+          "detail": "same status, different spelling",
           "difference_id": "D5-enum-vocabulary",
-          "dimension": "orders[0]: vocabulary",
-          "legacy_engine": {
-            "order_type": "LIMIT",
-            "status": "FILLED"
-          },
-          "rationale": "Side/status/order-type vocabularies differ: LumiBot emits lowercase enum values ('buy', 'fill', 'market'); the legacy engine uses uppercase domain strings ('BUY', 'FILLED', 'LIMIT'). Representational only -- no economic content differs."
+          "dimension": "orders[BUY#0]: status",
+          "legacy_engine": "FILLED",
+          "rationale": "Status vocabularies differ: LumiBot emits lowercase enum values ('fill'), the legacy engine uppercase domain strings ('FILLED'). Representational only, and enforced to be so: a difference may carry this id only if both values normalize to the same token in VOCABULARY_EQUIVALENCE. Sides and order types are compared as economic fields instead (see D16), so a BUY can never be reported as vocabulary-equivalent to a SELL."
         },
         {
           "backtest_runtime": "bt_1",
@@ -224,7 +644,7 @@
           "classification_label": "intentional library semantic difference (LumiBot vs. the custom engine)",
           "detail": "",
           "difference_id": "D6-identity-scheme",
-          "dimension": "orders[0]: order_id",
+          "dimension": "orders[BUY#0]: order_id",
           "legacy_engine": "bt-order-pr7-entry",
           "rationale": "Order/fill identities are generated by different schemes (LumiBot's incrementing 'bt_N' vs. the legacy engine's signal-derived 'bt-order-<signal_id>' and sha256-derived 'bt-fill-<digest>'). Neither is reconstructible from the other; identity is not a parity dimension."
         },
@@ -250,27 +670,31 @@
         },
         {
           "backtest_runtime": "absent from backtest_runtime.result.v1",
-          "classification": "UNSUPPORTED",
-          "classification_label": "unsupported requirement (neither side can express the case)",
+          "classification": "ADAPTER_DEFECT",
+          "classification_label": "adapter defect (in backtest_runtime)",
           "detail": "",
           "difference_id": "D7-fees-and-slippage-model",
           "dimension": "fills: slippage field",
           "legacy_engine": [
             "0.0"
           ],
-          "rationale": "The legacy engine models a per-order fee and a bps slippage and reports a per-fill `slippage` amount. backtest_runtime hardcodes fees=0.0 and has no slippage concept or field at all, so a non-zero cost model cannot be expressed on its side. Both are zero in this fixture set only because the legacy configuration was deliberately set to its zero-cost defaults."
+          "rationale": "The legacy engine models a per-order fee and a bps slippage and reports a per-fill `slippage` amount. backtest_runtime hardcodes fees=0.0 and has no slippage concept or field at all, so a non-zero cost model cannot be expressed on its side. Both are zero in this fixture set only because the legacy configuration was deliberately set to its zero-cost defaults. This is an adapter capability gap, not an unsupported requirement: the requirement is demonstrably supportable, because the legacy engine supports it today.",
+          "subcategory": "CAPABILITY",
+          "subcategory_label": "cannot express a capability the legacy engine has"
         },
         {
           "backtest_runtime": "absent from backtest_runtime.result.v1 (the reference strategy never sells)",
-          "classification": "UNSUPPORTED",
-          "classification_label": "unsupported requirement (neither side can express the case)",
+          "classification": "ADAPTER_DEFECT",
+          "classification_label": "adapter defect (in backtest_runtime)",
           "detail": "",
-          "difference_id": "D8-realized-pnl",
+          "difference_id": "D8-realized-pnl-and-exit-support",
           "dimension": "fills: exit_reason field",
           "legacy_engine": [
             null
           ],
-          "rationale": "backtest_runtime's `_normalize_result` writes realized_pnl=0.0 as a constant; its reference strategy never sells, so it has no realized-P&L path to exercise. The legacy engine computes realized P&L per exit. The field exists in both schemas but only one side can ever populate it."
+          "rationale": "backtest_runtime's `_normalize_result` writes realized_pnl=0.0 as a constant and its result schema has no exit_reason field; its reference strategy never sells, so it has no realized-P&L path at all. The legacy engine computes realized P&L per exit and records why each exit happened. Again an adapter capability gap rather than an unsupported requirement -- one side already does this.",
+          "subcategory": "CAPABILITY",
+          "subcategory_label": "cannot express a capability the legacy engine has"
         },
         {
           "backtest_runtime": "market_date 2024-01-04, but fill_price 100.5 is the open of 2024-01-03 (sessions matching that open: ['2024-01-03'])",
@@ -280,7 +704,9 @@
           "difference_id": "D4-fill-market-date-lag",
           "dimension": "fills[0]: reported market_date vs. priced session",
           "legacy_engine": "market_date 2024-01-04, fill_price 102.0 is the open of 2024-01-04 (sessions matching that open: ['2024-01-04'])",
-          "rationale": "backtest_runtime stamps a fill with self.get_datetime() inside on_filled_order, which LumiBot invokes on the iteration *after* the fill is booked. Measured on case E: the fill price is 104.0, the 2024-01-03 open, but the recorded market_date is 2024-01-04 -- a session whose own open is 106.0. The stamped date is provably not the session the fill priced against, and the 01-03 daily state still reports zero position and untouched cash. LumiBot leaves order.broker_date/broker_create_date as None in backtesting, which is what makes the wrong timestamp easy to reach for, but the adapter already observes the correct session inside on_trading_iteration."
+          "rationale": "backtest_runtime stamps a fill with self.get_datetime() inside on_filled_order, which LumiBot invokes on the iteration *after* the fill is booked. Measured on case E: the fill price is 104.0, the 2024-01-03 open, but the recorded market_date is 2024-01-04 -- a session whose own open is 106.0. The stamped date is provably not the session the fill priced against, and the 01-03 daily state still reports zero position and untouched cash. LumiBot leaves order.broker_date/broker_create_date as None in backtesting, which is what makes the wrong timestamp easy to reach for, but the adapter already observes the correct session inside on_trading_iteration.",
+          "subcategory": "BEHAVIOR",
+          "subcategory_label": "reports a value that contradicts its own run"
         },
         {
           "backtest_runtime": "2024-01-03 (bar index 1)",
@@ -403,19 +829,24 @@
           "rationale": "Both sides define drawdown as (equity - running peak equity) / running peak equity, non-positive, and both aggregate by taking the minimum -- the convention PR 6's review round aligned. Remaining differences are consequences of the differing equity series (D12), not of the drawdown definition."
         }
       ],
+      "exact_parity": null,
+      "final_equity_legacy": "100025.0",
       "historical_bar_dataset_checksum": "e5cf5f68b4d18beb2bbdacec4db09eb5ab887ecedb33caad4fc6396205fda6a4",
       "input": "case_a_buy_and_hold.input.json",
+      "legacy_backtest_run_id": "backtest-fdc36c96d992abb14b40e584ef477a42",
+      "legacy_configuration_hash": "514ff2d880c2bbc665596e22537f9847b264f69cc29bddb90315b9f608684d48",
       "provenance": "backtest_runtime/tests/support/fixtures.py::BARS (verbatim)",
-      "title": "Single-symbol buy-and-hold on backtest_runtime's own BARS fixture"
+      "title": "Default entry timing: backtest_runtime enters a session earlier than the engine can"
     },
     {
       "agreements": [
         "bar set: identical input, sha256 3c7abef9e47a7e92... (computed independently on each side)",
-        "orders[0]: quantity equal (10 shares)",
+        "orders[BUY#0]: side (BUY) and quantity (10 shares) both equal",
         "fills[0]: quantity equal (10 shares, exact)",
         "fills[0]: fees equal (0) -- but see D7",
         "fills[0]: the legacy engine's market_date (2024-01-04) is consistent with the session whose open it priced against"
       ],
+      "backtest_runtime_entry_after_session": null,
       "case_id": "case_b_perturbed_last_close",
       "daily_state_table": [
         {
@@ -583,8 +1014,8 @@
         {
           "backtest_runtime": {
             "lumibot_version": "4.5.78",
-            "run_configuration_checksum": "57b2c40ef0a8571f93ca72f050944a4f02addc5ecde7b6c99a2ca09a9ce9a77a",
-            "strategy_identity": "backtest_runtime.reference_strategy.v1"
+            "run_configuration_checksum": "2f5177e301a263e810579326f0968991a40a88e54ddb6776fd510c960097c049",
+            "strategy_identity": "backtest_runtime.reference_strategy.v2"
           },
           "classification": "LIBRARY_SEMANTIC",
           "classification_label": "intentional library semantic difference (LumiBot vs. the custom engine)",
@@ -592,7 +1023,7 @@
           "difference_id": "D14-run-identity-fields",
           "dimension": "run identity",
           "legacy_engine": {
-            "backtest_run_id": "backtest-6f8bd8f4868deb0a579f8760c277f889",
+            "backtest_run_id": "backtest-fdc36c96d992abb14b40e584ef477a42",
             "configuration_hash": "514ff2d880c2bbc665596e22537f9847b264f69cc29bddb90315b9f608684d48",
             "engine_code_version": "advanced-risk-backtest-v2-fill-sequence"
           },
@@ -609,32 +1040,24 @@
           "rationale": "`BacktestResult` carries fills, daily states, rejected entries, metrics and unresolved evaluations -- but no order records and no position records, so two of the dimensions ADR 0009 Decision 3 names as parity dimensions have no first-class representation on the legacy side. run_legacy_engine.py reconstructs both from the fill stream, but a consumer of BacktestResult alone cannot. Reported as a defect of the old engine's result type, not of its arithmetic."
         },
         {
-          "backtest_runtime": 1,
+          "backtest_runtime": "market",
           "classification": "LIBRARY_SEMANTIC",
           "classification_label": "intentional library semantic difference (LumiBot vs. the custom engine)",
-          "detail": "the legacy engine's extra order(s) are its mandatory risk exits",
-          "difference_id": "D9-mandatory-risk-exit",
-          "dimension": "orders: count",
-          "legacy_engine": 2,
-          "rationale": "The legacy engine always attaches an ATR stop, a ratcheting trailing stop, an ATR target, and a maximum holding period; none is optional and Option A cannot switch them off. When the fixture touches one, the engine exits while the reference strategy holds. This is the engine's designed risk behavior, not a defect -- and it is exactly the behavior backtest_runtime cannot express today."
+          "detail": "economically different order models, not a vocabulary difference",
+          "difference_id": "D16-order-type-model",
+          "dimension": "orders[BUY#0]: order_type",
+          "legacy_engine": "LIMIT",
+          "rationale": "The reference strategy submits a LumiBot market order; the legacy engine has no market order type and can only express an entry as a limit order. This is an economic difference in the order model, deliberately kept separate from the representational D5 -- a market order and a limit order are not the same fact spelled two ways. It has no effect on the fills in this fixture set only because every limit is constructed to be non-binding."
         },
         {
-          "backtest_runtime": {
-            "order_type": "market",
-            "side": "buy",
-            "status": "fill"
-          },
+          "backtest_runtime": "fill",
           "classification": "LIBRARY_SEMANTIC",
           "classification_label": "intentional library semantic difference (LumiBot vs. the custom engine)",
-          "detail": "",
+          "detail": "same status, different spelling",
           "difference_id": "D5-enum-vocabulary",
-          "dimension": "orders[0]: vocabulary",
-          "legacy_engine": {
-            "order_type": "MARKET_ON_EVENT",
-            "side": "SELL",
-            "status": "FILLED"
-          },
-          "rationale": "Side/status/order-type vocabularies differ: LumiBot emits lowercase enum values ('buy', 'fill', 'market'); the legacy engine uses uppercase domain strings ('BUY', 'FILLED', 'LIMIT'). Representational only -- no economic content differs."
+          "dimension": "orders[BUY#0]: status",
+          "legacy_engine": "FILLED",
+          "rationale": "Status vocabularies differ: LumiBot emits lowercase enum values ('fill'), the legacy engine uppercase domain strings ('FILLED'). Representational only, and enforced to be so: a difference may carry this id only if both values normalize to the same token in VOCABULARY_EQUIVALENCE. Sides and order types are compared as economic fields instead (see D16), so a BUY can never be reported as vocabulary-equivalent to a SELL."
         },
         {
           "backtest_runtime": "bt_1",
@@ -642,9 +1065,19 @@
           "classification_label": "intentional library semantic difference (LumiBot vs. the custom engine)",
           "detail": "",
           "difference_id": "D6-identity-scheme",
-          "dimension": "orders[0]: order_id",
-          "legacy_engine": "bt-order-SPKE-2024-01-04-target",
+          "dimension": "orders[BUY#0]: order_id",
+          "legacy_engine": "bt-order-pr7-entry",
           "rationale": "Order/fill identities are generated by different schemes (LumiBot's incrementing 'bt_N' vs. the legacy engine's signal-derived 'bt-order-<signal_id>' and sha256-derived 'bt-fill-<digest>'). Neither is reconstructible from the other; identity is not a parity dimension."
+        },
+        {
+          "backtest_runtime": 0,
+          "classification": "LIBRARY_SEMANTIC",
+          "classification_label": "intentional library semantic difference (LumiBot vs. the custom engine)",
+          "detail": "unmatched order(s): legacy SELL 10 -- the legacy engine's mandatory risk exit has no runtime counterpart, because the reference strategy never sells",
+          "difference_id": "D9-mandatory-risk-exit",
+          "dimension": "orders: SELL count",
+          "legacy_engine": 1,
+          "rationale": "The legacy engine always attaches an ATR stop, a ratcheting trailing stop, an ATR target, and a maximum holding period; none is optional and Option A cannot switch them off. When the fixture touches one, the engine exits while the reference strategy holds. This is the engine's designed risk behavior, not a defect -- and it is exactly the behavior backtest_runtime cannot express today."
         },
         {
           "backtest_runtime": 1,
@@ -678,8 +1111,8 @@
         },
         {
           "backtest_runtime": "absent from backtest_runtime.result.v1",
-          "classification": "UNSUPPORTED",
-          "classification_label": "unsupported requirement (neither side can express the case)",
+          "classification": "ADAPTER_DEFECT",
+          "classification_label": "adapter defect (in backtest_runtime)",
           "detail": "",
           "difference_id": "D7-fees-and-slippage-model",
           "dimension": "fills: slippage field",
@@ -687,20 +1120,24 @@
             "0.0",
             "0.0"
           ],
-          "rationale": "The legacy engine models a per-order fee and a bps slippage and reports a per-fill `slippage` amount. backtest_runtime hardcodes fees=0.0 and has no slippage concept or field at all, so a non-zero cost model cannot be expressed on its side. Both are zero in this fixture set only because the legacy configuration was deliberately set to its zero-cost defaults."
+          "rationale": "The legacy engine models a per-order fee and a bps slippage and reports a per-fill `slippage` amount. backtest_runtime hardcodes fees=0.0 and has no slippage concept or field at all, so a non-zero cost model cannot be expressed on its side. Both are zero in this fixture set only because the legacy configuration was deliberately set to its zero-cost defaults. This is an adapter capability gap, not an unsupported requirement: the requirement is demonstrably supportable, because the legacy engine supports it today.",
+          "subcategory": "CAPABILITY",
+          "subcategory_label": "cannot express a capability the legacy engine has"
         },
         {
           "backtest_runtime": "absent from backtest_runtime.result.v1 (the reference strategy never sells)",
-          "classification": "UNSUPPORTED",
-          "classification_label": "unsupported requirement (neither side can express the case)",
+          "classification": "ADAPTER_DEFECT",
+          "classification_label": "adapter defect (in backtest_runtime)",
           "detail": "",
-          "difference_id": "D8-realized-pnl",
+          "difference_id": "D8-realized-pnl-and-exit-support",
           "dimension": "fills: exit_reason field",
           "legacy_engine": [
             null,
             "FINAL_TARGET"
           ],
-          "rationale": "backtest_runtime's `_normalize_result` writes realized_pnl=0.0 as a constant; its reference strategy never sells, so it has no realized-P&L path to exercise. The legacy engine computes realized P&L per exit. The field exists in both schemas but only one side can ever populate it."
+          "rationale": "backtest_runtime's `_normalize_result` writes realized_pnl=0.0 as a constant and its result schema has no exit_reason field; its reference strategy never sells, so it has no realized-P&L path at all. The legacy engine computes realized P&L per exit and records why each exit happened. Again an adapter capability gap rather than an unsupported requirement -- one side already does this.",
+          "subcategory": "CAPABILITY",
+          "subcategory_label": "cannot express a capability the legacy engine has"
         },
         {
           "backtest_runtime": "market_date 2024-01-04, but fill_price 100.5 is the open of 2024-01-03 (sessions matching that open: ['2024-01-03'])",
@@ -710,7 +1147,9 @@
           "difference_id": "D4-fill-market-date-lag",
           "dimension": "fills[0]: reported market_date vs. priced session",
           "legacy_engine": "market_date 2024-01-04, fill_price 102.0 is the open of 2024-01-04 (sessions matching that open: ['2024-01-04'])",
-          "rationale": "backtest_runtime stamps a fill with self.get_datetime() inside on_filled_order, which LumiBot invokes on the iteration *after* the fill is booked. Measured on case E: the fill price is 104.0, the 2024-01-03 open, but the recorded market_date is 2024-01-04 -- a session whose own open is 106.0. The stamped date is provably not the session the fill priced against, and the 01-03 daily state still reports zero position and untouched cash. LumiBot leaves order.broker_date/broker_create_date as None in backtesting, which is what makes the wrong timestamp easy to reach for, but the adapter already observes the correct session inside on_trading_iteration."
+          "rationale": "backtest_runtime stamps a fill with self.get_datetime() inside on_filled_order, which LumiBot invokes on the iteration *after* the fill is booked. Measured on case E: the fill price is 104.0, the 2024-01-03 open, but the recorded market_date is 2024-01-04 -- a session whose own open is 106.0. The stamped date is provably not the session the fill priced against, and the 01-03 daily state still reports zero position and untouched cash. LumiBot leaves order.broker_date/broker_create_date as None in backtesting, which is what makes the wrong timestamp easy to reach for, but the adapter already observes the correct session inside on_trading_iteration.",
+          "subcategory": "BEHAVIOR",
+          "subcategory_label": "reports a value that contradicts its own run"
         },
         {
           "backtest_runtime": "2024-01-03 (bar index 1)",
@@ -780,13 +1219,15 @@
         },
         {
           "backtest_runtime": "see comparison.json for the per-session table",
-          "classification": "UNSUPPORTED",
-          "classification_label": "unsupported requirement (neither side can express the case)",
+          "classification": "ADAPTER_DEFECT",
+          "classification_label": "adapter defect (in backtest_runtime)",
           "detail": "1 of 4 co-dated session(s) differ by more than +/-0.000001 absolute; first at 2024-01-08; largest |difference| 75.0",
-          "difference_id": "D8-realized-pnl",
+          "difference_id": "D8-realized-pnl-and-exit-support",
           "dimension": "daily_states[].realized_pnl",
           "legacy_engine": "see comparison.json for the per-session table",
-          "rationale": "backtest_runtime's `_normalize_result` writes realized_pnl=0.0 as a constant; its reference strategy never sells, so it has no realized-P&L path to exercise. The legacy engine computes realized P&L per exit. The field exists in both schemas but only one side can ever populate it."
+          "rationale": "backtest_runtime's `_normalize_result` writes realized_pnl=0.0 as a constant and its result schema has no exit_reason field; its reference strategy never sells, so it has no realized-P&L path at all. The legacy engine computes realized P&L per exit and records why each exit happened. Again an adapter capability gap rather than an unsupported requirement -- one side already does this.",
+          "subcategory": "CAPABILITY",
+          "subcategory_label": "cannot express a capability the legacy engine has"
         },
         {
           "backtest_runtime": "see comparison.json for the per-session table",
@@ -849,19 +1290,24 @@
           "rationale": "Both sides define drawdown as (equity - running peak equity) / running peak equity, non-positive, and both aggregate by taking the minimum -- the convention PR 6's review round aligned. Remaining differences are consequences of the differing equity series (D12), not of the drawdown definition."
         }
       ],
+      "exact_parity": null,
+      "final_equity_legacy": "100075.0",
       "historical_bar_dataset_checksum": "3c7abef9e47a7e92f254e42d8bd9c87f224d7cfb15026cf2ec25aa2571f6a46d",
       "input": "case_b_perturbed_last_close.input.json",
+      "legacy_backtest_run_id": "backtest-fdc36c96d992abb14b40e584ef477a42",
+      "legacy_configuration_hash": "514ff2d880c2bbc665596e22537f9847b264f69cc29bddb90315b9f608684d48",
       "provenance": "backtest_runtime/tests/support/fixtures.py::perturbed_input_document() (verbatim); the perturbation asserted by that distribution's test_determinism.py::test_changed_bar_changes_checksum_and_result",
       "title": "Boundary case: final close perturbed +5.0"
     },
     {
       "agreements": [
         "bar set: identical input, sha256 a4a6b7c55f13ca3e... (computed independently on each side)",
-        "orders[0]: quantity equal (10 shares)",
+        "orders[BUY#0]: side (BUY) and quantity (10 shares) both equal",
         "fills[0]: quantity equal (10 shares, exact)",
         "fills[0]: fees equal (0) -- but see D7",
         "fills[0]: the legacy engine's market_date (2024-01-04) is consistent with the session whose open it priced against"
       ],
+      "backtest_runtime_entry_after_session": null,
       "case_id": "case_c_falling_equity",
       "daily_state_table": [
         {
@@ -1029,8 +1475,8 @@
         {
           "backtest_runtime": {
             "lumibot_version": "4.5.78",
-            "run_configuration_checksum": "57b2c40ef0a8571f93ca72f050944a4f02addc5ecde7b6c99a2ca09a9ce9a77a",
-            "strategy_identity": "backtest_runtime.reference_strategy.v1"
+            "run_configuration_checksum": "2f5177e301a263e810579326f0968991a40a88e54ddb6776fd510c960097c049",
+            "strategy_identity": "backtest_runtime.reference_strategy.v2"
           },
           "classification": "LIBRARY_SEMANTIC",
           "classification_label": "intentional library semantic difference (LumiBot vs. the custom engine)",
@@ -1038,7 +1484,7 @@
           "difference_id": "D14-run-identity-fields",
           "dimension": "run identity",
           "legacy_engine": {
-            "backtest_run_id": "backtest-18b2340486a0c8b71a47d3d8c5d8f6e7",
+            "backtest_run_id": "backtest-5fd2bf263779110273556801c9e8cd1b",
             "configuration_hash": "514ff2d880c2bbc665596e22537f9847b264f69cc29bddb90315b9f608684d48",
             "engine_code_version": "advanced-risk-backtest-v2-fill-sequence"
           },
@@ -1055,32 +1501,24 @@
           "rationale": "`BacktestResult` carries fills, daily states, rejected entries, metrics and unresolved evaluations -- but no order records and no position records, so two of the dimensions ADR 0009 Decision 3 names as parity dimensions have no first-class representation on the legacy side. run_legacy_engine.py reconstructs both from the fill stream, but a consumer of BacktestResult alone cannot. Reported as a defect of the old engine's result type, not of its arithmetic."
         },
         {
-          "backtest_runtime": 1,
+          "backtest_runtime": "market",
           "classification": "LIBRARY_SEMANTIC",
           "classification_label": "intentional library semantic difference (LumiBot vs. the custom engine)",
-          "detail": "the legacy engine's extra order(s) are its mandatory risk exits",
-          "difference_id": "D9-mandatory-risk-exit",
-          "dimension": "orders: count",
-          "legacy_engine": 2,
-          "rationale": "The legacy engine always attaches an ATR stop, a ratcheting trailing stop, an ATR target, and a maximum holding period; none is optional and Option A cannot switch them off. When the fixture touches one, the engine exits while the reference strategy holds. This is the engine's designed risk behavior, not a defect -- and it is exactly the behavior backtest_runtime cannot express today."
+          "detail": "economically different order models, not a vocabulary difference",
+          "difference_id": "D16-order-type-model",
+          "dimension": "orders[BUY#0]: order_type",
+          "legacy_engine": "LIMIT",
+          "rationale": "The reference strategy submits a LumiBot market order; the legacy engine has no market order type and can only express an entry as a limit order. This is an economic difference in the order model, deliberately kept separate from the representational D5 -- a market order and a limit order are not the same fact spelled two ways. It has no effect on the fills in this fixture set only because every limit is constructed to be non-binding."
         },
         {
-          "backtest_runtime": {
-            "order_type": "market",
-            "side": "buy",
-            "status": "fill"
-          },
+          "backtest_runtime": "fill",
           "classification": "LIBRARY_SEMANTIC",
           "classification_label": "intentional library semantic difference (LumiBot vs. the custom engine)",
-          "detail": "",
+          "detail": "same status, different spelling",
           "difference_id": "D5-enum-vocabulary",
-          "dimension": "orders[0]: vocabulary",
-          "legacy_engine": {
-            "order_type": "MARKET_ON_EVENT",
-            "side": "SELL",
-            "status": "FILLED"
-          },
-          "rationale": "Side/status/order-type vocabularies differ: LumiBot emits lowercase enum values ('buy', 'fill', 'market'); the legacy engine uses uppercase domain strings ('BUY', 'FILLED', 'LIMIT'). Representational only -- no economic content differs."
+          "dimension": "orders[BUY#0]: status",
+          "legacy_engine": "FILLED",
+          "rationale": "Status vocabularies differ: LumiBot emits lowercase enum values ('fill'), the legacy engine uppercase domain strings ('FILLED'). Representational only, and enforced to be so: a difference may carry this id only if both values normalize to the same token in VOCABULARY_EQUIVALENCE. Sides and order types are compared as economic fields instead (see D16), so a BUY can never be reported as vocabulary-equivalent to a SELL."
         },
         {
           "backtest_runtime": "bt_1",
@@ -1088,9 +1526,19 @@
           "classification_label": "intentional library semantic difference (LumiBot vs. the custom engine)",
           "detail": "",
           "difference_id": "D6-identity-scheme",
-          "dimension": "orders[0]: order_id",
-          "legacy_engine": "bt-order-SPKE-2024-01-04-STOP_GAP",
+          "dimension": "orders[BUY#0]: order_id",
+          "legacy_engine": "bt-order-pr7-entry",
           "rationale": "Order/fill identities are generated by different schemes (LumiBot's incrementing 'bt_N' vs. the legacy engine's signal-derived 'bt-order-<signal_id>' and sha256-derived 'bt-fill-<digest>'). Neither is reconstructible from the other; identity is not a parity dimension."
+        },
+        {
+          "backtest_runtime": 0,
+          "classification": "LIBRARY_SEMANTIC",
+          "classification_label": "intentional library semantic difference (LumiBot vs. the custom engine)",
+          "detail": "unmatched order(s): legacy SELL 10 -- the legacy engine's mandatory risk exit has no runtime counterpart, because the reference strategy never sells",
+          "difference_id": "D9-mandatory-risk-exit",
+          "dimension": "orders: SELL count",
+          "legacy_engine": 1,
+          "rationale": "The legacy engine always attaches an ATR stop, a ratcheting trailing stop, an ATR target, and a maximum holding period; none is optional and Option A cannot switch them off. When the fixture touches one, the engine exits while the reference strategy holds. This is the engine's designed risk behavior, not a defect -- and it is exactly the behavior backtest_runtime cannot express today."
         },
         {
           "backtest_runtime": 1,
@@ -1124,8 +1572,8 @@
         },
         {
           "backtest_runtime": "absent from backtest_runtime.result.v1",
-          "classification": "UNSUPPORTED",
-          "classification_label": "unsupported requirement (neither side can express the case)",
+          "classification": "ADAPTER_DEFECT",
+          "classification_label": "adapter defect (in backtest_runtime)",
           "detail": "",
           "difference_id": "D7-fees-and-slippage-model",
           "dimension": "fills: slippage field",
@@ -1133,20 +1581,24 @@
             "0.0",
             "0.0"
           ],
-          "rationale": "The legacy engine models a per-order fee and a bps slippage and reports a per-fill `slippage` amount. backtest_runtime hardcodes fees=0.0 and has no slippage concept or field at all, so a non-zero cost model cannot be expressed on its side. Both are zero in this fixture set only because the legacy configuration was deliberately set to its zero-cost defaults."
+          "rationale": "The legacy engine models a per-order fee and a bps slippage and reports a per-fill `slippage` amount. backtest_runtime hardcodes fees=0.0 and has no slippage concept or field at all, so a non-zero cost model cannot be expressed on its side. Both are zero in this fixture set only because the legacy configuration was deliberately set to its zero-cost defaults. This is an adapter capability gap, not an unsupported requirement: the requirement is demonstrably supportable, because the legacy engine supports it today.",
+          "subcategory": "CAPABILITY",
+          "subcategory_label": "cannot express a capability the legacy engine has"
         },
         {
           "backtest_runtime": "absent from backtest_runtime.result.v1 (the reference strategy never sells)",
-          "classification": "UNSUPPORTED",
-          "classification_label": "unsupported requirement (neither side can express the case)",
+          "classification": "ADAPTER_DEFECT",
+          "classification_label": "adapter defect (in backtest_runtime)",
           "detail": "",
-          "difference_id": "D8-realized-pnl",
+          "difference_id": "D8-realized-pnl-and-exit-support",
           "dimension": "fills: exit_reason field",
           "legacy_engine": [
             null,
             "STOP_GAP"
           ],
-          "rationale": "backtest_runtime's `_normalize_result` writes realized_pnl=0.0 as a constant; its reference strategy never sells, so it has no realized-P&L path to exercise. The legacy engine computes realized P&L per exit. The field exists in both schemas but only one side can ever populate it."
+          "rationale": "backtest_runtime's `_normalize_result` writes realized_pnl=0.0 as a constant and its result schema has no exit_reason field; its reference strategy never sells, so it has no realized-P&L path at all. The legacy engine computes realized P&L per exit and records why each exit happened. Again an adapter capability gap rather than an unsupported requirement -- one side already does this.",
+          "subcategory": "CAPABILITY",
+          "subcategory_label": "cannot express a capability the legacy engine has"
         },
         {
           "backtest_runtime": "market_date 2024-01-04, but fill_price 100.0 is the open of 2024-01-03 (sessions matching that open: ['2024-01-02', '2024-01-03'])",
@@ -1156,7 +1608,9 @@
           "difference_id": "D4-fill-market-date-lag",
           "dimension": "fills[0]: reported market_date vs. priced session",
           "legacy_engine": "market_date 2024-01-04, fill_price 110.0 is the open of 2024-01-04 (sessions matching that open: ['2024-01-04'])",
-          "rationale": "backtest_runtime stamps a fill with self.get_datetime() inside on_filled_order, which LumiBot invokes on the iteration *after* the fill is booked. Measured on case E: the fill price is 104.0, the 2024-01-03 open, but the recorded market_date is 2024-01-04 -- a session whose own open is 106.0. The stamped date is provably not the session the fill priced against, and the 01-03 daily state still reports zero position and untouched cash. LumiBot leaves order.broker_date/broker_create_date as None in backtesting, which is what makes the wrong timestamp easy to reach for, but the adapter already observes the correct session inside on_trading_iteration."
+          "rationale": "backtest_runtime stamps a fill with self.get_datetime() inside on_filled_order, which LumiBot invokes on the iteration *after* the fill is booked. Measured on case E: the fill price is 104.0, the 2024-01-03 open, but the recorded market_date is 2024-01-04 -- a session whose own open is 106.0. The stamped date is provably not the session the fill priced against, and the 01-03 daily state still reports zero position and untouched cash. LumiBot leaves order.broker_date/broker_create_date as None in backtesting, which is what makes the wrong timestamp easy to reach for, but the adapter already observes the correct session inside on_trading_iteration.",
+          "subcategory": "BEHAVIOR",
+          "subcategory_label": "reports a value that contradicts its own run"
         },
         {
           "backtest_runtime": "2024-01-03 (bar index 1)",
@@ -1226,13 +1680,15 @@
         },
         {
           "backtest_runtime": "see comparison.json for the per-session table",
-          "classification": "UNSUPPORTED",
-          "classification_label": "unsupported requirement (neither side can express the case)",
+          "classification": "ADAPTER_DEFECT",
+          "classification_label": "adapter defect (in backtest_runtime)",
           "detail": "1 of 4 co-dated session(s) differ by more than +/-0.000001 absolute; first at 2024-01-08; largest |difference| 200.0",
-          "difference_id": "D8-realized-pnl",
+          "difference_id": "D8-realized-pnl-and-exit-support",
           "dimension": "daily_states[].realized_pnl",
           "legacy_engine": "see comparison.json for the per-session table",
-          "rationale": "backtest_runtime's `_normalize_result` writes realized_pnl=0.0 as a constant; its reference strategy never sells, so it has no realized-P&L path to exercise. The legacy engine computes realized P&L per exit. The field exists in both schemas but only one side can ever populate it."
+          "rationale": "backtest_runtime's `_normalize_result` writes realized_pnl=0.0 as a constant and its result schema has no exit_reason field; its reference strategy never sells, so it has no realized-P&L path at all. The legacy engine computes realized P&L per exit and records why each exit happened. Again an adapter capability gap rather than an unsupported requirement -- one side already does this.",
+          "subcategory": "CAPABILITY",
+          "subcategory_label": "cannot express a capability the legacy engine has"
         },
         {
           "backtest_runtime": "see comparison.json for the per-session table",
@@ -1295,15 +1751,19 @@
           "rationale": "Both sides define drawdown as (equity - running peak equity) / running peak equity, non-positive, and both aggregate by taking the minimum -- the convention PR 6's review round aligned. Remaining differences are consequences of the differing equity series (D12), not of the drawdown definition."
         }
       ],
+      "exact_parity": null,
+      "final_equity_legacy": "99800.0",
       "historical_bar_dataset_checksum": "a4a6b7c55f13ca3e86a2825452d9bdb7361f1b9ee4cb774bbe30eabf9c60a888",
       "input": "case_c_falling_equity.input.json",
+      "legacy_backtest_run_id": "backtest-5fd2bf263779110273556801c9e8cd1b",
+      "legacy_configuration_hash": "514ff2d880c2bbc665596e22537f9847b264f69cc29bddb90315b9f608684d48",
       "provenance": "backtest_runtime/tests/support/fixtures.py::FALLING_BARS (verbatim); the drawdown-sign fixture asserted by that distribution's test_drawdown.py",
       "title": "Boundary case: falling equity, non-zero drawdown"
     },
     {
       "agreements": [
         "bar set: identical input, sha256 d92e40654719e1f7... (computed independently on each side)",
-        "orders[0]: quantity equal (10 shares)",
+        "orders[BUY#0]: side (BUY) and quantity (10 shares) both equal",
         "fills[0]: quantity equal (10 shares, exact)",
         "fills[0]: fees equal (0) -- but see D7",
         "fills[0]: the legacy engine's market_date (2024-01-04) is consistent with the session whose open it priced against",
@@ -1312,6 +1772,7 @@
         "daily_states[].drawdown_fraction: all 4 co-dated session(s) equal within +/-1E-9 relative (absolute floor 1E-15)",
         "max_drawdown_fraction: equal within +/-1E-9 relative (absolute floor 1E-15) (0)"
       ],
+      "backtest_runtime_entry_after_session": null,
       "case_id": "case_e_gapped_opens",
       "daily_state_table": [
         {
@@ -1479,8 +1940,8 @@
         {
           "backtest_runtime": {
             "lumibot_version": "4.5.78",
-            "run_configuration_checksum": "57b2c40ef0a8571f93ca72f050944a4f02addc5ecde7b6c99a2ca09a9ce9a77a",
-            "strategy_identity": "backtest_runtime.reference_strategy.v1"
+            "run_configuration_checksum": "2f5177e301a263e810579326f0968991a40a88e54ddb6776fd510c960097c049",
+            "strategy_identity": "backtest_runtime.reference_strategy.v2"
           },
           "classification": "LIBRARY_SEMANTIC",
           "classification_label": "intentional library semantic difference (LumiBot vs. the custom engine)",
@@ -1488,7 +1949,7 @@
           "difference_id": "D14-run-identity-fields",
           "dimension": "run identity",
           "legacy_engine": {
-            "backtest_run_id": "backtest-5963aff8ed18b91521b0057afc59ae23",
+            "backtest_run_id": "backtest-c9b596bf3705d44516e8751da307e734",
             "configuration_hash": "514ff2d880c2bbc665596e22537f9847b264f69cc29bddb90315b9f608684d48",
             "engine_code_version": "advanced-risk-backtest-v2-fill-sequence"
           },
@@ -1505,20 +1966,24 @@
           "rationale": "`BacktestResult` carries fills, daily states, rejected entries, metrics and unresolved evaluations -- but no order records and no position records, so two of the dimensions ADR 0009 Decision 3 names as parity dimensions have no first-class representation on the legacy side. run_legacy_engine.py reconstructs both from the fill stream, but a consumer of BacktestResult alone cannot. Reported as a defect of the old engine's result type, not of its arithmetic."
         },
         {
-          "backtest_runtime": {
-            "order_type": "market",
-            "status": "fill"
-          },
+          "backtest_runtime": "market",
           "classification": "LIBRARY_SEMANTIC",
           "classification_label": "intentional library semantic difference (LumiBot vs. the custom engine)",
-          "detail": "",
+          "detail": "economically different order models, not a vocabulary difference",
+          "difference_id": "D16-order-type-model",
+          "dimension": "orders[BUY#0]: order_type",
+          "legacy_engine": "LIMIT",
+          "rationale": "The reference strategy submits a LumiBot market order; the legacy engine has no market order type and can only express an entry as a limit order. This is an economic difference in the order model, deliberately kept separate from the representational D5 -- a market order and a limit order are not the same fact spelled two ways. It has no effect on the fills in this fixture set only because every limit is constructed to be non-binding."
+        },
+        {
+          "backtest_runtime": "fill",
+          "classification": "LIBRARY_SEMANTIC",
+          "classification_label": "intentional library semantic difference (LumiBot vs. the custom engine)",
+          "detail": "same status, different spelling",
           "difference_id": "D5-enum-vocabulary",
-          "dimension": "orders[0]: vocabulary",
-          "legacy_engine": {
-            "order_type": "LIMIT",
-            "status": "FILLED"
-          },
-          "rationale": "Side/status/order-type vocabularies differ: LumiBot emits lowercase enum values ('buy', 'fill', 'market'); the legacy engine uses uppercase domain strings ('BUY', 'FILLED', 'LIMIT'). Representational only -- no economic content differs."
+          "dimension": "orders[BUY#0]: status",
+          "legacy_engine": "FILLED",
+          "rationale": "Status vocabularies differ: LumiBot emits lowercase enum values ('fill'), the legacy engine uppercase domain strings ('FILLED'). Representational only, and enforced to be so: a difference may carry this id only if both values normalize to the same token in VOCABULARY_EQUIVALENCE. Sides and order types are compared as economic fields instead (see D16), so a BUY can never be reported as vocabulary-equivalent to a SELL."
         },
         {
           "backtest_runtime": "bt_1",
@@ -1526,7 +1991,7 @@
           "classification_label": "intentional library semantic difference (LumiBot vs. the custom engine)",
           "detail": "",
           "difference_id": "D6-identity-scheme",
-          "dimension": "orders[0]: order_id",
+          "dimension": "orders[BUY#0]: order_id",
           "legacy_engine": "bt-order-pr7-entry",
           "rationale": "Order/fill identities are generated by different schemes (LumiBot's incrementing 'bt_N' vs. the legacy engine's signal-derived 'bt-order-<signal_id>' and sha256-derived 'bt-fill-<digest>'). Neither is reconstructible from the other; identity is not a parity dimension."
         },
@@ -1552,27 +2017,31 @@
         },
         {
           "backtest_runtime": "absent from backtest_runtime.result.v1",
-          "classification": "UNSUPPORTED",
-          "classification_label": "unsupported requirement (neither side can express the case)",
+          "classification": "ADAPTER_DEFECT",
+          "classification_label": "adapter defect (in backtest_runtime)",
           "detail": "",
           "difference_id": "D7-fees-and-slippage-model",
           "dimension": "fills: slippage field",
           "legacy_engine": [
             "0.0"
           ],
-          "rationale": "The legacy engine models a per-order fee and a bps slippage and reports a per-fill `slippage` amount. backtest_runtime hardcodes fees=0.0 and has no slippage concept or field at all, so a non-zero cost model cannot be expressed on its side. Both are zero in this fixture set only because the legacy configuration was deliberately set to its zero-cost defaults."
+          "rationale": "The legacy engine models a per-order fee and a bps slippage and reports a per-fill `slippage` amount. backtest_runtime hardcodes fees=0.0 and has no slippage concept or field at all, so a non-zero cost model cannot be expressed on its side. Both are zero in this fixture set only because the legacy configuration was deliberately set to its zero-cost defaults. This is an adapter capability gap, not an unsupported requirement: the requirement is demonstrably supportable, because the legacy engine supports it today.",
+          "subcategory": "CAPABILITY",
+          "subcategory_label": "cannot express a capability the legacy engine has"
         },
         {
           "backtest_runtime": "absent from backtest_runtime.result.v1 (the reference strategy never sells)",
-          "classification": "UNSUPPORTED",
-          "classification_label": "unsupported requirement (neither side can express the case)",
+          "classification": "ADAPTER_DEFECT",
+          "classification_label": "adapter defect (in backtest_runtime)",
           "detail": "",
-          "difference_id": "D8-realized-pnl",
+          "difference_id": "D8-realized-pnl-and-exit-support",
           "dimension": "fills: exit_reason field",
           "legacy_engine": [
             null
           ],
-          "rationale": "backtest_runtime's `_normalize_result` writes realized_pnl=0.0 as a constant; its reference strategy never sells, so it has no realized-P&L path to exercise. The legacy engine computes realized P&L per exit. The field exists in both schemas but only one side can ever populate it."
+          "rationale": "backtest_runtime's `_normalize_result` writes realized_pnl=0.0 as a constant and its result schema has no exit_reason field; its reference strategy never sells, so it has no realized-P&L path at all. The legacy engine computes realized P&L per exit and records why each exit happened. Again an adapter capability gap rather than an unsupported requirement -- one side already does this.",
+          "subcategory": "CAPABILITY",
+          "subcategory_label": "cannot express a capability the legacy engine has"
         },
         {
           "backtest_runtime": "market_date 2024-01-04, but fill_price 104.0 is the open of 2024-01-03 (sessions matching that open: ['2024-01-03'])",
@@ -1582,7 +2051,9 @@
           "difference_id": "D4-fill-market-date-lag",
           "dimension": "fills[0]: reported market_date vs. priced session",
           "legacy_engine": "market_date 2024-01-04, fill_price 106.0 is the open of 2024-01-04 (sessions matching that open: ['2024-01-04'])",
-          "rationale": "backtest_runtime stamps a fill with self.get_datetime() inside on_filled_order, which LumiBot invokes on the iteration *after* the fill is booked. Measured on case E: the fill price is 104.0, the 2024-01-03 open, but the recorded market_date is 2024-01-04 -- a session whose own open is 106.0. The stamped date is provably not the session the fill priced against, and the 01-03 daily state still reports zero position and untouched cash. LumiBot leaves order.broker_date/broker_create_date as None in backtesting, which is what makes the wrong timestamp easy to reach for, but the adapter already observes the correct session inside on_trading_iteration."
+          "rationale": "backtest_runtime stamps a fill with self.get_datetime() inside on_filled_order, which LumiBot invokes on the iteration *after* the fill is booked. Measured on case E: the fill price is 104.0, the 2024-01-03 open, but the recorded market_date is 2024-01-04 -- a session whose own open is 106.0. The stamped date is provably not the session the fill priced against, and the 01-03 daily state still reports zero position and untouched cash. LumiBot leaves order.broker_date/broker_create_date as None in backtesting, which is what makes the wrong timestamp easy to reach for, but the adapter already observes the correct session inside on_trading_iteration.",
+          "subcategory": "BEHAVIOR",
+          "subcategory_label": "reports a value that contradicts its own run"
         },
         {
           "backtest_runtime": "2024-01-03 (bar index 1)",
@@ -1685,21 +2156,26 @@
           "rationale": "Daily cash/equity/unrealized values differ wherever the two sides hold different quantities at different cost bases, which follows from D2 and D3. Both mark open positions at the session's close, so no separate valuation difference exists beyond entry timing and entry price."
         }
       ],
+      "exact_parity": null,
+      "final_equity_legacy": "100025.0",
       "historical_bar_dataset_checksum": "d92e40654719e1f73d02164c4a05e1688964adeeb7ed7d5bf03e2e634ae627b6",
       "input": "case_e_gapped_opens.input.json",
+      "legacy_backtest_run_id": "backtest-c9b596bf3705d44516e8751da307e734",
+      "legacy_configuration_hash": "514ff2d880c2bbc665596e22537f9847b264f69cc29bddb90315b9f608684d48",
       "provenance": "synthetic, generated by this script (see `GAPPED_BARS`)",
       "title": "Gapped opens: identifies each engine's fill-price model"
     },
     {
       "agreements": [
         "bar set: identical input, sha256 18b84bec7a119619... (computed independently on each side)",
-        "orders[0]: quantity equal (10 shares)",
+        "orders[BUY#0]: side (BUY) and quantity (10 shares) both equal",
         "fills[0]: quantity equal (10 shares, exact)",
         "fills[0]: fees equal (0) -- but see D7",
         "fills[0]: the legacy engine's market_date (2024-01-24) is consistent with the session whose open it priced against",
         "positions[0]: quantity equal (10 shares, exact)",
         "daily_states[].realized_pnl: all 29 co-dated session(s) equal within +/-0.000001 absolute"
       ],
+      "backtest_runtime_entry_after_session": null,
       "case_id": "case_d_long_hold_default_atr",
       "daily_state_table": [
         {
@@ -2692,8 +3168,8 @@
         {
           "backtest_runtime": {
             "lumibot_version": "4.5.78",
-            "run_configuration_checksum": "57b2c40ef0a8571f93ca72f050944a4f02addc5ecde7b6c99a2ca09a9ce9a77a",
-            "strategy_identity": "backtest_runtime.reference_strategy.v1"
+            "run_configuration_checksum": "2f5177e301a263e810579326f0968991a40a88e54ddb6776fd510c960097c049",
+            "strategy_identity": "backtest_runtime.reference_strategy.v2"
           },
           "classification": "LIBRARY_SEMANTIC",
           "classification_label": "intentional library semantic difference (LumiBot vs. the custom engine)",
@@ -2701,7 +3177,7 @@
           "difference_id": "D14-run-identity-fields",
           "dimension": "run identity",
           "legacy_engine": {
-            "backtest_run_id": "backtest-4f4046e887c7b9c5690e45ebda2adac7",
+            "backtest_run_id": "backtest-8c1a7ac9b421b8f8a71d675edb3cfa98",
             "configuration_hash": "55a1fb91131f3e795b2b0ce1e415583103a24ec7789803f054cc8dbd753602be",
             "engine_code_version": "advanced-risk-backtest-v2-fill-sequence"
           },
@@ -2718,20 +3194,24 @@
           "rationale": "`BacktestResult` carries fills, daily states, rejected entries, metrics and unresolved evaluations -- but no order records and no position records, so two of the dimensions ADR 0009 Decision 3 names as parity dimensions have no first-class representation on the legacy side. run_legacy_engine.py reconstructs both from the fill stream, but a consumer of BacktestResult alone cannot. Reported as a defect of the old engine's result type, not of its arithmetic."
         },
         {
-          "backtest_runtime": {
-            "order_type": "market",
-            "status": "fill"
-          },
+          "backtest_runtime": "market",
           "classification": "LIBRARY_SEMANTIC",
           "classification_label": "intentional library semantic difference (LumiBot vs. the custom engine)",
-          "detail": "",
+          "detail": "economically different order models, not a vocabulary difference",
+          "difference_id": "D16-order-type-model",
+          "dimension": "orders[BUY#0]: order_type",
+          "legacy_engine": "LIMIT",
+          "rationale": "The reference strategy submits a LumiBot market order; the legacy engine has no market order type and can only express an entry as a limit order. This is an economic difference in the order model, deliberately kept separate from the representational D5 -- a market order and a limit order are not the same fact spelled two ways. It has no effect on the fills in this fixture set only because every limit is constructed to be non-binding."
+        },
+        {
+          "backtest_runtime": "fill",
+          "classification": "LIBRARY_SEMANTIC",
+          "classification_label": "intentional library semantic difference (LumiBot vs. the custom engine)",
+          "detail": "same status, different spelling",
           "difference_id": "D5-enum-vocabulary",
-          "dimension": "orders[0]: vocabulary",
-          "legacy_engine": {
-            "order_type": "LIMIT",
-            "status": "FILLED"
-          },
-          "rationale": "Side/status/order-type vocabularies differ: LumiBot emits lowercase enum values ('buy', 'fill', 'market'); the legacy engine uses uppercase domain strings ('BUY', 'FILLED', 'LIMIT'). Representational only -- no economic content differs."
+          "dimension": "orders[BUY#0]: status",
+          "legacy_engine": "FILLED",
+          "rationale": "Status vocabularies differ: LumiBot emits lowercase enum values ('fill'), the legacy engine uppercase domain strings ('FILLED'). Representational only, and enforced to be so: a difference may carry this id only if both values normalize to the same token in VOCABULARY_EQUIVALENCE. Sides and order types are compared as economic fields instead (see D16), so a BUY can never be reported as vocabulary-equivalent to a SELL."
         },
         {
           "backtest_runtime": "bt_1",
@@ -2739,7 +3219,7 @@
           "classification_label": "intentional library semantic difference (LumiBot vs. the custom engine)",
           "detail": "",
           "difference_id": "D6-identity-scheme",
-          "dimension": "orders[0]: order_id",
+          "dimension": "orders[BUY#0]: order_id",
           "legacy_engine": "bt-order-pr7-entry",
           "rationale": "Order/fill identities are generated by different schemes (LumiBot's incrementing 'bt_N' vs. the legacy engine's signal-derived 'bt-order-<signal_id>' and sha256-derived 'bt-fill-<digest>'). Neither is reconstructible from the other; identity is not a parity dimension."
         },
@@ -2765,27 +3245,31 @@
         },
         {
           "backtest_runtime": "absent from backtest_runtime.result.v1",
-          "classification": "UNSUPPORTED",
-          "classification_label": "unsupported requirement (neither side can express the case)",
+          "classification": "ADAPTER_DEFECT",
+          "classification_label": "adapter defect (in backtest_runtime)",
           "detail": "",
           "difference_id": "D7-fees-and-slippage-model",
           "dimension": "fills: slippage field",
           "legacy_engine": [
             "0.0"
           ],
-          "rationale": "The legacy engine models a per-order fee and a bps slippage and reports a per-fill `slippage` amount. backtest_runtime hardcodes fees=0.0 and has no slippage concept or field at all, so a non-zero cost model cannot be expressed on its side. Both are zero in this fixture set only because the legacy configuration was deliberately set to its zero-cost defaults."
+          "rationale": "The legacy engine models a per-order fee and a bps slippage and reports a per-fill `slippage` amount. backtest_runtime hardcodes fees=0.0 and has no slippage concept or field at all, so a non-zero cost model cannot be expressed on its side. Both are zero in this fixture set only because the legacy configuration was deliberately set to its zero-cost defaults. This is an adapter capability gap, not an unsupported requirement: the requirement is demonstrably supportable, because the legacy engine supports it today.",
+          "subcategory": "CAPABILITY",
+          "subcategory_label": "cannot express a capability the legacy engine has"
         },
         {
           "backtest_runtime": "absent from backtest_runtime.result.v1 (the reference strategy never sells)",
-          "classification": "UNSUPPORTED",
-          "classification_label": "unsupported requirement (neither side can express the case)",
+          "classification": "ADAPTER_DEFECT",
+          "classification_label": "adapter defect (in backtest_runtime)",
           "detail": "",
-          "difference_id": "D8-realized-pnl",
+          "difference_id": "D8-realized-pnl-and-exit-support",
           "dimension": "fills: exit_reason field",
           "legacy_engine": [
             null
           ],
-          "rationale": "backtest_runtime's `_normalize_result` writes realized_pnl=0.0 as a constant; its reference strategy never sells, so it has no realized-P&L path to exercise. The legacy engine computes realized P&L per exit. The field exists in both schemas but only one side can ever populate it."
+          "rationale": "backtest_runtime's `_normalize_result` writes realized_pnl=0.0 as a constant and its result schema has no exit_reason field; its reference strategy never sells, so it has no realized-P&L path at all. The legacy engine computes realized P&L per exit and records why each exit happened. Again an adapter capability gap rather than an unsupported requirement -- one side already does this.",
+          "subcategory": "CAPABILITY",
+          "subcategory_label": "cannot express a capability the legacy engine has"
         },
         {
           "backtest_runtime": "market_date 2024-01-04, but fill_price 100.8 is the open of 2024-01-03 (sessions matching that open: ['2024-01-03'])",
@@ -2795,7 +3279,9 @@
           "difference_id": "D4-fill-market-date-lag",
           "dimension": "fills[0]: reported market_date vs. priced session",
           "legacy_engine": "market_date 2024-01-24, fill_price 100.9 is the open of 2024-01-24 (sessions matching that open: ['2024-01-12', '2024-01-19', '2024-01-24', '2024-02-06'])",
-          "rationale": "backtest_runtime stamps a fill with self.get_datetime() inside on_filled_order, which LumiBot invokes on the iteration *after* the fill is booked. Measured on case E: the fill price is 104.0, the 2024-01-03 open, but the recorded market_date is 2024-01-04 -- a session whose own open is 106.0. The stamped date is provably not the session the fill priced against, and the 01-03 daily state still reports zero position and untouched cash. LumiBot leaves order.broker_date/broker_create_date as None in backtesting, which is what makes the wrong timestamp easy to reach for, but the adapter already observes the correct session inside on_trading_iteration."
+          "rationale": "backtest_runtime stamps a fill with self.get_datetime() inside on_filled_order, which LumiBot invokes on the iteration *after* the fill is booked. Measured on case E: the fill price is 104.0, the 2024-01-03 open, but the recorded market_date is 2024-01-04 -- a session whose own open is 106.0. The stamped date is provably not the session the fill priced against, and the 01-03 daily state still reports zero position and untouched cash. LumiBot leaves order.broker_date/broker_create_date as None in backtesting, which is what makes the wrong timestamp easy to reach for, but the adapter already observes the correct session inside on_trading_iteration.",
+          "subcategory": "BEHAVIOR",
+          "subcategory_label": "reports a value that contradicts its own run"
         },
         {
           "backtest_runtime": "2024-01-03 (bar index 1)",
@@ -2918,8 +3404,12 @@
           "rationale": "Both sides define drawdown as (equity - running peak equity) / running peak equity, non-positive, and both aggregate by taking the minimum -- the convention PR 6's review round aligned. Remaining differences are consequences of the differing equity series (D12), not of the drawdown definition."
         }
       ],
+      "exact_parity": null,
+      "final_equity_legacy": "100009.0",
       "historical_bar_dataset_checksum": "18b84bec7a1196197328c3a6b78b81c5b4e482718b8e6bcb67f95f5cb8f8dd9f",
       "input": "case_d_long_hold_default_atr.input.json",
+      "legacy_backtest_run_id": "backtest-8c1a7ac9b421b8f8a71d675edb3cfa98",
+      "legacy_configuration_hash": "55a1fb91131f3e795b2b0ce1e415583103a24ec7789803f054cc8dbd753602be",
       "provenance": "synthetic, generated by this script (see `long_hold_bars`)",
       "title": "30-session hold at the legacy engine's default atr_period=14"
     }
@@ -2930,12 +3420,36 @@
     "OLD_ENGINE_DEFECT": "old-engine defect",
     "UNSUPPORTED": "unsupported requirement (neither side can express the case)"
   },
-  "classification_tally": {
-    "ADAPTER_DEFECT": 5,
-    "LIBRARY_SEMANTIC": 82,
-    "OLD_ENGINE_DEFECT": 10,
-    "UNSUPPORTED": 12
+  "classification_policy": {
+    "UNSUPPORTED": "reserved for a case NEITHER side can express. A capability the legacy engine has and backtest_runtime does not is an adapter capability defect (ADAPTER_DEFECT / CAPABILITY), because the requirement is demonstrably supportable -- one side supports it.",
+    "vocabulary_rule": "a difference may carry D5-enum-vocabulary only if both values normalize to the same token in VOCABULARY_EQUIVALENCE. Sides and order types are compared as economic fields, and orders are paired by normalized side, so a BUY can never be matched to or explained away as a SELL."
   },
+  "classification_tally": {
+    "ADAPTER_DEFECT": 24,
+    "LIBRARY_SEMANTIC": 93,
+    "OLD_ENGINE_DEFECT": 13,
+    "UNSUPPORTED": 0
+  },
+  "cross_case_findings": [
+    {
+      "classification": "OLD_ENGINE_DEFECT",
+      "classification_label": "old-engine defect",
+      "colliding_cases": [
+        "case_a_buy_and_hold",
+        "case_b_perturbed_last_close"
+      ],
+      "detail": "2 cases with 2 distinct bar datasets share one backtest_run_id; their results differ (final equity: case_a_buy_and_hold=100025.0, case_b_perturbed_last_close=100075.0)",
+      "difference_id": "D17-run-identity-ignores-dataset",
+      "dimension": "run identity across cases",
+      "distinct_historical_bar_dataset_checksums": [
+        "3c7abef9e47a7e92f254e42d8bd9c87f224d7cfb15026cf2ec25aa2571f6a46d",
+        "e5cf5f68b4d18beb2bbdacec4db09eb5ab887ecedb33caad4fc6396205fda6a4"
+      ],
+      "rationale": "The legacy engine's run identity is derived from the configuration and the signal set only -- `_configuration_hash` and `_signal_set_hash`, combined into `input_hash` and then `backtest_run_id`. The historical bar dataset contributes nothing. Two runs over provably different bars therefore collide onto one backtest_run_id and one configuration_hash. This is not cosmetic: `_persist_result` treats a matching backtest_run_id with a matching input_hash as an idempotent replay and returns without writing, so the second run's daily states, fills and metrics are silently discarded and the stored row keeps the first run's numbers under an identity the second run also claims. Detected across cases by the comparator, not within any single case.",
+      "shared_legacy_backtest_run_id": "backtest-fdc36c96d992abb14b40e584ef477a42",
+      "shared_legacy_configuration_hash": "514ff2d880c2bbc665596e22537f9847b264f69cc29bddb90315b9f608684d48"
+    }
+  ],
   "field_mapping": [
     {
       "backtest_runtime": "historical_bar_dataset_checksum",
@@ -3052,7 +3566,11 @@
       "note": "both are the minimum daily drawdown_fraction"
     }
   ],
-  "schema_version": "pr7.parity_comparison.v1",
+  "schema_version": "pr7.parity_comparison.v2",
+  "subcategory_labels": {
+    "BEHAVIOR": "reports a value that contradicts its own run",
+    "CAPABILITY": "cannot express a capability the legacy engine has"
+  },
   "tolerances": {
     "fraction": "+/-1E-9 relative (absolute floor 1E-15)",
     "money": "+/-0.000001 absolute",
@@ -3060,7 +3578,7 @@
     "quantity": "exactly (no tolerance)",
     "rounding_rule": "none -- both sides are converted to exact Decimal (legacy from its decimal string, backtest_runtime through repr() of the double) and the exact difference is compared against the absolute tolerance",
     "sensitivity": {
-      "nonzero_differences_measured": 263,
+      "nonzero_differences_measured": 279,
       "note": "smallest non-zero |difference| the comparator measured anywhere. Every value compared was either exactly equal or differed by at least this much, so no 'equal' verdict in this report depends on the tolerance absorbing float/Decimal representation noise",
       "smallest_nonzero_difference_per_family": {
         "exact": null,

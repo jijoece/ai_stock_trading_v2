@@ -20,7 +20,13 @@ from datetime import date
 
 from . import SCHEMA_VERSION_INPUT, SCHEMA_VERSION_RESULT
 
-REFERENCE_STRATEGY_ID = "backtest_runtime.reference_strategy.v1"
+# v2 is the same strategy as v1 -- buy one whole-share quantity of one symbol
+# once, then hold to the end -- with one added control: `entry_after_session`
+# moves *when* that single buy is submitted. The identity is versioned because
+# a v1 and a v2 run over the same bars can now differ, so a result document
+# must not claim to have come from the strategy that had no such control
+# (docs/library-migration/DECISIONS.md D6, revised).
+REFERENCE_STRATEGY_ID = "backtest_runtime.reference_strategy.v2"
 
 
 class ContractError(ValueError):
@@ -28,7 +34,7 @@ class ContractError(ValueError):
 
 
 _INPUT_FIELDS = {"schema_version", "strategy", "bars"}
-_STRATEGY_FIELDS = {"strategy_id", "symbol", "quantity", "budget"}
+_STRATEGY_FIELDS = {"strategy_id", "symbol", "quantity", "budget", "entry_after_session"}
 _BAR_FIELDS = {"date", "open", "high", "low", "close", "volume"}
 
 _RESULT_FIELDS = {
@@ -156,6 +162,11 @@ class StrategyConfig:
     symbol: str
     quantity: int
     budget: float
+    # `None` keeps the v1 behavior exactly: buy on the first bar with a
+    # resolvable price. A date delays that single buy to the first session
+    # strictly after it. Nothing else about the strategy is configurable --
+    # there is still no sell, no stop, no target, and no second order.
+    entry_after_session: date | None
 
 
 @dataclass(frozen=True)
@@ -195,7 +206,18 @@ def _parse_strategy(raw: object) -> StrategyConfig:
     symbol = _require_string(mapping["symbol"], "strategy.symbol")
     quantity = _require_positive_int(mapping["quantity"], "strategy.quantity")
     budget = _require_positive_finite(mapping["budget"], "strategy.budget")
-    return StrategyConfig(strategy_id=strategy_id, symbol=symbol, quantity=quantity, budget=budget)
+    raw_entry_after = mapping["entry_after_session"]
+    entry_after_session = (
+        None if raw_entry_after is None
+        else _require_date(raw_entry_after, "strategy.entry_after_session")
+    )
+    return StrategyConfig(
+        strategy_id=strategy_id,
+        symbol=symbol,
+        quantity=quantity,
+        budget=budget,
+        entry_after_session=entry_after_session,
+    )
 
 
 def parse_input_document(document: object) -> BacktestInput:
@@ -218,6 +240,19 @@ def parse_input_document(document: object) -> BacktestInput:
                 f"(bars[{i}].date {bars[i].session_date} does not follow "
                 f"bars[{i - 1}].date {bars[i - 1].session_date})"
             )
+    # A delay past the end of the bar set would produce a run that silently
+    # never enters. That is a caller error, not a degenerate-but-valid run:
+    # reject it here rather than return an empty result the caller has to
+    # notice.
+    if (
+        strategy.entry_after_session is not None
+        and strategy.entry_after_session >= bars[-1].session_date
+    ):
+        raise ContractError(
+            f"strategy.entry_after_session {strategy.entry_after_session} leaves no "
+            f"session on which an entry could occur (last bar is "
+            f"{bars[-1].session_date})"
+        )
     return BacktestInput(strategy=strategy, bars=bars)
 
 
@@ -256,6 +291,10 @@ def strategy_digest(strategy: StrategyConfig) -> str:
             "symbol": strategy.symbol,
             "quantity": strategy.quantity,
             "budget": strategy.budget,
+            "entry_after_session": (
+                None if strategy.entry_after_session is None
+                else strategy.entry_after_session.isoformat()
+            ),
         }
     )
 

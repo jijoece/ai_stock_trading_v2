@@ -1,5 +1,5 @@
 {
-  "backtest_run_id": "backtest-5963aff8ed18b91521b0057afc59ae23",
+  "backtest_run_id": "backtest-c9b596bf3705d44516e8751da307e734",
   "case_id": "case_e_gapped_opens",
   "configuration_hash": "514ff2d880c2bbc665596e22537f9847b264f69cc29bddb90315b9f608684d48",
   "daily_states": [
@@ -55,6 +55,7 @@
     "note": "Reconstructed by run_legacy_engine.py from the engine's fills; not reported by BacktestResult itself.",
     "orders_from_fills": [
       {
+        "first_fill_sequence": 1,
         "order_id": "bt-order-pr7-entry",
         "order_type": "LIMIT",
         "quantity": "10",

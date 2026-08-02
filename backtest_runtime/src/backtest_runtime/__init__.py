@@ -13,6 +13,10 @@ file-based entry point.
 """
 from __future__ import annotations
 
-SCHEMA_VERSION_INPUT = "backtest_runtime.input.v1"
+# v2 adds the required, nullable `strategy.entry_after_session` control. The
+# version was bumped rather than the field made optional because `contract.py`
+# rejects both unknown *and* missing strategy fields: a v1 document is not a
+# valid v2 document and must be told so explicitly, not silently defaulted.
+SCHEMA_VERSION_INPUT = "backtest_runtime.input.v2"
 SCHEMA_VERSION_RESULT = "backtest_runtime.result.v1"
 LUMIBOT_PINNED_VERSION = "4.5.78"

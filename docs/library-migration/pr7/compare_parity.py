@@ -75,6 +75,44 @@ CLASSIFICATION_LABELS = {
     "UNSUPPORTED": "unsupported requirement (neither side can express the case)",
 }
 
+# `UNSUPPORTED` means *neither* side can express the case. A capability the
+# legacy engine has and `backtest_runtime` does not is an adapter defect, not
+# an unsupported requirement -- the requirement is demonstrably supportable,
+# because one side already supports it. `ADAPTER_DEFECT` therefore carries a
+# subcategory so the report can distinguish "the adapter reports something
+# wrong" from "the adapter cannot express something at all"; both are defects
+# of the adapter, and neither is a property of the requirement.
+SUBCATEGORY_LABELS = {
+    "BEHAVIOR": "reports a value that contradicts its own run",
+    "CAPABILITY": "cannot express a capability the legacy engine has",
+}
+SUBCATEGORIES = {
+    "D4-fill-market-date-lag": "BEHAVIOR",
+    "D15-entry-session-state-lag": "BEHAVIOR",
+    "D7-fees-and-slippage-model": "CAPABILITY",
+    "D8-realized-pnl-and-exit-support": "CAPABILITY",
+}
+
+# Vocabulary pairs that carry no economic content: the same fact spelled two
+# ways. A difference may only be classified `D5-enum-vocabulary` if both sides
+# normalize to the same token here. Anything else -- a BUY against a SELL, a
+# market order against a limit order -- is an economic difference and must be
+# classified as one. `_normalize_token` plus `assert_vocabulary_is_representational`
+# below is what makes that a rule rather than an intention.
+VOCABULARY_EQUIVALENCE = {
+    "buy": "BUY",
+    "sell": "SELL",
+    "fill": "FILLED",
+    "filled": "FILLED",
+    "new": "SUBMITTED",
+    "submitted": "SUBMITTED",
+}
+
+
+def _normalize_token(value: object) -> str:
+    token = str(value).strip()
+    return VOCABULARY_EQUIVALENCE.get(token.lower(), token.upper())
+
 # Every difference id emitted below must be a key here. See PARITY_REPORT.md
 # for the full argument behind each classification.
 CLASSIFICATIONS: dict[str, tuple[str, str]] = {
@@ -118,10 +156,12 @@ CLASSIFICATIONS: dict[str, tuple[str, str]] = {
     ),
     "D5-enum-vocabulary": (
         "LIBRARY_SEMANTIC",
-        "Side/status/order-type vocabularies differ: LumiBot emits lowercase enum "
-        "values ('buy', 'fill', 'market'); the legacy engine uses uppercase domain "
-        "strings ('BUY', 'FILLED', 'LIMIT'). Representational only -- no economic "
-        "content differs.",
+        "Status vocabularies differ: LumiBot emits lowercase enum values ('fill'), "
+        "the legacy engine uppercase domain strings ('FILLED'). Representational "
+        "only, and enforced to be so: a difference may carry this id only if both "
+        "values normalize to the same token in VOCABULARY_EQUIVALENCE. Sides and "
+        "order types are compared as economic fields instead (see D16), so a BUY "
+        "can never be reported as vocabulary-equivalent to a SELL.",
     ),
     "D6-identity-scheme": (
         "LIBRARY_SEMANTIC",
@@ -131,19 +171,59 @@ CLASSIFICATIONS: dict[str, tuple[str, str]] = {
         "reconstructible from the other; identity is not a parity dimension.",
     ),
     "D7-fees-and-slippage-model": (
-        "UNSUPPORTED",
+        "ADAPTER_DEFECT",
         "The legacy engine models a per-order fee and a bps slippage and reports a "
         "per-fill `slippage` amount. backtest_runtime hardcodes fees=0.0 and has no "
         "slippage concept or field at all, so a non-zero cost model cannot be "
         "expressed on its side. Both are zero in this fixture set only because the "
-        "legacy configuration was deliberately set to its zero-cost defaults.",
+        "legacy configuration was deliberately set to its zero-cost defaults. This "
+        "is an adapter capability gap, not an unsupported requirement: the "
+        "requirement is demonstrably supportable, because the legacy engine "
+        "supports it today.",
     ),
-    "D8-realized-pnl": (
-        "UNSUPPORTED",
+    "D8-realized-pnl-and-exit-support": (
+        "ADAPTER_DEFECT",
         "backtest_runtime's `_normalize_result` writes realized_pnl=0.0 as a "
-        "constant; its reference strategy never sells, so it has no realized-P&L "
-        "path to exercise. The legacy engine computes realized P&L per exit. The "
-        "field exists in both schemas but only one side can ever populate it.",
+        "constant and its result schema has no exit_reason field; its reference "
+        "strategy never sells, so it has no realized-P&L path at all. The legacy "
+        "engine computes realized P&L per exit and records why each exit "
+        "happened. Again an adapter capability gap rather than an unsupported "
+        "requirement -- one side already does this.",
+    ),
+    "D15-entry-session-state-lag": (
+        "ADAPTER_DEFECT",
+        "Same root cause as D4, in the daily-state series rather than the fill "
+        "record. backtest_runtime's daily state for session D reflects fills "
+        "booked through D-1, because the snapshot is taken inside "
+        "on_trading_iteration before LumiBot's broker processes that session's "
+        "order; the legacy engine's state for D reflects fills through D. On the "
+        "exact-parity case this is the *only* daily-state disagreement: cash, "
+        "equity, unrealized P&L and drawdown all match on every session except "
+        "the entry session itself.",
+    ),
+    "D16-order-type-model": (
+        "LIBRARY_SEMANTIC",
+        "The reference strategy submits a LumiBot market order; the legacy engine "
+        "has no market order type and can only express an entry as a limit order. "
+        "This is an economic difference in the order model, deliberately kept "
+        "separate from the representational D5 -- a market order and a limit order "
+        "are not the same fact spelled two ways. It has no effect on the fills in "
+        "this fixture set only because every limit is constructed to be "
+        "non-binding.",
+    ),
+    "D17-run-identity-ignores-dataset": (
+        "OLD_ENGINE_DEFECT",
+        "The legacy engine's run identity is derived from the configuration and "
+        "the signal set only -- `_configuration_hash` and `_signal_set_hash`, "
+        "combined into `input_hash` and then `backtest_run_id`. The historical bar "
+        "dataset contributes nothing. Two runs over provably different bars "
+        "therefore collide onto one backtest_run_id and one configuration_hash. "
+        "This is not cosmetic: `_persist_result` treats a matching "
+        "backtest_run_id with a matching input_hash as an idempotent replay and "
+        "returns without writing, so the second run's daily states, fills and "
+        "metrics are silently discarded and the stored row keeps the first run's "
+        "numbers under an identity the second run also claims. Detected across "
+        "cases by the comparator, not within any single case.",
     ),
     "D9-mandatory-risk-exit": (
         "LIBRARY_SEMANTIC",
@@ -279,6 +359,10 @@ class CaseComparison:
         self.bars = bars
         self.differences: list[dict] = []
         self.agreements: list[str] = []
+        # Set by `compare_entry_timing`; the session backtest_runtime actually
+        # priced its entry against, which is the one session its daily-state
+        # series reports pre-fill (D15).
+        self.runtime_entry_session: str | None = None
 
     def add(self, difference_id: str, dimension: str, runtime_value, legacy_value, detail: str = ""):
         self.differences.append(
@@ -323,6 +407,16 @@ class CaseComparison:
         )
 
     def compare_orders(self):
+        """Orders are paired by **economic role**, never by list position or by
+        sorted id.
+
+        Both sides are grouped by normalized side (BUY with BUY, SELL with
+        SELL) and paired in execution order within each group. Anything left
+        unpaired is a real order one side placed and the other did not -- in
+        this fixture set, always a legacy mandatory risk exit. Pairing by
+        position instead would have aligned the legacy engine's SELL against
+        the runtime's BUY on the two cases where the engine exits.
+        """
         runtime_orders = self.runtime["orders"]
         legacy_orders = self.legacy["derived"]["orders_from_fills"]
         if self.legacy["orders"] is None:
@@ -334,41 +428,74 @@ class CaseComparison:
                 f"{len(legacy_orders)} reconstructed from fills",
                 "structural gap in the legacy result type",
             )
-        if len(runtime_orders) != len(legacy_orders):
-            self.add(
-                "D9-mandatory-risk-exit",
-                "orders: count",
-                len(runtime_orders),
-                len(legacy_orders),
-                "the legacy engine's extra order(s) are its mandatory risk exits",
-            )
-        for index in range(min(len(runtime_orders), len(legacy_orders))):
-            runtime_order, legacy_order = runtime_orders[index], legacy_orders[index]
-            if not _close(runtime_order["quantity"], legacy_order["quantity"], "exact"):
+
+        def by_role(orders: list[dict]) -> dict[str, list[dict]]:
+            grouped: dict[str, list[dict]] = {}
+            for order in orders:
+                grouped.setdefault(_normalize_token(order["side"]), []).append(order)
+            return grouped
+
+        runtime_by_role, legacy_by_role = by_role(runtime_orders), by_role(legacy_orders)
+        for role in sorted(set(runtime_by_role) | set(legacy_by_role)):
+            runtime_role = runtime_by_role.get(role, [])
+            legacy_role = legacy_by_role.get(role, [])
+            if len(runtime_role) != len(legacy_role):
                 self.add(
-                    "D12-equity-series-values", f"orders[{index}]: quantity",
-                    runtime_order["quantity"], legacy_order["quantity"],
+                    "D9-mandatory-risk-exit", f"orders: {role} count",
+                    len(runtime_role), len(legacy_role),
+                    "unmatched order(s): "
+                    + ", ".join(
+                        f"legacy {order['side']} {order['quantity']}"
+                        for order in legacy_role[len(runtime_role):]
+                    )
+                    + " -- the legacy engine's mandatory risk exit has no runtime "
+                    "counterpart, because the reference strategy never sells",
                 )
-            else:
-                self.agreements.append(
-                    f"orders[{index}]: quantity equal ({legacy_order['quantity']} shares)"
-                )
-            vocabulary = {
-                key: (runtime_order[key], legacy_order[key])
-                for key in ("side", "status", "order_type")
-                if str(runtime_order[key]).upper() != str(legacy_order[key]).upper()
-            }
-            if vocabulary:
-                self.add(
-                    "D5-enum-vocabulary", f"orders[{index}]: vocabulary",
-                    {key: value[0] for key, value in vocabulary.items()},
-                    {key: value[1] for key, value in vocabulary.items()},
-                )
-            if runtime_order["order_id"] != legacy_order["order_id"]:
-                self.add(
-                    "D6-identity-scheme", f"orders[{index}]: order_id",
-                    runtime_order["order_id"], legacy_order["order_id"],
-                )
+            for index in range(min(len(runtime_role), len(legacy_role))):
+                runtime_order, legacy_order = runtime_role[index], legacy_role[index]
+                label = f"orders[{role}#{index}]"
+                # Structural guarantee of the pairing, not a comparison: a pair
+                # always shares a role, so no downstream check can ever be
+                # comparing a BUY against a SELL.
+                assert _normalize_token(runtime_order["side"]) == _normalize_token(
+                    legacy_order["side"]
+                ), f"{label}: order pairing crossed economic roles"
+                if not _close(runtime_order["quantity"], legacy_order["quantity"], "exact"):
+                    self.add(
+                        "D12-equity-series-values", f"{label}: quantity",
+                        runtime_order["quantity"], legacy_order["quantity"],
+                    )
+                else:
+                    self.agreements.append(
+                        f"{label}: side ({role}) and quantity "
+                        f"({legacy_order['quantity']} shares) both equal"
+                    )
+                if _normalize_token(runtime_order["order_type"]) != _normalize_token(
+                    legacy_order["order_type"]
+                ):
+                    self.add(
+                        "D16-order-type-model", f"{label}: order_type",
+                        runtime_order["order_type"], legacy_order["order_type"],
+                        "economically different order models, not a vocabulary difference",
+                    )
+                if _normalize_token(runtime_order["status"]) != _normalize_token(
+                    legacy_order["status"]
+                ):
+                    self.add(
+                        "D5-enum-vocabulary", f"{label}: status",
+                        runtime_order["status"], legacy_order["status"],
+                    )
+                elif str(runtime_order["status"]) != str(legacy_order["status"]):
+                    self.add(
+                        "D5-enum-vocabulary", f"{label}: status",
+                        runtime_order["status"], legacy_order["status"],
+                        "same status, different spelling",
+                    )
+                if runtime_order["order_id"] != legacy_order["order_id"]:
+                    self.add(
+                        "D6-identity-scheme", f"{label}: order_id",
+                        runtime_order["order_id"], legacy_order["order_id"],
+                    )
 
     def compare_fills(self):
         runtime_fills = self.runtime["fills"]
@@ -426,7 +553,7 @@ class CaseComparison:
             [fill["slippage"] for fill in legacy_fills],
         )
         self.add(
-            "D8-realized-pnl", "fills: exit_reason field",
+            "D8-realized-pnl-and-exit-support", "fills: exit_reason field",
             "absent from backtest_runtime.result.v1 (the reference strategy never sells)",
             [fill["exit_reason"] for fill in legacy_fills],
         )
@@ -468,6 +595,7 @@ class CaseComparison:
 
         runtime_priced = resolve(runtime_sessions, runtime_entry["market_date"])
         legacy_priced = resolve(legacy_sessions, legacy_entry["market_date"])
+        self.runtime_entry_session = runtime_priced
 
         if runtime_entry["market_date"] not in runtime_sessions:
             self.add(
@@ -568,12 +696,15 @@ class CaseComparison:
         field_rules = [
             ("cash", "money", "D12-equity-series-values"),
             ("equity", "money", "D12-equity-series-values"),
-            ("realized_pnl", "money", "D8-realized-pnl"),
+            ("realized_pnl", "money", "D8-realized-pnl-and-exit-support"),
             ("unrealized_pnl", "money", "D12-equity-series-values"),
             ("drawdown_fraction", "fraction", "D13-drawdown-series-values"),
         ]
         summaries: dict[str, dict] = {
-            field: {"differing": 0, "compared": 0, "max_abs": Decimal("0"), "first": None}
+            field: {
+                "differing": 0, "compared": 0, "max_abs": Decimal("0"),
+                "first": None, "sessions": [],
+            }
             for field, _, _ in field_rules
         }
         for market_date in all_dates:
@@ -598,6 +729,7 @@ class CaseComparison:
                     row[field]["status"] = "differs"
                     summary["differing"] += 1
                     summary["max_abs"] = max(summary["max_abs"], abs(delta))
+                    summary["sessions"].append(market_date)
                     if summary["first"] is None:
                         summary["first"] = market_date
                 else:
@@ -607,13 +739,27 @@ class CaseComparison:
         for field, kind, difference_id in field_rules:
             summary = summaries[field]
             if summary["differing"]:
+                # When the *only* session that disagrees is the one
+                # backtest_runtime priced its entry against, the cause is the
+                # snapshot lag (D15), not a divergent equity path.
+                lagged_only = (
+                    self.runtime_entry_session is not None
+                    and summary["sessions"] == [self.runtime_entry_session]
+                )
                 self.add(
-                    difference_id, f"daily_states[].{field}",
+                    "D15-entry-session-state-lag" if lagged_only else difference_id,
+                    f"daily_states[].{field}",
                     "see comparison.json for the per-session table",
                     "see comparison.json for the per-session table",
-                    f"{summary['differing']} of {summary['compared']} co-dated session(s) differ "
-                    f"by more than {_describe(kind)}; first at {summary['first']}; "
-                    f"largest |difference| {summary['max_abs']}",
+                    (
+                        f"the entry session {self.runtime_entry_session} is the only "
+                        f"co-dated session that differs (of {summary['compared']}); "
+                        f"|difference| {summary['max_abs']}"
+                        if lagged_only else
+                        f"{summary['differing']} of {summary['compared']} co-dated session(s) "
+                        f"differ by more than {_describe(kind)}; first at "
+                        f"{summary['first']}; largest |difference| {summary['max_abs']}"
+                    ),
                 )
             elif summary["compared"]:
                 self.agreements.append(
@@ -644,6 +790,85 @@ class CaseComparison:
                     f"exceeds tolerance {_describe(kind)}",
                 )
 
+    def assert_exact_parity(self) -> dict:
+        """For the case built to enter on the same session on both sides, check
+        each dimension the revised D6 decision promises.
+
+        Anything that fails here is a real parity failure, not a classified
+        difference, and `main` exits non-zero on it. The two dimensions
+        deliberately excluded are the ones with their own classified defect
+        ids: the fill's reported `market_date` (D4) and the entry session's own
+        daily state (D15), both the same LumiBot fill-observation lag.
+        """
+        runtime_fill = self.runtime["fills"][0]
+        legacy_entries = [fill for fill in self.legacy["fills"] if fill["side"] == "BUY"]
+        legacy_fill = legacy_entries[0]
+        entry_session = self.runtime_entry_session
+        runtime_states = {state["market_date"]: state for state in self.runtime["daily_states"]}
+        legacy_states = {state["market_date"]: state for state in self.legacy["daily_states"]}
+        shared = sorted(set(runtime_states) & set(legacy_states) - {entry_session})
+
+        def series_equal(field: str, kind: str) -> bool:
+            return all(
+                _close(runtime_states[day][field], legacy_states[day][field], kind)
+                for day in shared
+            )
+
+        runtime_position = self.runtime["positions"]
+        legacy_position = self.legacy["derived"]["end_positions_from_fills"]
+        checks = {
+            "entry session": (
+                self.runtime_entry_session is not None
+                and self.runtime_entry_session
+                == self._resolve_legacy_entry_session(legacy_fill)
+            ),
+            "entry price": _close(runtime_fill["fill_price"], legacy_fill["fill_price"], "price"),
+            "quantity": _close(runtime_fill["quantity"], legacy_fill["quantity"], "exact"),
+            "no exit on either side": len(self.runtime["fills"]) == 1
+            and len(self.legacy["fills"]) == 1,
+            "position quantity": len(runtime_position) == len(legacy_position) == 1
+            and _close(runtime_position[0]["quantity"], legacy_position[0]["quantity"], "exact"),
+            "position average price": len(runtime_position) == len(legacy_position) == 1
+            and _close(
+                runtime_position[0]["average_price"], legacy_position[0]["average_price"], "price"
+            ),
+            "cash (every co-dated session but the entry session)": series_equal("cash", "money"),
+            "equity (same)": series_equal("equity", "money"),
+            "unrealized P&L (same)": series_equal("unrealized_pnl", "money"),
+            "realized P&L (same)": series_equal("realized_pnl", "money"),
+            "drawdown (same)": series_equal("drawdown_fraction", "fraction"),
+            "final cash": _close(self.runtime["final_cash"], self.legacy["final_cash"], "money"),
+            "final equity": _close(
+                self.runtime["final_equity"], self.legacy["final_equity"], "money"
+            ),
+            "final value": _close(self.runtime["final_value"], self.legacy["final_value"], "money"),
+            "max drawdown": _close(
+                self.runtime["max_drawdown_fraction"],
+                self.legacy["metrics"]["maximum_drawdown"],
+                "fraction",
+            ),
+        }
+        for name, passed in checks.items():
+            self.agreements.append(
+                f"EXACT PARITY {'OK' if passed else 'FAILED'}: {name}"
+            )
+        return {
+            "entry_session": entry_session,
+            "sessions_compared": shared,
+            "excluded_by_classified_defect": {
+                entry_session: "D15-entry-session-state-lag (and D4 for the fill's own date)"
+            },
+            "checks": checks,
+            "all_passed": all(checks.values()),
+        }
+
+    def _resolve_legacy_entry_session(self, legacy_fill: dict) -> str | None:
+        sessions = self._sessions_whose_open_matches(legacy_fill["fill_price"])
+        if legacy_fill["market_date"] in sessions:
+            return legacy_fill["market_date"]
+        earlier = [session for session in sessions if session < legacy_fill["market_date"]]
+        return earlier[-1] if earlier else (sessions[0] if sessions else None)
+
     def run(self) -> dict:
         self.compare_input_identity()
         self.compare_orders()
@@ -652,6 +877,11 @@ class CaseComparison:
         self.compare_positions()
         rows = self.compare_daily_states()
         self.compare_scalars()
+        exact = (
+            self.assert_exact_parity()
+            if self.case.get("expects_exact_entry_parity")
+            else None
+        )
         for difference in self.differences:
             classification, rationale = CLASSIFICATIONS.get(
                 difference["difference_id"],
@@ -661,17 +891,73 @@ class CaseComparison:
             difference["classification_label"] = CLASSIFICATION_LABELS.get(
                 classification, "UNCLASSIFIED"
             )
+            subcategory = SUBCATEGORIES.get(difference["difference_id"])
+            if subcategory:
+                difference["subcategory"] = subcategory
+                difference["subcategory_label"] = SUBCATEGORY_LABELS[subcategory]
             difference["rationale"] = rationale
         return {
             "case_id": self.case["case_id"],
             "title": self.case["title"],
             "provenance": self.case["provenance"],
             "input": self.case["input"],
+            "backtest_runtime_entry_after_session": self.case.get(
+                "backtest_runtime_entry_after_session"
+            ),
             "historical_bar_dataset_checksum": self.runtime["historical_bar_dataset_checksum"],
+            "legacy_backtest_run_id": self.legacy["backtest_run_id"],
+            "legacy_configuration_hash": self.legacy["configuration_hash"],
+            "final_equity_legacy": self.legacy["final_equity"],
+            "exact_parity": exact,
             "agreements": self.agreements,
             "differences": self.differences,
             "daily_state_table": rows,
         }
+
+
+def find_cross_case_identity_collisions(cases: list[dict]) -> list[dict]:
+    """Cross-case validation: two cases that provably ran over different bars
+    must not share the legacy engine's run identity.
+
+    No single-case comparison can see this -- it is only visible by holding two
+    result documents side by side, which is why it lives here and not in
+    `CaseComparison`.
+    """
+    findings: list[dict] = []
+    by_identity: dict[tuple[str, str], list[dict]] = {}
+    for case in cases:
+        key = (case["legacy_backtest_run_id"], case["legacy_configuration_hash"])
+        by_identity.setdefault(key, []).append(case)
+    for (run_id, configuration_hash), group in sorted(by_identity.items()):
+        if len(group) < 2:
+            continue
+        checksums = {case["historical_bar_dataset_checksum"] for case in group}
+        if len(checksums) < 2:
+            continue
+        classification, rationale = CLASSIFICATIONS["D17-run-identity-ignores-dataset"]
+        findings.append(
+            {
+                "difference_id": "D17-run-identity-ignores-dataset",
+                "dimension": "run identity across cases",
+                "colliding_cases": [case["case_id"] for case in group],
+                "shared_legacy_backtest_run_id": run_id,
+                "shared_legacy_configuration_hash": configuration_hash,
+                "distinct_historical_bar_dataset_checksums": sorted(checksums),
+                "detail": (
+                    f"{len(group)} cases with {len(checksums)} distinct bar datasets share "
+                    f"one backtest_run_id; their results differ "
+                    f"(final equity: "
+                    + ", ".join(
+                        f"{case['case_id']}={case['final_equity_legacy']}" for case in group
+                    )
+                    + ")"
+                ),
+                "classification": classification,
+                "classification_label": CLASSIFICATION_LABELS[classification],
+                "rationale": rationale,
+            }
+        )
+    return findings
 
 
 def main(argv: list[str]) -> int:
@@ -696,16 +982,35 @@ def main(argv: list[str]) -> int:
         document = json.loads((fixtures_dir / case["input"]).read_text(encoding="utf-8"))
         cases.append(CaseComparison(case, runtime, legacy, document["bars"]).run())
 
+    cross_case = find_cross_case_identity_collisions(cases)
+
     tally: dict[str, int] = {key: 0 for key in CLASSIFICATION_LABELS}
-    for case in cases:
-        for difference in case["differences"]:
-            if difference["difference_id"] not in CLASSIFICATIONS:
-                unknown.add(difference["difference_id"])
-            else:
-                tally[difference["classification"]] += 1
+    subcategory_tally: dict[str, int] = {key: 0 for key in SUBCATEGORY_LABELS}
+    for difference in [row for case in cases for row in case["differences"]] + cross_case:
+        if difference["difference_id"] not in CLASSIFICATIONS:
+            unknown.add(difference["difference_id"])
+            continue
+        tally[difference["classification"]] += 1
+        if difference.get("subcategory"):
+            subcategory_tally[difference["subcategory"]] += 1
+
+    # "Unsupported requirement" is reserved for a case neither side can
+    # express; a capability only one side has is that side's defect. Enforced
+    # here so the distinction cannot decay silently.
+    misclassified = [
+        difference_id
+        for difference_id, (classification, _) in CLASSIFICATIONS.items()
+        if classification == "UNSUPPORTED" and SUBCATEGORIES.get(difference_id) == "CAPABILITY"
+    ]
+
+    exact_failures = [
+        case["case_id"]
+        for case in cases
+        if case["exact_parity"] is not None and not case["exact_parity"]["all_passed"]
+    ]
 
     document = {
-        "schema_version": "pr7.parity_comparison.v1",
+        "schema_version": "pr7.parity_comparison.v2",
         "tolerances": {
             "money": _describe("money"),
             "price": _describe("price"),
@@ -745,6 +1050,24 @@ def main(argv: list[str]) -> int:
         ],
         "classification_labels": CLASSIFICATION_LABELS,
         "classification_tally": tally,
+        "subcategory_labels": SUBCATEGORY_LABELS,
+        "adapter_defect_subcategory_tally": subcategory_tally,
+        "classification_policy": {
+            "UNSUPPORTED": (
+                "reserved for a case NEITHER side can express. A capability the "
+                "legacy engine has and backtest_runtime does not is an adapter "
+                "capability defect (ADAPTER_DEFECT / CAPABILITY), because the "
+                "requirement is demonstrably supportable -- one side supports it."
+            ),
+            "vocabulary_rule": (
+                "a difference may carry D5-enum-vocabulary only if both values "
+                "normalize to the same token in VOCABULARY_EQUIVALENCE. Sides and "
+                "order types are compared as economic fields, and orders are paired "
+                "by normalized side, so a BUY can never be matched to or explained "
+                "away as a SELL."
+            ),
+        },
+        "cross_case_findings": cross_case,
         "cases": cases,
     }
     (results_dir / "comparison.json").write_text(
@@ -772,6 +1095,25 @@ def main(argv: list[str]) -> int:
         lines.append(f"{case['case_id']} -- {case['title']}")
         lines.append(f"  input: {case['input']}")
         lines.append(f"  bar-set sha256 (both sides): {case['historical_bar_dataset_checksum']}")
+        lines.append(
+            f"  legacy run identity: {case['legacy_backtest_run_id']} / "
+            f"cfg {case['legacy_configuration_hash'][:16]}..."
+        )
+        if case["backtest_runtime_entry_after_session"]:
+            lines.append(
+                "  backtest_runtime strategy.entry_after_session: "
+                f"{case['backtest_runtime_entry_after_session']}"
+            )
+        if case["exact_parity"] is not None:
+            exact = case["exact_parity"]
+            lines.append("")
+            lines.append(
+                "  EXACT-PARITY CHECKS (entry session "
+                f"{exact['entry_session']}; the entry session's own daily state is "
+                "excluded and classified as D15)"
+            )
+            for name, passed in exact["checks"].items():
+                lines.append(f"    [{'PASS' if passed else 'FAIL'}] {name}")
         lines.append("")
         lines.append("  AGREEMENTS")
         for agreement in case["agreements"]:
@@ -784,12 +1126,35 @@ def main(argv: list[str]) -> int:
             lines.append(f"        legacy engine   : {difference['legacy_engine']}")
             if difference["detail"]:
                 lines.append(f"        detail          : {difference['detail']}")
-            lines.append(f"        classification  : {difference['classification_label']}")
+            label = difference["classification_label"]
+            if difference.get("subcategory_label"):
+                label += f" -- {difference['subcategory_label']}"
+            lines.append(f"        classification  : {label}")
         lines.append("")
+    lines.append("-" * 78)
+    lines.append("CROSS-CASE FINDINGS (invisible to any single-case comparison)")
+    if not cross_case:
+        lines.append("    none")
+    for finding in cross_case:
+        lines.append(f"    - [{finding['difference_id']}] {finding['dimension']}")
+        lines.append(f"        colliding cases : {finding['colliding_cases']}")
+        lines.append(f"        shared run id   : {finding['shared_legacy_backtest_run_id']}")
+        lines.append(
+            f"        shared cfg hash : {finding['shared_legacy_configuration_hash']}"
+        )
+        for checksum in finding["distinct_historical_bar_dataset_checksums"]:
+            lines.append(f"        distinct bars   : {checksum}")
+        lines.append(f"        detail          : {finding['detail']}")
+        lines.append(f"        classification  : {finding['classification_label']}")
+    lines.append("")
     lines.append("=" * 78)
-    lines.append("Classification tally across all cases:")
+    lines.append("Classification tally (all cases plus cross-case findings):")
     for key, count in tally.items():
         lines.append(f"  {count:3d}  {CLASSIFICATION_LABELS[key]}")
+    lines.append("")
+    lines.append("  of which adapter defects, by subcategory:")
+    for key, count in subcategory_tally.items():
+        lines.append(f"    {count:3d}  {key.lower()}: {SUBCATEGORY_LABELS[key]}")
     lines.append("")
     (results_dir / "comparison_output.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
     print("\n".join(lines))
@@ -801,6 +1166,21 @@ def main(argv: list[str]) -> int:
             file=sys.stderr,
         )
         return 3
+    if misclassified:
+        print(
+            f"MISCLASSIFIED: {misclassified} are capability gaps on one side only and "
+            "must not be labelled UNSUPPORTED, which is reserved for a case neither "
+            "side can express",
+            file=sys.stderr,
+        )
+        return 4
+    if exact_failures:
+        print(
+            f"EXACT-PARITY FAILURE in {exact_failures}: the case built to enter on the "
+            "same session on both sides did not agree on every promised dimension",
+            file=sys.stderr,
+        )
+        return 5
     return 0
 
 

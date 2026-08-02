@@ -1,5 +1,5 @@
 {
-  "backtest_run_id": "backtest-6f8bd8f4868deb0a579f8760c277f889",
+  "backtest_run_id": "backtest-fdc36c96d992abb14b40e584ef477a42",
   "case_id": "case_b_perturbed_last_close",
   "configuration_hash": "514ff2d880c2bbc665596e22537f9847b264f69cc29bddb90315b9f608684d48",
   "daily_states": [
@@ -49,18 +49,20 @@
     "note": "Reconstructed by run_legacy_engine.py from the engine's fills; not reported by BacktestResult itself.",
     "orders_from_fills": [
       {
-        "order_id": "bt-order-SPKE-2024-01-04-target",
-        "order_type": "MARKET_ON_EVENT",
-        "quantity": "10",
-        "side": "SELL",
-        "status": "FILLED",
-        "symbol": "SPKE"
-      },
-      {
+        "first_fill_sequence": 1,
         "order_id": "bt-order-pr7-entry",
         "order_type": "LIMIT",
         "quantity": "10",
         "side": "BUY",
+        "status": "FILLED",
+        "symbol": "SPKE"
+      },
+      {
+        "first_fill_sequence": 2,
+        "order_id": "bt-order-SPKE-2024-01-04-target",
+        "order_type": "MARKET_ON_EVENT",
+        "quantity": "10",
+        "side": "SELL",
         "status": "FILLED",
         "symbol": "SPKE"
       }

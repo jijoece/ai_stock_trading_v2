@@ -23,7 +23,11 @@ def test_valid_document_parses():
     [
         (lambda d: d.update(unexpected_field=1), "unknown fields"),
         (lambda d: d.pop("bars"), "missing fields"),
-        (lambda d: d.update(schema_version="backtest_runtime.input.v2"), "unsupported schema_version"),
+        # A future version, and the superseded v1: reference strategy v2 added
+        # a required `strategy.entry_after_session`, so a v1 document must be
+        # rejected outright rather than silently defaulted (DECISIONS.md D6).
+        (lambda d: d.update(schema_version="backtest_runtime.input.v3"), "unsupported schema_version"),
+        (lambda d: d.update(schema_version="backtest_runtime.input.v1"), "unsupported schema_version"),
     ],
 )
 def test_malformed_top_level_document_fails_closed(mutate, expected_substring):

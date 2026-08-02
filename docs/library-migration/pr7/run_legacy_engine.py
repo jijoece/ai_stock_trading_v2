@@ -129,9 +129,16 @@ def _derive_orders(fills) -> list[dict]:
     only. Orders are reconstructed here from each fill's `order_id`, which the
     engine assigns deterministically, and are labelled as a comparator-side
     derivation in the emitted document so the parity report never presents
-    them as something the engine itself reported."""
+    them as something the engine itself reported.
+
+    Order matters: the result is in **engine execution order**, keyed on each
+    order's first `fill_sequence`, not sorted by `order_id`. Sorting
+    lexicographically put an exit order ahead of the entry that created it
+    (`bt-order-SPKE-...-STOP_GAP` sorts before `bt-order-pr7-entry`), which
+    would silently align the legacy SELL against the runtime BUY.
+    """
     orders: dict[str, dict] = {}
-    for fill in fills:
+    for fill in sorted(fills, key=lambda item: (item.fill_sequence or 0)):
         row = orders.setdefault(
             fill.order_id,
             {
@@ -141,10 +148,11 @@ def _derive_orders(fills) -> list[dict]:
                 "quantity": Decimal("0"),
                 "order_type": "LIMIT" if fill.side == "BUY" else "MARKET_ON_EVENT",
                 "status": "FILLED",
+                "first_fill_sequence": fill.fill_sequence or 0,
             },
         )
         row["quantity"] += fill.quantity
-    return [orders[key] for key in sorted(orders)]
+    return sorted(orders.values(), key=lambda row: row["first_fill_sequence"])
 
 
 def _derive_end_positions(fills) -> list[dict]:
