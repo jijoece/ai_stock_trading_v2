@@ -185,6 +185,49 @@ jobs:
       - name: Bounded import check
         run: python -c "${{ matrix.import_check }}"
 
+  backtest-runtime-tests:
+    name: backtest-runtime-tests
+    runs-on: ubuntu-latest
+    # Blocking job for library-migration PR 6
+    # (docs/adr/0009-lumibot-backtest-distribution-boundary.md Decision 4).
+    # backtest_runtime/ is installed alone, in its own environment -- never
+    # combined with the root project or paper_runtime, matching the existing
+    # never-combine-extras convention (indicators/analytics/observability/
+    # research above, paper-runtime-tests). Matrixed over this distribution's
+    # declared Python floor (requires-python = ">=3.10") and CI's historical
+    # 3.11 choice -- matching the indicator-tests floor+ceiling pattern above,
+    # since nothing else in this job proves either version actually resolves
+    # and passes.
+    # backtest_runtime/tests/ has no importorskip guard anywhere: LumiBot is
+    # a base dependency of this distribution, so every test here fails,
+    # rather than skips, if it is somehow missing.
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install backtest_runtime dependencies
+        working-directory: backtest_runtime
+        run: pip install -e ".[dev]"
+      - name: pip check
+        working-directory: backtest_runtime
+        run: pip check
+      - name: Assert resolved LumiBot version is exactly 4.5.78
+        working-directory: backtest_runtime
+        run: |
+          pip show lumibot | grep -qx "Version: 4.5.78"
+      - name: Run backtest_runtime test suite
+        working-directory: backtest_runtime
+        # Exercises all five ADR 0009 Decision 2 credential-safety
+        # properties (test_credential_safety.py, test_network_safety.py) in
+        # addition to the contract/determinism/import-boundary/version-pin
+        # tests -- see that directory's test files for the full breakdown.
+        run: pytest tests/ -q --tb=short
+
   type-check-safety:
     name: type-check-safety
     runs-on: ubuntu-latest

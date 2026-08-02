@@ -1,10 +1,24 @@
 # Migration Status
 
-**Current phase: pre-step before PR 6 — COMPLETE.**
-**Next phase: PR 6 — LumiBot backtest evaluation adapter (UNBLOCKED; not
-started).**
+**Current phase: PR 6 — LumiBot backtest evaluation adapter — IMPLEMENTED,
+NOT MERGED** (branch `migration/06-lumibot-backtest-adapter`).
+**Next phase: PR 7 — backtest parity report (see
+`docs/library-migration/pr7-prompt.md`; not started).**
 
-The pre-step is complete. All of its gates are met:
+PR 6 delivers everything ADR 0009 Decision 4 requires for merge:
+
+```text
+[x] backtest_runtime/ exists, implementing ADR 0009 Decisions 1-3
+[x] backtest_runtime/pyproject.toml installs alone via `pip install -e backtest_runtime/`
+[x] its own tests exist, none guarded by importorskip
+[x] blocking backtest-runtime-tests CI job added (.github/workflows/ci.yml)
+[x] the AST import-boundary repair (tests/unit/test_lumibot_import_boundary.py)
+```
+
+See "Completed work (PR 6)" below for the full record, evidence, and test
+results. It has not yet been reviewed or merged into `main`.
+
+The pre-step before PR 6 is complete. All of its gates were met:
 
 ```text
 [x] Opus architecture review complete   (docs/library-migration/pre-step-06/EVALUATION.md)
@@ -15,11 +29,6 @@ The pre-step is complete. All of its gates are met:
 
 The repository owner accepted ADR 0009 and selected Option B: an isolated,
 credential-free `backtest_runtime/` distribution.
-
-`backtest_runtime/` does **not** exist yet, and that does not block PR 6.
-Creating it — the directory, its installable `pyproject.toml`, its tests, and
-its blocking `backtest-runtime-tests` CI job — is PR 6's work, recorded as PR 6
-acceptance criteria in ADR 0009 Decision 4. PR 6 has not been started.
 
 ## Completed work (PR 0)
 
@@ -1292,38 +1301,241 @@ renamed to `entry_signals`/`exit_signals` as part of fix 1 above. This is a
 breaking rename of a function that has zero callers anywhere in the
 repository (confirmed by the import-boundary test in fix 4), so it carries
 no migration cost.
+## Completed work (PR 6) — IMPLEMENTED, NOT MERGED
+
+**Scope:** new top-level distribution `backtest_runtime/` (`pyproject.toml`;
+`src/backtest_runtime/{__init__.py,__main__.py,credential_guard.py,
+contract.py,strategy.py,cli.py}`; `tests/{conftest.py,support/*,test_*.py}`
+— 8 test files, 47 tests, none `importorskip`-guarded); a new
+`tests/unit/test_lumibot_import_boundary.py` (the AST walk moved out of
+`tests/unit/test_lumibot_adapter.py`, which now has a comment pointing to
+its new location instead of the test); a new `backtest-runtime-tests` job in
+`.github/workflows/ci.yml`; `backtest_runtime` added to the root
+`pyproject.toml`'s `[tool.pyright]` exclude list (parity with the existing
+`paper_runtime` entry — both are outside the `include=["src","tests"]` scope
+already, this is defensive/documentation only); `docs/library-migration/
+pr7-prompt.md` (new); this file. No file under `src/`, `scripts/`,
+`paper_runtime/src/`, or `config/` was modified; the only `tests/` change
+outside the new `backtest_runtime/tests/` and `tests/unit/
+test_lumibot_import_boundary.py` files is the one-comment edit removing the
+moved test from `test_lumibot_adapter.py`.
+
+**Architecture, exactly as ADR 0009 specifies:** `backtest_runtime/` is a
+third top-level distribution, never installed alongside the root project or
+`paper_runtime/`. `strategy.py` is the only module that imports `lumibot`;
+`credential_guard.py`, `contract.py`, and `cli.py` do not. `__main__.py`
+scrubs every credential-named variable from `os.environ`, sets
+`LUMIBOT_DISABLE_DOTENV=1`, and redirects `sys.stdout` to `sys.stderr` — all
+three, in that order — before importing `.cli` (which transitively imports
+`.strategy`, which imports `lumibot`).
+
+**The reference strategy is intentionally minimal** (documented in
+`strategy.py`'s module docstring and in `docs/library-migration/
+pr7-prompt.md`'s "scope trap" section): buy one caller-specified whole-share
+`quantity` of one `symbol` on the first bar with a resolvable price, then
+hold to the end of the fixture. No sells, stops, targets, multi-symbol, or
+re-entry — matching the pre-step spike's own `SpikeStrategy` shape. This was
+a deliberate scope boundary per the original prompt's item 3 ("no execution
+authority ... no scheduler"), not an oversight; PR 7's prompt records the
+decision PR 7 must make about how to construct an equivalent
+`backtesting/engine.py` fixture run.
+
+**File contract:** input (`backtest_runtime.input.v1`) is `{schema_version,
+strategy: {strategy_id, symbol, quantity, budget}, bars: [{date, open, high,
+low, close, volume}, ...]}`. Output (`backtest_runtime.result.v1`) is
+`{schema_version, historical_bar_dataset_checksum,
+run_configuration_checksum, strategy_identity, lumibot_version, orders,
+fills, daily_states, positions, final_cash, final_equity, final_value,
+max_drawdown_fraction}` — shaped to, but independent of (no shared types),
+`backtesting/models.py`'s `BacktestFill`/`BacktestDailyState`/
+`BacktestResult`. Both checksums are `sha256` over a canonical
+(`sort_keys=True`, compact separators) JSON serialization of the bars and
+the strategy configuration respectively. Both documents are validated
+independently in `contract.py` (`parse_input_document`,
+`validate_result_document`): unknown fields, non-finite values, malformed
+dates, and OHLC-invalid bars are all rejected before any `lumibot` call, and
+`cli.py` validates its own output before writing the result file, not only
+the input it received. No `lumibot` object (`Order`, `Asset`, `Position`,
+...) crosses into the result document — `strategy.py` converts every field
+to a JSON primitive before it leaves the module.
+
+**Determinism, proved by running the actual CLI as a subprocess twice**
+(`backtest_runtime/tests/test_determinism.py`): identical input produces a
+byte-identical output file; a perturbed bar changes
+`historical_bar_dataset_checksum` and every downstream daily state while
+leaving `run_configuration_checksum` unchanged; a changed `quantity` changes
+`run_configuration_checksum` while leaving `historical_bar_dataset_checksum`
+unchanged.
+
+**Credential and network safety, proved against the real entry point, not
+re-implemented test logic** (`backtest_runtime/tests/
+test_credential_safety.py`, `test_network_safety.py`,
+`test_lumibot_version.py`): each scenario runs `backtest_runtime.__main__`
+(the actual bootstrap path) in its own subprocess, with a fail-closed
+network guard and an `os.environ` read tracer installed first — the same
+methodology as `docs/library-migration/pre-step-06/EVALUATION.md` section
+2.3, now permanently maintained in `backtest_runtime/tests/support/` instead
+of imported from `docs/`. Covers, each as its own test:
+
+- inherited process-environment sentinel credentials are scrubbed before
+  `lumibot` is imported, and never reach it (`credential_values_from_environment`
+  is empty; `broker`/`data_source` stay `None`);
+- a sentinel `.env`/`.env.local` placed in the working directory is never
+  loaded;
+- exactly the three documented benign LumiBot defaults
+  (`COINBASE_SANDBOX`, `IB_USE_PAPER_ACCOUNT`,
+  `DATADOWNLOADER_API_KEY_HEADER`) resolve during a real backtest run, and no
+  other credential-named variable resolves to any value;
+- `lumibot.credentials.broker` and `.data_source` remain `None` across a
+  real backtest run, not only at import;
+- zero outbound network attempts occur across a real backtest run
+  (`test_network_safety.py`), and `benchmark_asset=None`/
+  `analyze_backtest=False` are proved to be the actual arguments passed to
+  `Strategy.run_backtest` (a call-spy test, not a source-text check);
+- the resolved `lumibot` version is exactly `4.5.78`
+  (`test_lumibot_version.py`);
+- a **negative control**
+  (`test_without_the_guard_the_same_sentinel_would_leak`) imports `lumibot`
+  directly, bypassing `backtest_runtime`'s guard entirely, from a script
+  copied to a scratch location outside the repository (so LumiBot's
+  script-directory `.env` walk cannot reach this repository's own real,
+  gitignored `.env`) — and confirms the same sentinel *does* leak and *does*
+  construct a broker without the guard, proving the protected-path tests
+  above are proving something real, not passing vacuously.
+
+`backtest_runtime/tests/conftest.py` applies the same credential scrub and
+`LUMIBOT_DISABLE_DOTENV=1` at collection time, before any test module's own
+top-level `import lumibot` can run — this was necessary in practice: an
+early scratch verification of the real LumiBot API, run from the repository
+root with no guard, loaded this repository's actual `.env` and attempted a
+live broker connection (blocked only by the developer machine's own
+network), directly reproducing ADR 0009's Finding 2/3 hazard. That
+observation is the reason `conftest.py` exists as a session-wide, import-time
+protection rather than a per-test fixture.
+
+**Import boundary** (`backtest_runtime/tests/test_import_boundary.py`,
+AST-based): every file under `backtest_runtime/src` imports only the
+standard library (via `sys.stdlib_module_names`), `pandas`, `lumibot`, or its
+own package; `backtest_runtime` never imports `trading_research` or
+`trading_paper_runtime`; `src/trading_research` never imports
+`backtest_runtime`; `paper_runtime/src` never imports `backtest_runtime`.
+
+**LumiBot version pin match**
+(`backtest_runtime/tests/test_lumibot_pin_matches_paper_runtime.py`): reads
+both `pyproject.toml` files as text (not `tomllib`, which is 3.11-only and
+would contradict this distribution's own declared `>=3.10` floor) and
+asserts `backtest_runtime/pyproject.toml` and `paper_runtime/pyproject.toml`
+pin the identical exact string `lumibot==4.5.78`, and that the root
+`pyproject.toml` declares no LumiBot dependency at all.
+
+**The AST import-boundary repair**
+(`docs/adr/0009-lumibot-backtest-distribution-boundary.md` section 4 /
+Decision 4 item 5): `test_no_lumibot_import_outside_runtime_package` moved
+from `tests/unit/test_lumibot_adapter.py` (module-level
+`pytest.importorskip("lumibot")`, so the walk previously skipped under
+`main-tests`) into new `tests/unit/test_lumibot_import_boundary.py`, which
+has no LumiBot dependency at all and therefore always runs. Confirmed by
+execution in the main project's environment (which happens to have a
+hand-installed scratch `lumibot==4.5.74` — see `EVALUATION.md`'s "stale
+`4.5.74` version labels" note): the new file's test passes for real, not via
+skip.
+
+**Tests run:**
+
+- `backtest_runtime/` in its own isolated Python 3.11 venv (`pip install -e
+  ".[dev]"`; no Python 3.10 interpreter was available on this development
+  machine, matching every prior PR's note — the declared `>=3.10` floor is
+  substantiated by the CI job's `actions/setup-python` matrix, not a local
+  reproduction) — `pip check`: clean. `pytest tests/ -q --tb=short` —
+  **56 passed, 0 failed** (9 new tests added in the review-fix round below).
+- `tests/unit/test_lumibot_import_boundary.py
+  tests/unit/test_lumibot_adapter.py
+  tests/unit/test_runtime_client_no_lumibot_import.py -v` in the main
+  project's `.venv` — **13 passed, 0 skipped** (this `.venv` happens to have
+  a hand-installed scratch `lumibot==4.5.74`, so `test_lumibot_adapter.py`'s
+  other tests ran for real here rather than skipping; the boundary test's
+  own file has no LumiBot dependency and would pass identically either way).
+- `pytest tests/ -q --tb=short` in the main project's `.venv` — **2850
+  passed, 57 skipped, 0 failed**. This `.venv` has several optional extras
+  and a scratch LumiBot installed beyond the plain `.[dev]` baseline other
+  PRs recorded, so the exact pass/skip counts are not directly comparable to
+  earlier entries in this file; no test failed, and no test file outside
+  the ones listed above as changed was modified.
+
+**Credential and network-safety evidence:** see the bulleted list above; raw
+assertions live in `backtest_runtime/tests/test_credential_safety.py` and
+`test_network_safety.py`, re-run as part of the `56 passed` result above,
+and re-run again by the new blocking `backtest-runtime-tests` CI job on
+every future PR against this distribution — no evidence file under `docs/`
+was produced or is required for this PR, since the properties are asserted
+by a permanent, blocking test suite rather than a one-time spike.
+
+**No behavior changed under `src/`, `scripts/`, `paper_runtime/src/`, or
+`config/`.** `backtesting/engine.py` is untouched. No trading limit,
+authorization rule, `paper_books` accounting code, or scheduling behavior
+was touched; no broker, provider, model, or market-data service was called;
+no live data was fetched; the scheduler was not enabled.
+
+### PR 6 review-fix round (2026-08-02)
+
+Five review items addressed on the same branch, before merge:
+
+1. **Drawdown sign convention.** `daily_states[*].drawdown_fraction` and
+   `max_drawdown_fraction` now follow `backtesting/engine.py`'s existing
+   convention — `(equity - running_peak_equity) / running_peak_equity`,
+   zero or negative, never positive. `contract.py` validation flipped from
+   `_require_non_negative_finite` to a new `_require_non_positive_finite`
+   for both fields. New regression fixture `FALLING_BARS` (`support/
+   fixtures.py`) and `tests/test_drawdown.py` assert the exact sign and
+   that the aggregate equals the minimum daily value.
+2. **Exact date syntax.** `contract.py::_require_date` now gates on
+   `^\d{4}-\d{2}-\d{2}$` before calling `date.fromisoformat`, since
+   `fromisoformat` accepts a version-dependent superset (Python 3.11+ also
+   accepts compact `20240102` and ISO week `2024-W01-2` forms; 3.10 does
+   not) — the regex keeps accepted syntax identical on both. New tests
+   cover both rejected forms for input bar dates and result
+   `daily_states[*].market_date`.
+3. **AST boundary exemption tightened.** `tests/unit/
+   test_lumibot_import_boundary.py` previously exempted any path
+   containing a directory literally named `runtime` anywhere in
+   `src/trading_research` (so a hypothetical `runtime/client/` or any
+   other future `runtime`-named package would have been silently
+   exempted, not just `runtime/lumibot/`). Now scoped to paths under
+   `src/trading_research/runtime/lumibot/` specifically, via
+   `Path.relative_to`. New regression test
+   `test_import_under_another_runtime_directory_is_reported_as_an_offender`
+   proves a `lumibot` import under `runtime/client/` (a real sibling
+   package) is reported, not silently allowed.
+4. **Docs cleanup.** `docs/milestones/rebuild/7.md` (the completed PR 6
+   execution prompt) removed — it was a one-time instruction set, not
+   enduring documentation, and this file plus `MASTER_PLAN.md`/
+   `DECISIONS.md`/`COMPONENT_MATRIX.md` are the durable record.
+   `pr7-prompt.md`'s citation of it replaced with ADR 0009 Decision 3 and
+   this file's "Completed work (PR 6)" section.
+5. **CI matrix.** `backtest-runtime-tests` now matrixes
+   `python-version: ["3.10", "3.11"]` (`fail-fast: false`, matching the
+   existing `indicator-tests` job's pattern) instead of only the declared
+   3.10 floor, so both the floor and CI's historical ceiling are proven in
+   CI on every push (this development machine has no 3.10 interpreter, so
+   3.10 is proven by CI, not locally).
+
+Tests-run counts above already reflect this round's additions.
+
+**Collateral CI fix:** the original PR 6 commit's `backtest-runtime-tests`
+job had a YAML scanner bug — the unquoted `run: pip show lumibot | grep -qx
+"Version: 4.5.78"` scalar contains a bare `: ` inside the quoted string,
+which YAML parses as a mapping-key separator inside a plain scalar. Both CI
+runs on this branch prior to this fix failed immediately with "workflow
+file issue" and never actually executed a single job — this was not caught
+before because CI had not yet been observed running end-to-end. Fixed by
+switching that one step to a block scalar (`run: |`). Confirmed on this
+branch's push after the review-fix round: all 15 CI jobs succeeded,
+including both `backtest-runtime-tests (3.10)` and
+`backtest-runtime-tests (3.11)` matrix legs
+(https://github.com/jijoece/ai_stock_trading_v2/actions/runs/30737287212).
+
 ## Next PR
 
-**PR 6 — LumiBot backtest evaluation adapter. UNBLOCKED, not started.**
-
-ADR 0009 is Accepted, so no gate remains on starting PR 6. Nothing about
-`backtest_runtime/` needs to exist first — it is what PR 6 builds.
-
-PR 6 must deliver, and cannot merge without (ADR 0009 Decision 4):
-
-1. **`backtest_runtime/`** implementing ADR 0009 Decisions 1–3, including an
-   entry point that — **before** importing `lumibot` — scrubs credential-named
-   variables from `os.environ`, sets `LUMIBOT_DISABLE_DOTENV=1`, and redirects
-   `sys.stdout` to `sys.stderr`.
-2. **`backtest_runtime/pyproject.toml`**, installable on its own via
-   `pip install -e backtest_runtime/`, declaring `lumibot==4.5.78` as a base
-   dependency and an explicit `requires-python`.
-3. **Its own tests**, carrying no `importorskip` guard — they must fail, not
-   skip, when LumiBot is absent.
-4. **A blocking `backtest-runtime-tests` CI job** that installs the
-   distribution alone, runs `pip check`, asserts the resolved LumiBot version
-   is exactly `4.5.78`, runs the tests, and asserts all five credential-safety
-   properties of ADR 0009 Decision 2 — no credential value available or
-   loaded; nothing loaded from the environment or from a `.env`/`.env.local`;
-   no broker or live data provider initialized; zero outbound attempts under
-   the fail-closed guard; determinism across a repeated identical run. It must
-   **not** assert zero credential *reads*, which LumiBot makes
-   unconditionally.
-5. **The AST import-boundary repair** — move the tree-walking
-   `test_no_lumibot_import_outside_runtime_package` into a file that runs with
-   LumiBot absent, so the boundary is enforced rather than documented.
-
-PR 6 must also produce an exact bounded PR 7 prompt for the parity report.
-
-No implementation prompt is written here: writing one is the first step of
-PR 6 itself, and this pre-step deliberately changed no code.
+**PR 7 — backtest parity report. Not started.** Exact bounded prompt:
+`docs/library-migration/pr7-prompt.md`. Depends on PR 6 (above) being
+merged first. Must not begin in the same branch/session as PR 6.

@@ -1,0 +1,7 @@
+__pycache__/
+*.egg-info/
+.pytest_cache/
+# LumiBot writes its own stats/log artifacts under ./logs/, relative to the
+# process CWD, during a real backtest run -- independent of this
+# distribution's `save_logfile=False` argument to `run_backtest`.
+logs/
