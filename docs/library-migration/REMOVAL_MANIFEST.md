@@ -34,6 +34,15 @@ Do not add `paper_books/*`, `backtesting/engine.py`, `external_broker.py`,
 `paper_books/config.py`, or `storage/*` to this manifest — see
 `PRESERVATION_MANIFEST.md` and `DECISIONS.md` D1/D3 for why.
 
+**PR 8 update (2026-08-02):** `backtesting/engine.py` appeared in the
+"conditionally eligible" section below while this paragraph said not to add it
+— a real contradiction, since PR 0 opened a removal gate on a file this
+paragraph excluded. It is resolved rather than papered over: PR 8 closed the
+gate as **not approved**, the engine is now listed in
+`PRESERVATION_MANIFEST.md` with the invariant it protects, and the paragraph
+above holds without exception. Adding it back requires the full ADR-supersession
+process at the foot of this file (`DECISIONS.md` D7, `pr8/DECISION.md` §9).
+
 | Component | File(s) | Eligible for removal after | Not eligible until | Removal PR |
 |---|---|---|---|---|
 | Custom market calendar | `src/trading_research/evaluation/market_calendar.py` | `exchange_calendars` fixture parity | **Done in PR 3** — all session/holiday/weekend/DST/pre-market/intraday/after-hours/previous-and-next-session/session-count fixture cases pass | Removed in PR 3 (not deferred to PR 17) |
@@ -43,9 +52,14 @@ Do not add `paper_books/*`, `backtesting/engine.py`, `external_broker.py`,
 
 ## Conditionally eligible — gated on a decision PR, not a parity PR
 
-| Component | File(s) | Gate | Outcome if not approved |
+**Resolved 2026-08-02 (PR 8): the one row below is closed as NOT APPROVED.**
+This section now contains no open gate, and this manifest carries **no
+unresolved removal target** into PR 17 or the PR 18 audit. PR 17 removes
+nothing on account of PR 8.
+
+| Component | File(s) | Gate | Outcome |
 |---|---|---|---|
-| Custom event-driven backtest engine | `src/trading_research/backtesting/engine.py`, `models.py` | PR 8 decision, based on PR 7 parity report | Remains authoritative indefinitely; LumiBot backtest adapter becomes an additional, non-replacing option |
+| Custom event-driven backtest engine | `src/trading_research/backtesting/engine.py`, `models.py` | PR 8 decision, based on PR 7 parity report | **Closed — not approved** (`DECISIONS.md` D7, `pr8/DECISION.md`). Remains authoritative indefinitely, not "pending a later parity PR"; now listed in `PRESERVATION_MANIFEST.md` with its invariant. `backtest_runtime/` is kept as an additional, non-replacing offline cross-check with no execution authority and no callers in `src/`. Reopening conditions: `pr8/DECISION.md` §9 |
 
 ## Explicitly excluded from this manifest (any version)
 

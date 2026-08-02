@@ -670,3 +670,91 @@ agree on every economic number. It does **not** establish that
 `backtest_runtime` could replace `backtesting/engine.py`: the adapter capability
 defects, plus the legacy engine's mandatory risk exits, are the list of things
 that would have to be built first. PR 8 is the gate that weighs them.
+**Weighed and decided 2026-08-02 — see D7.**
+
+---
+
+## D7 — PR 8 removal gate: the custom backtest engine is not removed
+
+**Decision date:** 2026-08-02 (PR 8, branch
+`migration/08-backtest-removal-decision`). Full reasoning and the source
+evidence behind every claim here:
+`docs/library-migration/pr8/DECISION.md`. Input:
+`docs/library-migration/pr7/PARITY_REPORT.md`.
+
+**Status:** decided. Status quo preserved, so **no superseding ADR is required
+or drafted** — under this document's governing principle an ADR is needed to
+*remove* a gated component, not to decline to. ADR 0009 is untouched and stays
+Accepted.
+
+### The four rulings
+
+1. **`src/trading_research/backtesting/engine.py` and `models.py` are NOT
+   approved for removal.** They remain authoritative indefinitely — not
+   "pending a later parity PR". `REMOVAL_MANIFEST.md`'s conditionally-eligible
+   row is closed as *not approved*, so no unresolved backtest target reaches
+   PR 17 or the PR 18 audit, and PR 17 removes nothing on account of PR 8. The
+   engine is added to `PRESERVATION_MANIFEST.md` with its invariant named.
+2. **`backtest_runtime/` is kept** in the role `REMOVAL_MANIFEST.md` already
+   defined for this outcome — an additional, **non-replacing** option, narrowed
+   here to *an independent offline cross-check and parity harness with no
+   execution authority and no callers in `src/`*. ADR 0009's third possibility
+   (keep the engine, delete the distribution) is not taken. A review trigger is
+   recorded so "keep" does not become permanent by default: if
+   `backtest-runtime-tests` needs unplanned maintenance twice in succession,
+   the distribution's value is re-argued rather than absorbed.
+3. **Two legacy defects become mandatory follow-ups**, because keeping the
+   component turns them from "defects in something we may delete" into live
+   bugs in the authoritative implementation — D17 (run identity ignores the bar
+   dataset) and the `backtest_orders` table that is created and never written.
+   Both are behavior changes to the legacy engine and get their own PR with its
+   own review; neither is fixed in PR 8. See the follow-up row in
+   `MASTER_PLAN.md`.
+4. **The drawdown/peak-seeding question (PR 7's D13 + D1) is not resolved, by
+   design** — nothing in the repository is currently wrong, since each engine is
+   self-consistent for the run it reports. It is recorded as a **precondition on
+   any future replacement proposal**, which must state what its running peak is
+   seeded with and which session its state series starts on. This is not
+   cosmetic: the legacy engine gates entries on `max_drawdown_fraction`, so a
+   replacement that disagrees about drawdown disagrees about which entries are
+   allowed.
+
+### Why
+
+Not because the two engines disagreed — on `case_f_exact_entry_parity` they
+agree on every economic number. Because of what a replacement would have to
+carry, and because three of those things are not feature gaps:
+
+- **Point-in-time safety is structural and not expressible in the runtime's
+  contract.** `HistoricalBar` refuses to construct unless `available_at` is
+  timezone-aware and `point_in_time_safe` holds; the provider refuses
+  look-ahead bars; the engine refuses a future-available dataset — three
+  refusals at three layers. `backtest_runtime`'s bar has six fields and no
+  notion of when a value became knowable, so a look-ahead dataset is not
+  detectable on that side. This is the same class of invariant
+  `PRESERVATION_MANIFEST.md` already protects for `paper_books/valuation.py`.
+- **`Decimal` versus `float` is an accounting boundary**, consistent with D1's
+  preservation of exact accounting — PR 7's numeric bounds are the right
+  instrument for asking whether two runs agree, not a licence to make the float
+  side authoritative.
+- **The engine shares `calculate_partial_close_quantity` with
+  `paper_books/lifecycle_state.py`.** Re-implementing exits inside a LumiBot
+  strategy would fork safety-adjacent arithmetic away from the preserved
+  accounting layer — and ADR 0009's boundary, which is what makes
+  `backtest_runtime` safe, is exactly what forbids it from importing that code.
+
+Also weighed: `backtesting/models.py` supplies the strategies layer's shared
+type vocabulary (six modules import `HistoricalBar`/`EntrySignal`/
+`BacktestResult`), so removal is not confined to the engine. And, stated
+against the verdict rather than for it: `run_backtest` and
+`run_strategy_backtest` have no non-test caller today, which is a weaker
+preservation case than a load-bearing component would be — it also means
+keeping the engine carries no operational risk.
+
+### Reopening
+
+Enumerated in `pr8/DECISION.md` §9: a replacement proposal that closes the
+capability list *and* ruling 4's precondition on ordinary data; an enforceable
+point-in-time availability axis on the runtime side; an accounting-boundary
+decision for float equity series; or a LumiBot capability change that makes
+those cheap. A superseding ADR is required only if the proposal is removal.
