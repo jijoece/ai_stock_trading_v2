@@ -1,10 +1,23 @@
 # Migration Status
 
-**Current phase: PR 7 — backtest parity report — IMPLEMENTED, NOT MERGED**
-(branch `migration/07-backtest-parity-report`; report at
-`docs/library-migration/pr7/PARITY_REPORT.md`).
-**Next phase: PR 8 — the removal-decision gate, which PR 7's report is the
-input to.**
+**Current phase: PR 8 — the backtest removal-decision gate — DECIDED,
+IMPLEMENTED, NOT MERGED** (branch `migration/08-backtest-removal-decision`,
+PR #20, based on `5b9e1e3`; record at `docs/library-migration/pr8/DECISION.md`,
+`DECISIONS.md` D7). **Outcome: the custom backtest engine is NOT approved for
+removal.** It stays authoritative indefinitely and moves to
+`PRESERVATION_MANIFEST.md`; `backtest_runtime/` is kept as an additional,
+non-replacing offline cross-check. See "Completed work (PR 8)" below.
+
+PR 7 — backtest parity report — is **merged** (`5b9e1e3`, PR #19; report at
+`docs/library-migration/pr7/PARITY_REPORT.md`, raw data under `pr7/results/`),
+and is PR #20's base.
+
+**Next phase: PR 9 — strengthen the LumiBot runtime normalization contract**
+(`MASTER_PLAN.md` row 9). PR 8 also created row **8a**, the tracked follow-up
+for the three legacy-side items it decided must now be fixed rather than
+tolerated: run identity ignores the bar dataset (PR 7 D17), the
+`backtest_orders` table is created and never written, and bar availability is
+enforced once per run rather than per session.
 
 PR 6 is **merged** (`bbd7a1f`, PR #18) and delivered everything ADR 0009
 Decision 4 requires:
@@ -1303,7 +1316,7 @@ renamed to `entry_signals`/`exit_signals` as part of fix 1 above. This is a
 breaking rename of a function that has zero callers anywhere in the
 repository (confirmed by the import-boundary test in fix 4), so it carries
 no migration cost.
-## Completed work (PR 7) — IMPLEMENTED, NOT MERGED (PR #19)
+## Completed work (PR 7) — MERGED (`5b9e1e3`, PR #19)
 
 **Scope:** `docs/library-migration/pr7/` (fixture set, two runner scripts, a
 LumiBot timing probe, a comparator, a shell driver, the written report), the
@@ -1763,52 +1776,220 @@ including both `backtest-runtime-tests (3.10)` and
 `backtest-runtime-tests (3.11)` matrix legs
 (https://github.com/jijoece/ai_stock_trading_v2/actions/runs/30737287212).
 
+## Completed work (PR 8) — DECIDED, IMPLEMENTED, NOT MERGED
+
+**Scope:** documentation only — `docs/library-migration/pr8/DECISION.md` (new,
+the decision record), `DECISIONS.md` (**D7**), `REMOVAL_MANIFEST.md`,
+`PRESERVATION_MANIFEST.md`, `COMPONENT_MATRIX.md`, `MASTER_PLAN.md` (row 8
+decided, new row **8a**, PR 17's conditional dependency resolved, the non-goals
+paragraph updated), and this file. **No file under `src/`, `scripts/`,
+`paper_runtime/src/`, `backtest_runtime/src/`, `config/`, or `tests/` was
+modified** — this is a decision gate, and it is not a fix.
+
+**Branch:** `migration/08-backtest-removal-decision` (PR #20). It was opened off
+the PR 7 branch tip, since PR 8's input — `pr7/PARITY_REPORT.md` and the raw
+data under `pr7/results/` — had not yet merged at the time; PR 7 has since
+merged (`5b9e1e3`), and that merge commit is PR #20's base, so the branch now
+sits directly on `main` content. It is a separate branch and a separate session,
+as PR 7's handoff required.
+
+### Outcome: not approved for removal
+
+1. **`backtesting/engine.py` and `backtesting/models.py` are NOT approved for
+   removal.** Authoritative indefinitely — not "pending a later parity PR". The
+   `REMOVAL_MANIFEST.md` conditionally-eligible row is **closed as not
+   approved**, so that manifest now carries **no unresolved removal target**
+   into PR 17 or the PR 18 audit, and PR 17 removes nothing on account of PR 8.
+   The engine is added to `PRESERVATION_MANIFEST.md` with the invariants it
+   protects — and, after the review round, with the one it does **not** (ruling
+   5) stated in the same row; `COMPONENT_MATRIX.md` reclassifies it from
+   Evaluate (Category B) to Domain-specific.
+2. **`backtest_runtime/` is kept**, in the role `REMOVAL_MANIFEST.md` already
+   named for this outcome — an additional, **non-replacing** option, narrowed
+   in D7 to *an independent offline cross-check and parity harness with no
+   execution authority and no callers in `src/`*. ADR 0009's third possibility
+   (keep the engine, delete the distribution) is not taken. A review trigger is
+   recorded so "keep" does not become permanent by default.
+3. **Three legacy-side items became mandatory follow-ups** — D17 (run identity
+   ignores the bar dataset), the never-written `backtest_orders` table, and
+   availability enforced once per run rather than per session (ruling 5) —
+   tracked as `MASTER_PLAN.md` row **8a**, not fixed here (all three are
+   behavior changes to the legacy engine and need their own review).
+4. **PR 7's D13 + D1 (peak-equity seeding, state-series start) is not resolved,
+   by design** — each engine is self-consistent for the run it reports, so
+   nothing in the repository is currently wrong. It is recorded as a
+   **precondition on any future replacement proposal**. The mechanism, carried
+   forward from PR 7's handoff so it is not lost with that section: the legacy
+   engine seeds its running peak equity with `initial_cash` (`engine.py:175`),
+   so a drawdown is measurable from the first session in the dataset;
+   `backtest_runtime` seeds its peak with `0.0` and raises it on the first
+   session it reports; and by D1 those are not the same session, because
+   LumiBot's first trading iteration is the second bar. On the five
+   default-timing cases the entry is already booked in the runtime's first
+   reported session, so its seed carries the entry's mark while the legacy seed
+   does not, and the two peaks stay apart for the whole run (case A:
+   −0.0000499925… vs −0.00005). **Aligning entry timing does not fix this** —
+   `case_f_exact_entry_parity` agrees on drawdown by construction, being built
+   so the runtime's first reported session is still flat and therefore marks at
+   exactly the budget. Any replacement adapter must state what its peak is
+   seeded with and which session its state series starts on, and must show
+   agreement on ordinary data rather than on a fixture built to avoid the
+   question. This is not a display concern: the legacy engine gates entries on
+   `max_drawdown_fraction` (`engine.py:288-290`), so an adapter that disagrees
+   about drawdown disagrees about which entries are allowed.
+5. **The legacy engine's point-in-time enforcement is run-level, not
+   per-session — recorded as fact, and a claim to the contrary is withdrawn.**
+   Added in the PR #20 review round. `run_backtest` computes one `as_of` for
+   the whole run, `end_date 23:59:59 UTC`, passes it to the provider, and its
+   own guard repeats that same cutoff (`engine.py:140-149`); the bars are then
+   loaded once and consumed at every simulated session with no further
+   availability filtering. `FixtureHistoricalDataProvider` filters only against
+   the `as_of` it is handed (`data_provider.py:25-30`); `HistoricalBar` checks
+   that `available_at` is timezone-aware and otherwise **trusts** the
+   caller-set `point_in_time_safe` flag (`models.py:26-30`); and
+   `strategy_signal_to_entry_signal` reduces `data_as_of` to a date
+   (`strategies/backtest_adapter.py:44`). So a bar available *after* a signal
+   or session, but on or before the run's end, can be used in that earlier
+   simulated period. The engine does enforce a different, weaker property —
+   **session-date ordering** (entry only on the first session strictly after
+   `generated_after_session`, entry ATR only from bars at or before it,
+   `engine.py:164-171`, `engine.py:303-306`). Closing the gap is legacy-engine
+   work, tracked in row **8a**; it is not implemented here, and it is not an
+   argument for replacement, since `backtest_runtime`'s six-field bar contract
+   has no availability axis at all.
+
+**No superseding ADR was required or drafted.** The verdict preserves the
+status quo; under `DECISIONS.md`'s governing principle an ADR is needed to
+*remove* a gated component, not to decline to. ADR 0009 is untouched and stays
+Accepted.
+
+### Why — the decisive reasons are not the parity numbers
+
+PR 7 established that on `case_f_exact_entry_parity` the two engines agree on
+every economic number. The verdict does not turn on that. It turns on what a
+replacement would have to carry — the capability list in `pr8/DECISION.md` §3 —
+and on two items that are **not feature gaps** (full detail and source line
+references in `pr8/DECISION.md` §3–§4):
+
+- **`Decimal` versus `float` is an accounting boundary**, not a rounding
+  preference. PR 7's numeric bounds are the right instrument for asking whether
+  two runs agree; they are not a licence to make the float side authoritative
+  over tables that today hold exact decimal strings.
+- **The engine shares `calculate_partial_close_quantity` with
+  `paper_books/lifecycle_state.py`** (`engine.py:17`). Re-implementing exits
+  inside a LumiBot strategy would fork safety-adjacent arithmetic away from the
+  preserved accounting layer — and ADR 0009's boundary, which is what makes
+  `backtest_runtime` safe, is exactly what forbids it from importing that code.
+
+An earlier revision of this section listed a third item — point-in-time safety
+"enforced at three layers". It is **withdrawn** (ruling 5): those are one
+run-level cutoff applied three times, not a per-session knowability guarantee.
+The verdict is re-derived without it and does not change. Stated plainly, the
+correction cuts against the preservation case — the invariant is weaker than
+claimed — but not in favour of replacement, because migrating would delete the
+availability axis rather than complete it.
+
+Also weighed: `backtesting/models.py` is the strategies layer's shared type
+vocabulary (`HistoricalBar`/`EntrySignal`/`BacktestResult` are imported by
+`strategies/contracts.py`, `factors.py`, `safety_gates.py`, `timestamps.py`,
+`strategy_metrics.py`, `backtest_adapter.py`), so removal would not be confined
+to the engine, and 23 tests across four files exercise it directly. Recorded
+**against** the verdict rather than for it: `run_backtest` and
+`run_strategy_backtest` have no non-test caller anywhere in `src/`, `scripts/`,
+or `.claude/` today — a weaker preservation case than a load-bearing component
+would be, and equally a reason keeping the engine costs nothing operationally.
+
+### Independent verification performed in this PR
+
+PR 7's report is the input, but its conclusions were not adopted unexamined.
+Re-checked against the source on this branch:
+
+- **D17 confirmed.** `_configuration_hash` (`engine.py:67-92`) and `input_hash`
+  (`engine.py:135-138`) exclude the bar dataset entirely; `_persist_result`
+  returns without writing when the run ID and input hash both match
+  (`engine.py:428-429`), and the collision guard above it
+  (`engine.py:420-427`) cannot fire, because the input hash is genuinely
+  identical — it is the dataset that changed.
+- **New finding, not in PR 7: `backtest_orders` is created and never written.**
+  `storage/paper_books_schema.py:978-989` defines the table, including a
+  `rejection_reason` column; the string occurs **exactly once** in the entire
+  Python source. `_persist_result` writes runs, daily states, fills and metrics
+  only. So D11's "no order records" is a persistence gap as well as a
+  result-type gap: the schema was built to hold orders and rejections and no
+  writer followed, while the engine's 11 rejection reasons live only in the
+  in-memory result and inside `report_json`.
+  `docs/milestones/milestone-13.md` listed `backtest_orders` and
+  `backtest_positions` as *candidate* tables under "use the minimum number of
+  tables"; `backtest_positions` was correctly never created, and
+  `backtest_orders` was created and then left empty — the one outcome that
+  instruction did not contemplate.
+- **Availability enforcement traced end to end (review round).** One run-wide
+  `as_of` at `engine.py:140`, used at `engine.py:144`, repeated as a guard at
+  `engine.py:148-149`; bars cached once at `engine.py:141-156` and read from
+  `bar_maps` inside the per-session loop from `engine.py:194` with no further
+  check; `data_provider.py:25-30` filtering only against the supplied `as_of`;
+  `models.py:26-30` trusting the caller-set flag; `data_as_of.date()` at
+  `strategies/backtest_adapter.py:44`. This **contradicted** the earlier
+  revision of this record and of `pr8/DECISION.md`, which is corrected rather
+  than defended.
+- **`backtest_runtime`'s single-buy surface confirmed** — one symbol
+  (`strategy.py:178`), `realized_pnl` written as a literal constant `0.0`
+  (`strategy.py:353`), no sell submitted at all. Corrected in the review round:
+  `fees` is **not** hardcoded — it is copied from LumiBot's `trade_cost`
+  (`strategy.py:157`) and is `0.0` in every parity run because the contract has
+  no fee or slippage input with which to configure a commission model
+  (`contract.py:38`).
+- **Both engines are fixture-fed.** `HistoricalDataProvider` has exactly one
+  implementation, `FixtureHistoricalDataProvider` (`data_provider.py:16`), and
+  ADR 0009 Decision 5 holds `backtest_runtime` to the same posture. This
+  decision is about which implementation the repository maintains, not about
+  which has better data access.
+
+Taken from PR 7 without re-running: the exact-parity case and its fifteen
+asserted dimensions, the broker-trade-event-log fill timing, and the
+13/14/93/0 classification tally.
+
+### Tests run
+
+No test was added or modified — no code changed on this branch. The existing
+suites that cover the preserved component are unchanged and remain the evidence
+that it works; they were re-run here to confirm the decision is being made about
+a green component, not a broken one:
+
+- `pytest tests/unit/test_advanced_risk_backtest.py
+  tests/unit/test_backtest_identity_and_strategy_exits.py
+  tests/unit/test_strategy_backtest.py
+  tests/unit/test_strategy_metrics_fees_exposure.py
+  tests/unit/test_pr7_parity_report.py -q --tb=short` (main `.venv`) —
+  **51 passed, 0 failed** (the 23 engine/strategy-adapter tests plus PR 7's 28
+  artifact regression tests).
+
+`backtest_runtime/`'s own blocking suite and the AST import-boundary tests in
+both directions are unchanged from PR 6/PR 7 and were not re-run here, since
+neither distribution's code was touched.
+
+**Safety:** no trading limit, authorization rule, `paper_books` accounting code,
+or scheduling behavior was touched; no broker, provider, model, or market-data
+service was called; no live data was fetched; the scheduler was not enabled.
+
 ## Next PR
 
-**PR 8 — decide whether the custom backtest component can be safely removed.
-Not started.** A decision gate only, not a pre-committed removal. Its input is
-`docs/library-migration/pr7/PARITY_REPORT.md` and the raw data under
-`pr7/results/`. The report establishes that on one genuinely identical
-buy-and-hold the two engines agree on every economic number, and it explicitly
-does **not** establish that `backtest_runtime` could replace
-`backtesting/engine.py`: its *adapter capability defects* (D7 fees/slippage,
-D8 realized P&L and exit support) plus D9 (mandatory risk exits) and D11 (no
-order or position records) are the list of things that would have to be built
-or accepted first, most of them on the `backtest_runtime` side — no sells, no
-exits, no stops or targets, no maximum holding period, no fees, no slippage,
-no realized P&L, no rejected entries, no multi-symbol, no risk-based sizing,
-no daily-loss or drawdown limits.
+**PR 9 — strengthen the LumiBot runtime normalization contract. Not started.**
+`runtime/lumibot/adapter.py` and `paper_runtime/.../lumibot_gateway.py`:
+normalize orders, statuses, fills, positions and account snapshots
+(`MASTER_PLAN.md` row 9, `DECISIONS.md` D1). PR 10 then proves reconciliation
+against `paper_books` without removing the book ledger.
 
-**A general replacement adapter must also address peak-equity seeding and
-state-series start (D13 + D1).** PR 7's exact case agrees on drawdown, but it
-does so by *construction*, not because the two aggregations are equivalent:
-`case_f_exact_entry_parity` is built so that `backtest_runtime`'s first reported
-session is still flat and therefore marks at exactly the budget. Underneath
-that:
-
-- the legacy engine seeds its running peak equity with `initial_cash`, so a
-  drawdown is measurable from the first session in the dataset;
-- `backtest_runtime` seeds its peak with `0.0` and raises it on the first
-  session it reports;
-- by **D1** those are not the same session — LumiBot's first trading iteration
-  is the second bar, so the runtime's series never contains the first.
-
-On the five default-timing cases the entry is already booked in the runtime's
-first reported session, so its seed carries the entry's mark and the legacy seed
-does not, and the two peaks stay apart for the whole run (case A:
-−0.0000499925… vs −0.00005). **Aligning entry timing does not fix this.** Any
-adapter intended to replace `backtesting/engine.py` in general — rather than on
-one hand-built fixture — has to decide what its peak is seeded with and which
-session its state series starts on, or its drawdown and any limit derived from
-it will disagree with the legacy engine on ordinary data. PR 7 classifies it as
-a library semantic difference (neither seed contradicts its own run) and leaves
-the decision to PR 8.
-
-PR 8 must also weigh **D17** independently of any migration decision: the
-legacy engine's run identity ignores the historical bar dataset, so two runs
-over provably different bars share one `backtest_run_id` and
-`configuration_hash`, and `_persist_result` treats the second as an idempotent
-replay and discards it. That is a defect in the component being judged, found
-by PR 7 but deliberately left unfixed there.
-
-Must not begin in the same branch/session as PR 7.
+**PR 8a — legacy backtest run identity, order records, and per-session bar
+availability** is also now open (`MASTER_PLAN.md` row 8a). It is independent of
+the migration sequence and can run at any point after PR 8 merges: bind a
+canonical bar-dataset digest into the legacy engine's `input_hash` so two runs
+over different bars cannot collide onto one persisted identity; resolve the
+`backtest_orders` table — persist orders and rejections, or delete the table and
+record that order-level backtest history is deliberately not retained; and
+thread a per-session (or per-signal) `as_of` through the simulation so a bar is
+visible only once it was knowable, keeping `data_as_of` at timestamp resolution
+and deciding whether `point_in_time_safe` stays caller-asserted. The third item
+carries fixture and test churn — the 23 existing engine/adapter tests encode the
+current run-level semantics. All three are behavior changes to
+`backtesting/engine.py` and need their own review; see `pr8/DECISION.md` §8.
