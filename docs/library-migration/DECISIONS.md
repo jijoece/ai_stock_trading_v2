@@ -496,3 +496,177 @@ CI-verified for the first time.
 "Sole dependency *authority*" in the sense that mattered when it was written —
 "the main project does not own, declare, or install LumiBot" — remains true
 without qualification.
+
+---
+
+## D6 — PR 7 parity comparison: bounded Option B
+
+**Decision date:** 2026-08-02 (PR 7). Revised twice the same day: from Option A
+to a bounded Option B in the first review round, and then **re-derived in the
+second review round from LumiBot's authoritative order-lifecycle timestamps**
+rather than from inferred fill sessions. Option B is retained, and the
+justification below is the one that survived the authoritative evidence. The
+superseded records are not restated.
+
+### What the first pass got wrong
+
+PR 7 initially took **Option A** — express the legacy run as the narrowest
+`backtesting/engine.py` equivalent and change nothing in `backtest_runtime/` —
+and claimed its `case_a_buy_and_hold` matched the reference strategy exactly. It
+did not: `backtest_runtime` entered a session earlier and at a different price,
+and every downstream number differed by that offset.
+
+### How the booking session is established
+
+The first two passes both reasoned about *when* a fill happened from indirect
+evidence — the callback that reported it, and the bar whose open matched its
+price. Neither is authoritative, and they disagree with each other. LumiBot does
+keep an authoritative record: its broker stamps every order event with
+`data_source._datetime` at the moment the event is processed, in the trade-event
+log (`lumibot/brokers/broker.py`). Reading it settles the question:
+
+| clock | case A | case F |
+|---|---|---|
+| broker trade-event log (**authoritative**) | 2024-01-03 @ 100.5 | 2024-01-04 @ 101.0 |
+| `on_filled_order` callback | 2024-01-04 | 2024-01-05 |
+| first iteration with changed cash | 2024-01-04 | 2024-01-05 |
+
+The mechanism is in `strategy_executor.py::_process_pandas_daily_data`, which
+runs one session as `_update_datetime(session)` → `_on_trading_iteration()` →
+`process_pending_orders()`. The order is submitted and filled inside the **same**
+session, with the broker's clock unmoved; the strategy is told on its next
+iteration. So the two lagging clocks are observation delay, not execution delay,
+and the booking session is the submission session.
+
+`docs/library-migration/pr7/probe_lumibot_fill_timing.py` records all three
+clocks for three fixtures; the transcript is `results/probe_output.txt`.
+
+### Why Option A is impossible
+
+With the booking session established, both engines' floors are structural and
+one session apart:
+
+* **LumiBot** cannot submit before the **second** bar — `_process_pandas_daily_data`
+  seeds its cursor with the first session strictly after `backtesting_start` — and
+  books the fill in the submission session. Earliest booking: **bar 2**.
+* **The legacy engine** cannot enter before the **third** bar: a signal is eligible
+  only on the session *after* `generated_after_session`, and `average_true_range`
+  needs `atr_period + 1` bars before that. With the smallest legal `atr_period`
+  of 1, `generated_after_session` can be no earlier than bar 2, so the entry can
+  be no earlier than **bar 3**.
+
+The second review round asked specifically whether a fixture with intentionally
+matching consecutive opens could close the gap under Option A. It cannot: matched
+opens would make the two fill *prices* equal while leaving the two *booking
+sessions* one apart, and the exact case is required to agree on the authoritative
+fill date, not only on the price. The gap is a property of the two execution
+loops, not of the data, so no fixture and no configuration removes it. Option B
+stands.
+
+### The bounded extension
+
+`backtest_runtime`'s reference strategy is now **v2**, adding exactly one
+control:
+
+```text
+strategy.entry_after_session : null | "YYYY-MM-DD"
+```
+
+`null` reproduces v1 behavior exactly — submit on the first iteration with a
+resolvable price. A date defers that same single buy to the first iteration
+strictly after it. That is the whole extension.
+
+**Versioned, not defaulted.** `SCHEMA_VERSION_INPUT` becomes
+`backtest_runtime.input.v2` and `REFERENCE_STRATEGY_ID` becomes
+`backtest_runtime.reference_strategy.v2`. `contract.py` rejects both unknown
+*and* missing strategy fields, so a v1 document is not a valid v2 document and
+is told so explicitly rather than silently defaulted. The field participates in
+`strategy_digest`, so two runs that differ only in entry timing have different
+`run_configuration_checksum` values.
+
+**Boundary.** The rule is that at least one *iterable* session must remain
+strictly after the delay, so the order can be both submitted and filled. The
+domain is `bars[1:]`, because the first bar is never a trading iteration;
+submission and booking are the same session, so one such session is both
+necessary and sufficient. A value on the penultimate session is therefore
+accepted, and `test_entry_on_the_last_session_is_reported_and_not_silently_dropped`
+proves that accepted input produces a real fill, a real end position and a
+reduced final cash rather than a document that finishes flat.
+
+**What was deliberately not added.** No sell, no stop, no target, no second
+order, no order type, no scheduler, no data fetcher, no broker interaction, no
+multi-symbol, no sizing rule. `benchmark_asset=None` and
+`analyze_backtest=False` remain hardcoded, and every ADR 0009 Decision 2
+credential-, network-, and isolation-safety property is untouched and still
+asserted by that distribution's own blocking test suite (`75 passed`, including
+`test_entry_timing.py`'s explicit "no sell and no second order" assertion).
+
+### The reporting fix that came with it
+
+Reference strategy v1 reported two things from clocks that lag the broker's:
+each fill's `market_date` (from `on_filled_order`) and each daily state (sampled
+in `on_trading_iteration`, before that session's orders are processed). Both are
+now taken from the broker's own event log, and the result schema is bumped to
+`backtest_runtime.result.v2` — the field names are unchanged but their meaning
+is not, so a v1 consumer reading a v2 document would silently mis-date every
+fill. Each session's state re-applies the fills the broker stamped with that
+session, and two invariants are checked as hard errors: each session's observed
+balances must equal the reconstruction as of the previous reported session, and
+`observed cash + observed quantity × mark price` must equal the `portfolio_value`
+LumiBot reported. This changes no trading behavior — it changes which clock the
+adapter believes.
+
+### What it bought
+
+`case_f_exact_entry_parity` pairs `entry_after_session = 2024-01-03` with the
+legacy engine's earliest possible entry. Both engines book the entry on
+**2024-01-04 at 101.0 for 10 shares** — each from its own authoritative record,
+neither inferred from a price — and agree exactly on final cash (98 990), final
+equity (99 992), final value, end position (10 @ 101.0), maximum drawdown
+(−0.00018), and on cash, equity, unrealized P&L, realized P&L and drawdown for
+**every co-dated session, the entry session included**. The comparator asserts
+all fifteen dimensions, excludes no session, and exits non-zero if any fails.
+
+`D4` and `D15` are consequently **reclassified from adapter defects to library
+semantic differences**: the observation lag is a real and permanent property of
+LumiBot's execution loop, which the legacy engine has no equivalent of, and it
+was only ever an adapter defect because v1 published the lagging clock as truth.
+The comparator records both under `RESOLVED_BY_REFERENCE_STRATEGY_V2` and exits
+non-zero if either is emitted as a difference again.
+
+The other five cases keep `entry_after_session = null`, so the default-timing
+behavior PR 6 shipped remains measured and reported rather than being replaced
+by the extension.
+
+### Classification semantics, corrected in the same round
+
+"Unsupported requirement" is reserved for a case **neither** side can express.
+Fees/slippage and realized-P&L/exit support are capabilities the legacy engine
+has and `backtest_runtime` does not, so they are **adapter capability defects**,
+not unsupported requirements — the requirement is demonstrably supportable
+because one side already supports it. The comparator carries a subcategory
+(`BEHAVIOR` — reports a value that contradicts its own run; `CAPABILITY` —
+cannot express something the legacy engine can) and fails if a `CAPABILITY`
+difference is labelled `UNSUPPORTED`.
+
+After the second round the tally is **13 old-engine defect / 14 adapter defect
+(0 behavior, 14 capability) / 93 intentional library semantic difference / 0
+unsupported requirement**. The behavior subcategory is now empty because the two
+differences that occupied it, D4 and D15, were the reporting defects v2 fixed.
+
+### Binding results to fixtures
+
+The comparator recomputes each fixture's canonical bar checksum itself and
+requires both result documents to carry it. Two stale results agree with each
+other perfectly, so mutual agreement proves nothing about currency; only
+comparison against the fixture does. A regression test changes one fixture's
+*volume* — a field that alters no number either engine computes — and asserts
+the comparator rejects the previously valid results.
+
+### Consequence for PR 8
+
+The exact case establishes that, on one identical buy-and-hold, the two engines
+agree on every economic number. It does **not** establish that
+`backtest_runtime` could replace `backtesting/engine.py`: the adapter capability
+defects, plus the legacy engine's mandatory risk exits, are the list of things
+that would have to be built first. PR 8 is the gate that weighs them.

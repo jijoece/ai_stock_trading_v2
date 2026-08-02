@@ -34,7 +34,14 @@ def bar_dicts(bars=None) -> list[dict]:
     ]
 
 
-def valid_input_document(*, symbol: str = "SPKE", quantity: int = 10, budget: float = 100_000.0, bars=None) -> dict:
+def valid_input_document(
+    *,
+    symbol: str = "SPKE",
+    quantity: int = 10,
+    budget: float = 100_000.0,
+    bars=None,
+    entry_after_session: str | None = None,
+) -> dict:
     return {
         "schema_version": SCHEMA_VERSION_INPUT,
         "strategy": {
@@ -42,6 +49,9 @@ def valid_input_document(*, symbol: str = "SPKE", quantity: int = 10, budget: fl
             "symbol": symbol,
             "quantity": quantity,
             "budget": budget,
+            # Default `None` is the v1 behavior: enter on the first bar with a
+            # resolvable price.
+            "entry_after_session": entry_after_session,
         },
         "bars": bar_dicts(bars),
     }

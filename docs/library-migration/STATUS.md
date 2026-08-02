@@ -1,11 +1,13 @@
 # Migration Status
 
-**Current phase: PR 6 — LumiBot backtest evaluation adapter — IMPLEMENTED,
-NOT MERGED** (branch `migration/06-lumibot-backtest-adapter`).
-**Next phase: PR 7 — backtest parity report (see
-`docs/library-migration/pr7-prompt.md`; not started).**
+**Current phase: PR 7 — backtest parity report — IMPLEMENTED, NOT MERGED**
+(branch `migration/07-backtest-parity-report`; report at
+`docs/library-migration/pr7/PARITY_REPORT.md`).
+**Next phase: PR 8 — the removal-decision gate, which PR 7's report is the
+input to.**
 
-PR 6 delivers everything ADR 0009 Decision 4 requires for merge:
+PR 6 is **merged** (`bbd7a1f`, PR #18) and delivered everything ADR 0009
+Decision 4 requires:
 
 ```text
 [x] backtest_runtime/ exists, implementing ADR 0009 Decisions 1-3
@@ -16,7 +18,7 @@ PR 6 delivers everything ADR 0009 Decision 4 requires for merge:
 ```
 
 See "Completed work (PR 6)" below for the full record, evidence, and test
-results. It has not yet been reviewed or merged into `main`.
+results, and "Completed work (PR 7)" for the parity report that followed it.
 
 The pre-step before PR 6 is complete. All of its gates were met:
 
@@ -1301,7 +1303,234 @@ renamed to `entry_signals`/`exit_signals` as part of fix 1 above. This is a
 breaking rename of a function that has zero callers anywhere in the
 repository (confirmed by the import-boundary test in fix 4), so it carries
 no migration cost.
-## Completed work (PR 6) — IMPLEMENTED, NOT MERGED
+## Completed work (PR 7) — IMPLEMENTED, NOT MERGED (PR #19)
+
+**Scope:** `docs/library-migration/pr7/` (fixture set, two runner scripts, a
+LumiBot timing probe, a comparator, a shell driver, the written report), the
+bounded reference-strategy v2 extension in `backtest_runtime/`, and
+`tests/unit/test_pr7_parity_report.py`. Plus `DECISIONS.md` D6, this file, and
+the `MASTER_PLAN.md` PR 7 row. **The legacy engine is untouched:**
+`backtesting/engine.py`, `backtesting/models.py` and every `paper_books` module
+are byte-unchanged (`git diff main -- src/` is empty).
+
+### Review round 1 (2026-08-02)
+
+Six items addressed on the same branch, before merge.
+
+**1. The Option A/B decision was corrected to bounded Option B.** The first
+pass claimed `case_a_buy_and_hold` matched the reference strategy exactly. It
+did not: `backtest_runtime` entered 2024-01-03 at 100.5, the legacy engine
+2024-01-04 at 102.0. The offset is structural — the legacy engine cannot enter
+before its third bar (eligibility is next-session-only and ATR needs
+`atr_period + 1` prior bars), while reference strategy v1 always bought on its
+first iteration, the second bar — so Option A could never produce an identical
+case, which is exactly the condition for Option B.
+
+Reference strategy **v2** therefore adds exactly one control,
+`strategy.entry_after_session` (`null` = v1 behavior; a date defers the same
+single buy to the first iteration strictly after it). Versioned, not defaulted:
+`backtest_runtime.input.v2` / `backtest_runtime.reference_strategy.v2`, a v1
+document now explicitly rejected, the field folded into `strategy_digest`, and a
+value at or after the last bar rejected rather than silently never entering.
+**No** sell, stop, target, second order, order type, scheduler, fetcher or
+broker interaction was added; `benchmark_asset=None` and
+`analyze_backtest=False` stay hardcoded; every ADR 0009 Decision 2 credential-,
+network- and isolation-safety property is untouched and still asserted by that
+distribution's blocking suite.
+
+**The exact case it bought** (`case_f_exact_entry_parity`): both engines enter
+**2024-01-04 at 101.0 for 10 shares** and agree exactly on final cash (98 990),
+final equity (99 992), final value, end position (10 @ 101.0), maximum drawdown
+(−0.00018), and on cash, equity, unrealized P&L, realized P&L and drawdown for
+**every co-dated session except the entry session**. *(Superseded by review
+round 2: the entry session is no longer excluded, and the exclusion's premise —
+that `backtest_runtime`'s state lagged by one session — was itself derived from
+an inferred fill session rather than from LumiBot's own record.)*
+
+**2. Look-ahead removed from the legacy fixture.** Each signal's `limit_price`
+was the *entry* session's high — a bar that had not happened when the signal was
+generated. It is now a fixed ×1.10 band above the last close visible at signal
+time, still non-binding, so the fill still lands on the entry session's open.
+`build_fixtures.assert_point_in_time_safe` runs on every case at build time
+(limit equals the band; no future OHLC value could have produced it; the limit
+neither binds against nor rejects the entry), and the root test suite re-checks
+it against the committed fixtures.
+
+**3. Order alignment fixed.** Legacy orders were reconstructed sorted
+lexicographically by `order_id`, which put an exit
+(`bt-order-SPKE-…-STOP_GAP`) ahead of the entry that created it and aligned the
+legacy SELL against the runtime BUY. Reconstruction is now in engine execution
+order (first `fill_sequence`), and the comparator groups both sides by
+normalized side and pairs within each group, asserting no pair crosses roles. In
+cases B and C the BUY pairs with the BUY and the unmatched legacy SELL is the
+mandatory-exit difference (D9). A difference may now carry `D5-enum-vocabulary`
+only if both values normalize to the same token, so `market` vs `LIMIT` became
+its own economic difference (`D16-order-type-model`) and a BUY can never be
+explained away as a SELL.
+
+**4. Cross-case identity collision detected — a new old-engine defect (D17).**
+`case_a_buy_and_hold` and `case_b_perturbed_last_close` have different
+`historical_bar_dataset_checksum` values (`e5cf5f68…` vs `3c7abef9…`) and
+different results (final equity 100 025 vs 100 075), yet share one
+`backtest_run_id` (`backtest-fdc36c96…`) and one `configuration_hash`: run
+identity comes from `_configuration_hash` and `_signal_set_hash` only, and the
+bars contribute nothing. Not cosmetic — `_persist_result` treats a matching
+`backtest_run_id` with a matching `input_hash` as an idempotent replay and
+returns without writing, so persisting both runs stores only the first and
+silently discards the second under an identity it also claims. The
+collision-with-different-input guard never fires, because it is the *dataset*,
+not the configuration, that changed. **Reported, not fixed** — changing run
+identity is a legacy-engine behavior change for a later PR.
+
+**5. Classification semantics corrected.** "Unsupported requirement" is now
+reserved for a case *neither* side can express. Fees/slippage (D7) and
+realized-P&L/exit support (D8) are capabilities the legacy engine has and
+`backtest_runtime` does not, so they are **adapter capability defects**; the
+comparator carries a `BEHAVIOR`/`CAPABILITY` subcategory and exits non-zero if a
+capability gap is labelled `UNSUPPORTED`. Tally at the end of round 1: **13**
+old-engine defect, **24** adapter defect (10 behavior, 14 capability), **93**
+intentional library semantic difference, **0** unsupported requirement.
+*(Superseded by review round 2, which reclassified the 10 behavior defects.)*
+
+**6. Fixture set** (`pr7/fixtures/`, six cases, all `SPKE`/10 shares/100 000):
+`case_a`/`case_b`/`case_c` reuse `backtest_runtime/tests/support/fixtures.py`'s
+`BARS`, `perturbed_input_document()` and `FALLING_BARS` **verbatim**;
+`case_e_gapped_opens` gaps its opens (every other array has
+`open[i] == close[i-1]`, which hides the fill-price model);
+`case_d_long_hold_default_atr` is 30 bars, long enough for the engine's default
+`atr_period=14`; `case_f_exact_entry_parity` is the exact case above. Identical
+input is *proved*: each side computes the bar-set SHA-256 independently
+(`backtest_runtime.contract.bars_digest` on one side, a separate
+re-implementation in `run_legacy_engine.py` on the other, since the main
+environment must never import `backtest_runtime`). All six matched.
+
+**Two environments, never combined** (ADR 0009 Decision 5): `backtest_runtime`
+in its own Python 3.11 venv (`pip install -e backtest_runtime/[dev]`), the
+legacy engine in the main `.venv`. The comparator reads two result documents and
+imports neither engine.
+
+**Other findings, unchanged across both rounds:** both engines fill an entry at
+the **open of the session they book it in** (measured on the gapped fixture:
+LumiBot filled at 104.0, the 2024-01-03 open, not 100.0, the 2024-01-02 close);
+quantity was exactly equal in every case; the drawdown definition and sign
+convention are identical; the legacy engine's **mandatory** ATR stop / trailing
+stop / target / holding period fire in cases B and C while the reference
+strategy holds.
+
+**Comparator numeric rule** (inherited from neither side): both sides into exact
+`Decimal` — legacy from its decimal string, runtime through `repr()` of the
+double — exact difference, no rounding, against ±1e-6 absolute for money and
+prices, ±1e-9 **relative** (1e-15 floor) for fractions, exact for share
+quantities. The relative rule is deliberate: drawdowns here run as small as
+~1e-5, and an absolute 1e-9 bound hid real case-D differences on the first pass.
+Smallest non-zero difference measured: 1.0 (money), 0.1 (price), 2.0e-10
+(fraction, correctly reported as differing), so no "equal" verdict rests on a
+bound.
+
+### Review round 2 (2026-08-02)
+
+**1. Fill timing re-derived from authoritative evidence.** Both earlier passes
+inferred when a fill happened — round 1 from the `on_filled_order` callback,
+the comparator from which bar's open matched the fill price — and the two
+disagree. LumiBot does keep an authoritative record: its broker stamps every
+order event with `data_source._datetime` as it processes it, in the trade-event
+log (`lumibot/brokers/broker.py`). It says the fill is booked in the
+**submission** session, because
+`strategy_executor.py::_process_pandas_daily_data` runs a session as
+`_update_datetime` → `_on_trading_iteration` → `process_pending_orders`. Case A:
+booked 2024-01-03 @ 100.5; callback 2024-01-04; cash first changes 2024-01-04.
+The two lagging clocks are observation delay, not execution delay.
+
+`probe_lumibot_fill_timing.py` now records all three clocks (and says
+"UNRESOLVED" if the authoritative log is ever absent, rather than falling back
+silently), across three fixtures including the exact case.
+
+**2. Option A re-evaluated and Option B retained, on authoritative timing.** The
+round asked specifically whether a fixture with intentionally matching
+consecutive opens could give Option A genuine parity. It cannot: matching opens
+equalise the two fill *prices* while leaving the two *booking sessions* one
+apart, and the exact case must agree on the authoritative fill date. Both floors
+are structural — LumiBot cannot submit before bar 2 (bar 1 is never a trading
+iteration) and books in the submission session; the legacy engine cannot enter
+before bar 3 (next-session eligibility, and ATR needs `atr_period + 1` prior
+bars, so even `atr_period = 1` puts `generated_after_session` no earlier than
+bar 2). `entry_after_session` is therefore kept, not reverted.
+
+**D4 and D15 are reclassified from adapter defect to library semantic
+difference**, and reference strategy v2 stops reporting the lagging clocks: fill
+dates come from the broker's event log, and each session's state re-applies the
+fills booked in that session. The result schema is bumped to
+`backtest_runtime.result.v2` (same field names, different meaning). Two
+invariants guard the realignment as hard errors — each session's observed
+balances must equal the reconstruction as of the previous reported session, and
+`observed cash + observed quantity × mark price` must equal the reported
+`portfolio_value`. The comparator records both ids under
+`RESOLVED_BY_REFERENCE_STRATEGY_V2` and exits non-zero if either is emitted
+again.
+
+**The exact case is now exact with no session excluded.** Both engines book
+2024-01-04 @ 101.0 for 10 shares — each from its own record — and agree on final
+cash (98 990), final equity (99 992), final value, end position (10 @ 101.0),
+maximum drawdown (−0.00018), and on cash, equity, unrealized P&L, realized P&L
+and drawdown for **every** co-dated session, the entry session included. All
+fifteen comparator dimensions pass and `excluded_sessions` is empty.
+
+**3. `entry_after_session` boundary closed.** The rule is now that at least one
+*iterable* session must remain strictly after the delay (domain `bars[1:]`,
+since the first bar is never an iteration); submission and booking are the same
+session, so one such session is necessary and sufficient. A penultimate-session
+value is accepted, and a new regression test proves accepted input cannot finish
+without a fill — it asserts a real fill, a real end position and a reduced final
+cash on the last session, which reference strategy v1 would have reported flat.
+
+**4. Results bound to the current fixtures.** The comparator now recomputes each
+fixture's canonical bar checksum itself and requires both result documents to
+carry it, exiting 6 otherwise. Two stale results agree with each other
+perfectly, so mutual agreement proves nothing about currency. A regression test
+edits one fixture's *volume* — changing no number either engine computes — and
+asserts the previously valid results are rejected.
+
+**5. `run_parity.sh` path resolution fixed.** `BT_PYTHON` and `MAIN_PYTHON` are
+resolved to absolute paths (and checked executable) before anything changes
+directory. The documented invocation passes `.venv/bin/python` relative to the
+repository root, while step 2 runs the isolated interpreter from a scratch
+directory so LumiBot's `logs/` never lands in the repo — a relative path
+resolved against that scratch directory instead. Verified with the documented
+relative invocation.
+
+**Corrected tally** across all six cases plus the cross-case finding: **13**
+old-engine defect, **14** adapter defect (**0** behavior, 14 capability), **93**
+intentional library semantic difference, **0** unsupported requirement. The
+behavior subcategory is empty because it held only D4 and D15.
+
+**Tests run:**
+
+- `backtest_runtime/` in its own isolated Python 3.11 venv — `pip check` clean,
+  `lumibot 4.5.78`, `pytest tests/ -q --tb=short` — **75 passed, 0 failed**
+  (70 after round 1, plus three authoritative-timing/penultimate-boundary tests
+  in `test_entry_timing.py` and two result-schema-version cases).
+  `test_entry_timing.py` asserts both halves of the bounded extension — the
+  delay works, and the strategy is still exactly one buy-and-hold order with no
+  sell — plus that the fill carries the booking session and never the callback
+  session.
+- `pytest tests/ -q --tb=short` in the main project's `.venv` — **2878 passed,
+  57 skipped, 0 failed**: the 2850 PR 6 recorded on the same `.venv`, plus the
+  28 PR 7 regression tests. No pre-existing test changed behavior, and
+  `backtesting/engine.py`'s own tests are unaffected because the engine is
+  untouched.
+- `tests/unit/test_pr7_parity_report.py` — **28 passed**: order alignment and
+  role pairing, vocabulary rules that cannot conceal BUY/SELL or market/limit,
+  cross-case identity-collision detection (including a negative case), exact-case
+  parity checked both through the comparator and directly against the two raw
+  documents with no session excluded, booking dates corroborated against each
+  engine's own fill price, the resolved-defect regression barrier, fixture
+  binding and the volume-only staleness case, `run_parity.sh` path resolution,
+  classification-category validity, and fixture point-in-time safety.
+- Reproducibility: `run_parity.sh` runs every `backtest_runtime` case **twice**
+  and fails if the two result documents are not byte-identical; all six were,
+  and a second full run of the script leaves a clean `git diff`.
+
+## Completed work (PR 6) — MERGED (`bbd7a1f`, PR #18)
 
 **Scope:** new top-level distribution `backtest_runtime/` (`pyproject.toml`;
 `src/backtest_runtime/{__init__.py,__main__.py,credential_guard.py,
@@ -1536,6 +1765,50 @@ including both `backtest-runtime-tests (3.10)` and
 
 ## Next PR
 
-**PR 7 — backtest parity report. Not started.** Exact bounded prompt:
-`docs/library-migration/pr7-prompt.md`. Depends on PR 6 (above) being
-merged first. Must not begin in the same branch/session as PR 6.
+**PR 8 — decide whether the custom backtest component can be safely removed.
+Not started.** A decision gate only, not a pre-committed removal. Its input is
+`docs/library-migration/pr7/PARITY_REPORT.md` and the raw data under
+`pr7/results/`. The report establishes that on one genuinely identical
+buy-and-hold the two engines agree on every economic number, and it explicitly
+does **not** establish that `backtest_runtime` could replace
+`backtesting/engine.py`: its *adapter capability defects* (D7 fees/slippage,
+D8 realized P&L and exit support) plus D9 (mandatory risk exits) and D11 (no
+order or position records) are the list of things that would have to be built
+or accepted first, most of them on the `backtest_runtime` side — no sells, no
+exits, no stops or targets, no maximum holding period, no fees, no slippage,
+no realized P&L, no rejected entries, no multi-symbol, no risk-based sizing,
+no daily-loss or drawdown limits.
+
+**A general replacement adapter must also address peak-equity seeding and
+state-series start (D13 + D1).** PR 7's exact case agrees on drawdown, but it
+does so by *construction*, not because the two aggregations are equivalent:
+`case_f_exact_entry_parity` is built so that `backtest_runtime`'s first reported
+session is still flat and therefore marks at exactly the budget. Underneath
+that:
+
+- the legacy engine seeds its running peak equity with `initial_cash`, so a
+  drawdown is measurable from the first session in the dataset;
+- `backtest_runtime` seeds its peak with `0.0` and raises it on the first
+  session it reports;
+- by **D1** those are not the same session — LumiBot's first trading iteration
+  is the second bar, so the runtime's series never contains the first.
+
+On the five default-timing cases the entry is already booked in the runtime's
+first reported session, so its seed carries the entry's mark and the legacy seed
+does not, and the two peaks stay apart for the whole run (case A:
+−0.0000499925… vs −0.00005). **Aligning entry timing does not fix this.** Any
+adapter intended to replace `backtesting/engine.py` in general — rather than on
+one hand-built fixture — has to decide what its peak is seeded with and which
+session its state series starts on, or its drawdown and any limit derived from
+it will disagree with the legacy engine on ordinary data. PR 7 classifies it as
+a library semantic difference (neither seed contradicts its own run) and leaves
+the decision to PR 8.
+
+PR 8 must also weigh **D17** independently of any migration decision: the
+legacy engine's run identity ignores the historical bar dataset, so two runs
+over provably different bars share one `backtest_run_id` and
+`configuration_hash`, and `_persist_result` treats the second as an idempotent
+replay and discards it. That is a defect in the component being judged, found
+by PR 7 but deliberately left unfixed there.
+
+Must not begin in the same branch/session as PR 7.

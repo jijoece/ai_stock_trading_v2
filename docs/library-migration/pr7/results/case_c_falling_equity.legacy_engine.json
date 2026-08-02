@@ -1,0 +1,142 @@
+{
+  "backtest_run_id": "backtest-5fd2bf263779110273556801c9e8cd1b",
+  "case_id": "case_c_falling_equity",
+  "configuration_hash": "514ff2d880c2bbc665596e22537f9847b264f69cc29bddb90315b9f608684d48",
+  "daily_states": [
+    {
+      "cash": "100000",
+      "drawdown_fraction": "0",
+      "equity": "100000",
+      "market_date": "2024-01-02",
+      "realized_pnl": "0",
+      "unrealized_pnl": "0"
+    },
+    {
+      "cash": "100000",
+      "drawdown_fraction": "0",
+      "equity": "100000",
+      "market_date": "2024-01-03",
+      "realized_pnl": "0",
+      "unrealized_pnl": "0"
+    },
+    {
+      "cash": "98900.0",
+      "drawdown_fraction": "-0.0015",
+      "equity": "99850.0",
+      "market_date": "2024-01-04",
+      "realized_pnl": "0",
+      "unrealized_pnl": "-150.0"
+    },
+    {
+      "cash": "98900.0",
+      "drawdown_fraction": "-0.002",
+      "equity": "99800.0",
+      "market_date": "2024-01-05",
+      "realized_pnl": "0",
+      "unrealized_pnl": "-200.0"
+    },
+    {
+      "cash": "99800.0",
+      "drawdown_fraction": "-0.002",
+      "equity": "99800.0",
+      "market_date": "2024-01-08",
+      "realized_pnl": "-200.0",
+      "unrealized_pnl": "0"
+    }
+  ],
+  "derived": {
+    "end_positions_from_fills": [],
+    "note": "Reconstructed by run_legacy_engine.py from the engine's fills; not reported by BacktestResult itself.",
+    "orders_from_fills": [
+      {
+        "first_fill_sequence": 1,
+        "order_id": "bt-order-pr7-entry",
+        "order_type": "LIMIT",
+        "quantity": "10",
+        "side": "BUY",
+        "status": "FILLED",
+        "symbol": "SPKE"
+      },
+      {
+        "first_fill_sequence": 2,
+        "order_id": "bt-order-SPKE-2024-01-04-STOP_GAP",
+        "order_type": "MARKET_ON_EVENT",
+        "quantity": "10",
+        "side": "SELL",
+        "status": "FILLED",
+        "symbol": "SPKE"
+      }
+    ]
+  },
+  "engine": "src/trading_research/backtesting/engine.py",
+  "engine_code_version": "advanced-risk-backtest-v2-fill-sequence",
+  "fills": [
+    {
+      "exit_reason": null,
+      "fees": "0",
+      "fill_id": "bt-fill-cded6473157ae851f8b3be05e46e544d",
+      "fill_price": "110.0",
+      "fill_sequence": 1,
+      "market_date": "2024-01-04",
+      "order_id": "bt-order-pr7-entry",
+      "position_id": "bt-fill-cded6473157ae851f8b3be05e46e544d",
+      "quantity": "10",
+      "side": "BUY",
+      "slippage": "0.0",
+      "symbol": "SPKE"
+    },
+    {
+      "exit_reason": "STOP_GAP",
+      "fees": "0",
+      "fill_id": "bt-fill-3a2dc8faddfabdda286e6ba804cff6eb",
+      "fill_price": "90.0",
+      "fill_sequence": 2,
+      "market_date": "2024-01-08",
+      "order_id": "bt-order-SPKE-2024-01-04-STOP_GAP",
+      "position_id": "bt-fill-cded6473157ae851f8b3be05e46e544d",
+      "quantity": "10",
+      "side": "SELL",
+      "slippage": "0.0",
+      "symbol": "SPKE"
+    }
+  ],
+  "final_cash": "99800.0",
+  "final_equity": "99800.0",
+  "final_value": "99800.0",
+  "historical_bar_dataset_checksum": "a4a6b7c55f13ca3e86a2825452d9bdb7361f1b9ee4cb774bbe30eabf9c60a888",
+  "initial_cash": "100000",
+  "input_document": "case_c_falling_equity.input.json",
+  "max_drawdown_fraction": "-0.002",
+  "metrics": {
+    "ambiguity_policy": "CONSERVATIVE_STOP_FIRST",
+    "benchmark_return": null,
+    "breakeven_exits": 0,
+    "code_version": "advanced-risk-backtest-v2-fill-sequence",
+    "completed_trades": 1,
+    "configuration_hash": "514ff2d880c2bbc665596e22537f9847b264f69cc29bddb90315b9f608684d48",
+    "daily_loss_blocks": 0,
+    "drawdown_blocks": 0,
+    "economic_event_blocks": 0,
+    "end_date": "2024-01-08",
+    "ending_equity": "99800.0",
+    "final_target_exits": 0,
+    "initial_equity": "100000",
+    "maximum_drawdown": "-0.002",
+    "partial_profit_fills": 0,
+    "realized_pnl": "-200.0",
+    "rejected_signals": 0,
+    "start_date": "2024-01-02",
+    "stop_exits": 1,
+    "symbols": [
+      "SPKE"
+    ],
+    "total_return": "-0.002",
+    "trailing_stop_exits": 0,
+    "unresolved_or_incomplete_evaluations": 0
+  },
+  "orders": null,
+  "positions": null,
+  "rejected_entries": [],
+  "schema_version": "pr7.legacy_engine.result.v1",
+  "unresolved_evaluations": []
+}

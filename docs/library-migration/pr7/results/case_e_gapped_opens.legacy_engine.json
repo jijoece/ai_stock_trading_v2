@@ -1,0 +1,125 @@
+{
+  "backtest_run_id": "backtest-c9b596bf3705d44516e8751da307e734",
+  "case_id": "case_e_gapped_opens",
+  "configuration_hash": "514ff2d880c2bbc665596e22537f9847b264f69cc29bddb90315b9f608684d48",
+  "daily_states": [
+    {
+      "cash": "100000",
+      "drawdown_fraction": "0",
+      "equity": "100000",
+      "market_date": "2024-01-02",
+      "realized_pnl": "0",
+      "unrealized_pnl": "0"
+    },
+    {
+      "cash": "100000",
+      "drawdown_fraction": "0",
+      "equity": "100000",
+      "market_date": "2024-01-03",
+      "realized_pnl": "0",
+      "unrealized_pnl": "0"
+    },
+    {
+      "cash": "98940.0",
+      "drawdown_fraction": "0",
+      "equity": "100005.0",
+      "market_date": "2024-01-04",
+      "realized_pnl": "0",
+      "unrealized_pnl": "5.0"
+    },
+    {
+      "cash": "98940.0",
+      "drawdown_fraction": "0",
+      "equity": "100015.0",
+      "market_date": "2024-01-05",
+      "realized_pnl": "0",
+      "unrealized_pnl": "15.0"
+    },
+    {
+      "cash": "98940.0",
+      "drawdown_fraction": "0",
+      "equity": "100025.0",
+      "market_date": "2024-01-08",
+      "realized_pnl": "0",
+      "unrealized_pnl": "25.0"
+    }
+  ],
+  "derived": {
+    "end_positions_from_fills": [
+      {
+        "average_price": "106.0",
+        "quantity": "10",
+        "symbol": "SPKE"
+      }
+    ],
+    "note": "Reconstructed by run_legacy_engine.py from the engine's fills; not reported by BacktestResult itself.",
+    "orders_from_fills": [
+      {
+        "first_fill_sequence": 1,
+        "order_id": "bt-order-pr7-entry",
+        "order_type": "LIMIT",
+        "quantity": "10",
+        "side": "BUY",
+        "status": "FILLED",
+        "symbol": "SPKE"
+      }
+    ]
+  },
+  "engine": "src/trading_research/backtesting/engine.py",
+  "engine_code_version": "advanced-risk-backtest-v2-fill-sequence",
+  "fills": [
+    {
+      "exit_reason": null,
+      "fees": "0",
+      "fill_id": "bt-fill-cded6473157ae851f8b3be05e46e544d",
+      "fill_price": "106.0",
+      "fill_sequence": 1,
+      "market_date": "2024-01-04",
+      "order_id": "bt-order-pr7-entry",
+      "position_id": "bt-fill-cded6473157ae851f8b3be05e46e544d",
+      "quantity": "10",
+      "side": "BUY",
+      "slippage": "0.0",
+      "symbol": "SPKE"
+    }
+  ],
+  "final_cash": "98940.0",
+  "final_equity": "100025.0",
+  "final_value": "100025.0",
+  "historical_bar_dataset_checksum": "d92e40654719e1f73d02164c4a05e1688964adeeb7ed7d5bf03e2e634ae627b6",
+  "initial_cash": "100000",
+  "input_document": "case_e_gapped_opens.input.json",
+  "max_drawdown_fraction": "0",
+  "metrics": {
+    "ambiguity_policy": "CONSERVATIVE_STOP_FIRST",
+    "benchmark_return": null,
+    "breakeven_exits": 0,
+    "code_version": "advanced-risk-backtest-v2-fill-sequence",
+    "completed_trades": 0,
+    "configuration_hash": "514ff2d880c2bbc665596e22537f9847b264f69cc29bddb90315b9f608684d48",
+    "daily_loss_blocks": 0,
+    "drawdown_blocks": 0,
+    "economic_event_blocks": 0,
+    "end_date": "2024-01-08",
+    "ending_equity": "100025.0",
+    "final_target_exits": 0,
+    "initial_equity": "100000",
+    "maximum_drawdown": "0",
+    "partial_profit_fills": 0,
+    "realized_pnl": "0",
+    "rejected_signals": 0,
+    "start_date": "2024-01-02",
+    "stop_exits": 0,
+    "symbols": [
+      "SPKE"
+    ],
+    "total_return": "0.00025",
+    "trailing_stop_exits": 0,
+    "unresolved_or_incomplete_evaluations": 0
+  },
+  "orders": null,
+  "positions": null,
+  "rejected_entries": [],
+  "schema_version": "pr7.legacy_engine.result.v1",
+  "unresolved_evaluations": []
+}

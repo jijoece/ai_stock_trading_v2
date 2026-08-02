@@ -1,0 +1,764 @@
+PR 7 backtest parity comparison
+==============================================================================
+
+Tolerances (no rounding; exact Decimal difference vs. the bound):
+  money     +/-0.000001 absolute
+  price     +/-0.000001 absolute
+  fraction  +/-1E-9 relative (absolute floor 1E-15)
+  exact     exactly (no tolerance)
+
+Smallest non-zero |difference| measured, per family (over 285 non-zero differences):
+  money     1.0
+  price     0.1
+  fraction  1.9994201261768212450257E-10
+  exact     None
+
+------------------------------------------------------------------------------
+case_f_exact_entry_parity -- Exact parity: both engines enter on the same session at the same price
+  input: case_f_exact_entry_parity.input.json
+  bar-set sha256 (both sides): 4634c176d27e63fcb70f74bca58c02e084507eec7b44033d4191f983f42f64db
+  legacy run identity: backtest-71bbaa4c5e9e0f2b1946b8d4d0b284db / cfg 514ff2d880c2bbc6...
+  backtest_runtime strategy.entry_after_session: 2024-01-03
+
+  EXACT-PARITY CHECKS (entry session 2024-01-04; all 4 co-dated session(s) compared, none excluded)
+    [PASS] entry session (authoritative booking date)
+    [PASS] entry price
+    [PASS] quantity
+    [PASS] no exit on either side
+    [PASS] position quantity
+    [PASS] position average price
+    [PASS] cash (every co-dated session, entry session included)
+    [PASS] equity (same)
+    [PASS] unrealized P&L (same)
+    [PASS] realized P&L (same)
+    [PASS] drawdown (same)
+    [PASS] final cash
+    [PASS] final equity
+    [PASS] final value
+    [PASS] max drawdown
+
+  AGREEMENTS
+    + bar set: identical input, sha256 4634c176d27e63fc... (computed independently on each side)
+    + orders[BUY#0]: side (BUY) and quantity (10 shares) both equal
+    + fills[0]: quantity equal (10 shares, exact)
+    + fills[0]: fill_price equal (101.0)
+    + fills[0]: fees equal (0) -- but see D7
+    + entry: backtest_runtime booked 2024-01-04 at 101.0, which is that session's own open (self-consistent)
+    + entry: legacy engine booked 2024-01-04 at 101.0, which is that session's own open (self-consistent)
+    + entry: both engines booked the entry in 2024-01-04 (each engine's own authoritative record)
+    + positions[0]: quantity equal (10 shares, exact)
+    + positions[0]: average_price equal (101.0)
+    + daily_states[].cash: all 4 co-dated session(s) equal within +/-0.000001 absolute
+    + daily_states[].equity: all 4 co-dated session(s) equal within +/-0.000001 absolute
+    + daily_states[].realized_pnl: all 4 co-dated session(s) equal within +/-0.000001 absolute
+    + daily_states[].unrealized_pnl: all 4 co-dated session(s) equal within +/-0.000001 absolute
+    + daily_states[].drawdown_fraction: all 4 co-dated session(s) equal within +/-1E-9 relative (absolute floor 1E-15)
+    + final_cash: equal within +/-0.000001 absolute (98990.0)
+    + final_equity: equal within +/-0.000001 absolute (99992.0)
+    + final_value: equal within +/-0.000001 absolute (99992.0)
+    + max_drawdown_fraction: equal within +/-1E-9 relative (absolute floor 1E-15) (-0.00018)
+    + EXACT PARITY OK: entry session (authoritative booking date)
+    + EXACT PARITY OK: entry price
+    + EXACT PARITY OK: quantity
+    + EXACT PARITY OK: no exit on either side
+    + EXACT PARITY OK: position quantity
+    + EXACT PARITY OK: position average price
+    + EXACT PARITY OK: cash (every co-dated session, entry session included)
+    + EXACT PARITY OK: equity (same)
+    + EXACT PARITY OK: unrealized P&L (same)
+    + EXACT PARITY OK: realized P&L (same)
+    + EXACT PARITY OK: drawdown (same)
+    + EXACT PARITY OK: final cash
+    + EXACT PARITY OK: final equity
+    + EXACT PARITY OK: final value
+    + EXACT PARITY OK: max drawdown
+
+  DIFFERENCES
+    - [D14-run-identity-fields] run identity
+        backtest_runtime: {'strategy_identity': 'backtest_runtime.reference_strategy.v2', 'run_configuration_checksum': 'e62b361f1bbcffda9cca043d35808d3e60145757b099885eb2420906fc8c707b', 'lumibot_version': '4.5.78'}
+        legacy engine   : {'backtest_run_id': 'backtest-71bbaa4c5e9e0f2b1946b8d4d0b284db', 'configuration_hash': '514ff2d880c2bbc665596e22537f9847b264f69cc29bddb90315b9f608684d48', 'engine_code_version': 'advanced-risk-backtest-v2-fill-sequence'}
+        detail          : different identity schemes; not comparable by value
+        classification  : intentional library semantic difference (LumiBot vs. the custom engine)
+    - [D11-order-and-position-records] orders
+        backtest_runtime: 1 order record(s) reported
+        legacy engine   : null -- BacktestResult reports no orders; 1 reconstructed from fills
+        detail          : structural gap in the legacy result type
+        classification  : old-engine defect
+    - [D16-order-type-model] orders[BUY#0]: order_type
+        backtest_runtime: market
+        legacy engine   : LIMIT
+        detail          : economically different order models, not a vocabulary difference
+        classification  : intentional library semantic difference (LumiBot vs. the custom engine)
+    - [D5-enum-vocabulary] orders[BUY#0]: status
+        backtest_runtime: fill
+        legacy engine   : FILLED
+        detail          : same status, different spelling
+        classification  : intentional library semantic difference (LumiBot vs. the custom engine)
+    - [D6-identity-scheme] orders[BUY#0]: order_id
+        backtest_runtime: bt_1
+        legacy engine   : bt-order-pr7-entry
+        classification  : intentional library semantic difference (LumiBot vs. the custom engine)
+    - [D6-identity-scheme] fills[0]: fill_id
+        backtest_runtime: bt_1-fill-1
+        legacy engine   : bt-fill-cded6473157ae851f8b3be05e46e544d
+        classification  : intentional library semantic difference (LumiBot vs. the custom engine)
+    - [D7-fees-and-slippage-model] fills: slippage field
+        backtest_runtime: absent from backtest_runtime.result.v2
+        legacy engine   : ['0.0']
+        classification  : adapter defect (in backtest_runtime) -- cannot express a capability the legacy engine has
+    - [D8-realized-pnl-and-exit-support] fills: exit_reason field
+        backtest_runtime: absent from backtest_runtime.result.v2 (the reference strategy never sells)
+        legacy engine   : [None]
+        classification  : adapter defect (in backtest_runtime) -- cannot express a capability the legacy engine has
+    - [D11-order-and-position-records] positions
+        backtest_runtime: 1 position record(s) reported
+        legacy engine   : null -- BacktestResult reports no positions; 1 reconstructed from fills
+        detail          : structural gap in the legacy result type
+        classification  : old-engine defect
+    - [D1-daily-state-series-start] daily_states: covered sessions
+        backtest_runtime: 4 state(s), 2024-01-03..2024-01-08
+        legacy engine   : 5 state(s), 2024-01-02..2024-01-08
+        detail          : legacy-only session(s): ['2024-01-02']; runtime-only session(s): none
+        classification  : intentional library semantic difference (LumiBot vs. the custom engine)
+
+------------------------------------------------------------------------------
+case_a_buy_and_hold -- Default entry timing: backtest_runtime enters a session earlier than the engine can
+  input: case_a_buy_and_hold.input.json
+  bar-set sha256 (both sides): e5cf5f68b4d18beb2bbdacec4db09eb5ab887ecedb33caad4fc6396205fda6a4
+  legacy run identity: backtest-fdc36c96d992abb14b40e584ef477a42 / cfg 514ff2d880c2bbc6...
+
+  AGREEMENTS
+    + bar set: identical input, sha256 e5cf5f68b4d18beb... (computed independently on each side)
+    + orders[BUY#0]: side (BUY) and quantity (10 shares) both equal
+    + fills[0]: quantity equal (10 shares, exact)
+    + fills[0]: fees equal (0) -- but see D7
+    + entry: backtest_runtime booked 2024-01-03 at 100.5, which is that session's own open (self-consistent)
+    + entry: legacy engine booked 2024-01-04 at 102.0, which is that session's own open (self-consistent)
+    + positions[0]: quantity equal (10 shares, exact)
+    + daily_states[].realized_pnl: all 4 co-dated session(s) equal within +/-0.000001 absolute
+
+  DIFFERENCES
+    - [D14-run-identity-fields] run identity
+        backtest_runtime: {'strategy_identity': 'backtest_runtime.reference_strategy.v2', 'run_configuration_checksum': '2f5177e301a263e810579326f0968991a40a88e54ddb6776fd510c960097c049', 'lumibot_version': '4.5.78'}
+        legacy engine   : {'backtest_run_id': 'backtest-fdc36c96d992abb14b40e584ef477a42', 'configuration_hash': '514ff2d880c2bbc665596e22537f9847b264f69cc29bddb90315b9f608684d48', 'engine_code_version': 'advanced-risk-backtest-v2-fill-sequence'}
+        detail          : different identity schemes; not comparable by value
+        classification  : intentional library semantic difference (LumiBot vs. the custom engine)
+    - [D11-order-and-position-records] orders
+        backtest_runtime: 1 order record(s) reported
+        legacy engine   : null -- BacktestResult reports no orders; 1 reconstructed from fills
+        detail          : structural gap in the legacy result type
+        classification  : old-engine defect
+    - [D16-order-type-model] orders[BUY#0]: order_type
+        backtest_runtime: market
+        legacy engine   : LIMIT
+        detail          : economically different order models, not a vocabulary difference
+        classification  : intentional library semantic difference (LumiBot vs. the custom engine)
+    - [D5-enum-vocabulary] orders[BUY#0]: status
+        backtest_runtime: fill
+        legacy engine   : FILLED
+        detail          : same status, different spelling
+        classification  : intentional library semantic difference (LumiBot vs. the custom engine)
+    - [D6-identity-scheme] orders[BUY#0]: order_id
+        backtest_runtime: bt_1
+        legacy engine   : bt-order-pr7-entry
+        classification  : intentional library semantic difference (LumiBot vs. the custom engine)
+    - [D3-entry-fill-price] fills[0]: fill_price
+        backtest_runtime: 100.5
+        legacy engine   : 102.0
+        detail          : difference 1.5
+        classification  : intentional library semantic difference (LumiBot vs. the custom engine)
+    - [D6-identity-scheme] fills[0]: fill_id
+        backtest_runtime: bt_1-fill-1
+        legacy engine   : bt-fill-cded6473157ae851f8b3be05e46e544d
+        classification  : intentional library semantic difference (LumiBot vs. the custom engine)
+    - [D7-fees-and-slippage-model] fills: slippage field
+        backtest_runtime: absent from backtest_runtime.result.v2
+        legacy engine   : ['0.0']
+        classification  : adapter defect (in backtest_runtime) -- cannot express a capability the legacy engine has
+    - [D8-realized-pnl-and-exit-support] fills: exit_reason field
+        backtest_runtime: absent from backtest_runtime.result.v2 (the reference strategy never sells)
+        legacy engine   : [None]
+        classification  : adapter defect (in backtest_runtime) -- cannot express a capability the legacy engine has
+    - [D2-entry-session] entry: session the fill was booked in
+        backtest_runtime: 2024-01-03 (bar index 1)
+        legacy engine   : 2024-01-04 (bar index 2)
+        detail          : offset 1 session(s). LumiBot cannot submit before the second bar (the first is never a trading iteration) and books the fill in the submission session; the legacy engine cannot enter before the third (a signal is eligible only on the session after generated_after_session, and ATR needs atr_period+1 prior bars). Both dates are the engines' own records, not inferred from prices
+        classification  : intentional library semantic difference (LumiBot vs. the custom engine)
+    - [D11-order-and-position-records] positions
+        backtest_runtime: 1 position record(s) reported
+        legacy engine   : null -- BacktestResult reports no positions; 1 reconstructed from fills
+        detail          : structural gap in the legacy result type
+        classification  : old-engine defect
+    - [D3-entry-fill-price] positions[0]: average_price
+        backtest_runtime: 100.5
+        legacy engine   : 102.0
+        classification  : intentional library semantic difference (LumiBot vs. the custom engine)
+    - [D1-daily-state-series-start] daily_states: covered sessions
+        backtest_runtime: 4 state(s), 2024-01-03..2024-01-08
+        legacy engine   : 5 state(s), 2024-01-02..2024-01-08
+        detail          : legacy-only session(s): ['2024-01-02']; runtime-only session(s): none
+        classification  : intentional library semantic difference (LumiBot vs. the custom engine)
+    - [D12-equity-series-values] daily_states[].cash
+        backtest_runtime: see comparison.json for the per-session table
+        legacy engine   : see comparison.json for the per-session table
+        detail          : 4 of 4 co-dated session(s) differ by more than +/-0.000001 absolute; first at 2024-01-03; largest |difference| 1005.0; differing sessions ['2024-01-03', '2024-01-04', '2024-01-05', '2024-01-08']
+        classification  : intentional library semantic difference (LumiBot vs. the custom engine)
+    - [D12-equity-series-values] daily_states[].equity
+        backtest_runtime: see comparison.json for the per-session table
+        legacy engine   : see comparison.json for the per-session table
+        detail          : 4 of 4 co-dated session(s) differ by more than +/-0.000001 absolute; first at 2024-01-03; largest |difference| 15.0; differing sessions ['2024-01-03', '2024-01-04', '2024-01-05', '2024-01-08']
+        classification  : intentional library semantic difference (LumiBot vs. the custom engine)
+    - [D12-equity-series-values] daily_states[].unrealized_pnl
+        backtest_runtime: see comparison.json for the per-session table
+        legacy engine   : see comparison.json for the per-session table
+        detail          : 4 of 4 co-dated session(s) differ by more than +/-0.000001 absolute; first at 2024-01-03; largest |difference| 15.0; differing sessions ['2024-01-03', '2024-01-04', '2024-01-05', '2024-01-08']
+        classification  : intentional library semantic difference (LumiBot vs. the custom engine)
+    - [D13-drawdown-series-values] daily_states[].drawdown_fraction
+        backtest_runtime: see comparison.json for the per-session table
+        legacy engine   : see comparison.json for the per-session table
+        detail          : 1 of 4 co-dated session(s) differ by more than +/-1E-9 relative (absolute floor 1E-15); first at 2024-01-04; largest |difference| 7.49887516873E-9; differing sessions ['2024-01-04']
+        classification  : intentional library semantic difference (LumiBot vs. the custom engine)
+    - [D12-equity-series-values] final_cash
+        backtest_runtime: 98995.0
+        legacy engine   : 98980.0
+        detail          : difference -15.0 exceeds tolerance +/-0.000001 absolute
+        classification  : intentional library semantic difference (LumiBot vs. the custom engine)
+    - [D12-equity-series-values] final_equity
+        backtest_runtime: 100040.0
+        legacy engine   : 100025.0
+        detail          : difference -15.0 exceeds tolerance +/-0.000001 absolute
+        classification  : intentional library semantic difference (LumiBot vs. the custom engine)
+    - [D12-equity-series-values] final_value
+        backtest_runtime: 100040.0
+        legacy engine   : 100025.0
+        detail          : difference -15.0 exceeds tolerance +/-0.000001 absolute
+        classification  : intentional library semantic difference (LumiBot vs. the custom engine)
+    - [D13-drawdown-series-values] max_drawdown_fraction
+        backtest_runtime: -4.999250112483127e-05
+        legacy engine   : -0.00005
+        detail          : difference -7.49887516873E-9 exceeds tolerance +/-1E-9 relative (absolute floor 1E-15)
+        classification  : intentional library semantic difference (LumiBot vs. the custom engine)
+
+------------------------------------------------------------------------------
+case_b_perturbed_last_close -- Boundary case: final close perturbed +5.0
+  input: case_b_perturbed_last_close.input.json
+  bar-set sha256 (both sides): 3c7abef9e47a7e92f254e42d8bd9c87f224d7cfb15026cf2ec25aa2571f6a46d
+  legacy run identity: backtest-fdc36c96d992abb14b40e584ef477a42 / cfg 514ff2d880c2bbc6...
+
+  AGREEMENTS
+    + bar set: identical input, sha256 3c7abef9e47a7e92... (computed independently on each side)
+    + orders[BUY#0]: side (BUY) and quantity (10 shares) both equal
+    + fills[0]: quantity equal (10 shares, exact)
+    + fills[0]: fees equal (0) -- but see D7
+    + entry: backtest_runtime booked 2024-01-03 at 100.5, which is that session's own open (self-consistent)
+    + entry: legacy engine booked 2024-01-04 at 102.0, which is that session's own open (self-consistent)
+
+  DIFFERENCES
+    - [D14-run-identity-fields] run identity
+        backtest_runtime: {'strategy_identity': 'backtest_runtime.reference_strategy.v2', 'run_configuration_checksum': '2f5177e301a263e810579326f0968991a40a88e54ddb6776fd510c960097c049', 'lumibot_version': '4.5.78'}
+        legacy engine   : {'backtest_run_id': 'backtest-fdc36c96d992abb14b40e584ef477a42', 'configuration_hash': '514ff2d880c2bbc665596e22537f9847b264f69cc29bddb90315b9f608684d48', 'engine_code_version': 'advanced-risk-backtest-v2-fill-sequence'}
+        detail          : different identity schemes; not comparable by value
+        classification  : intentional library semantic difference (LumiBot vs. the custom engine)
+    - [D11-order-and-position-records] orders
+        backtest_runtime: 1 order record(s) reported
+        legacy engine   : null -- BacktestResult reports no orders; 2 reconstructed from fills
+        detail          : structural gap in the legacy result type
+        classification  : old-engine defect
+    - [D16-order-type-model] orders[BUY#0]: order_type
+        backtest_runtime: market
+        legacy engine   : LIMIT
+        detail          : economically different order models, not a vocabulary difference
+        classification  : intentional library semantic difference (LumiBot vs. the custom engine)
+    - [D5-enum-vocabulary] orders[BUY#0]: status
+        backtest_runtime: fill
+        legacy engine   : FILLED
+        detail          : same status, different spelling
+        classification  : intentional library semantic difference (LumiBot vs. the custom engine)
+    - [D6-identity-scheme] orders[BUY#0]: order_id
+        backtest_runtime: bt_1
+        legacy engine   : bt-order-pr7-entry
+        classification  : intentional library semantic difference (LumiBot vs. the custom engine)
+    - [D9-mandatory-risk-exit] orders: SELL count
+        backtest_runtime: 0
+        legacy engine   : 1
+        detail          : unmatched order(s): legacy SELL 10 -- the legacy engine's mandatory risk exit has no runtime counterpart, because the reference strategy never sells
+        classification  : intentional library semantic difference (LumiBot vs. the custom engine)
+    - [D9-mandatory-risk-exit] fills: count
+        backtest_runtime: 1
+        legacy engine   : 2
+        detail          : extra legacy fill(s): SELL 10 @ 109.5 on 2024-01-08 (FINAL_TARGET)
+        classification  : intentional library semantic difference (LumiBot vs. the custom engine)
+    - [D3-entry-fill-price] fills[0]: fill_price
+        backtest_runtime: 100.5
+        legacy engine   : 102.0
+        detail          : difference 1.5
+        classification  : intentional library semantic difference (LumiBot vs. the custom engine)
+    - [D6-identity-scheme] fills[0]: fill_id
+        backtest_runtime: bt_1-fill-1
+        legacy engine   : bt-fill-cded6473157ae851f8b3be05e46e544d
+        classification  : intentional library semantic difference (LumiBot vs. the custom engine)
+    - [D7-fees-and-slippage-model] fills: slippage field
+        backtest_runtime: absent from backtest_runtime.result.v2
+        legacy engine   : ['0.0', '0.0']
+        classification  : adapter defect (in backtest_runtime) -- cannot express a capability the legacy engine has
+    - [D8-realized-pnl-and-exit-support] fills: exit_reason field
+        backtest_runtime: absent from backtest_runtime.result.v2 (the reference strategy never sells)
+        legacy engine   : [None, 'FINAL_TARGET']
+        classification  : adapter defect (in backtest_runtime) -- cannot express a capability the legacy engine has
+    - [D2-entry-session] entry: session the fill was booked in
+        backtest_runtime: 2024-01-03 (bar index 1)
+        legacy engine   : 2024-01-04 (bar index 2)
+        detail          : offset 1 session(s). LumiBot cannot submit before the second bar (the first is never a trading iteration) and books the fill in the submission session; the legacy engine cannot enter before the third (a signal is eligible only on the session after generated_after_session, and ATR needs atr_period+1 prior bars). Both dates are the engines' own records, not inferred from prices
+        classification  : intentional library semantic difference (LumiBot vs. the custom engine)
+    - [D11-order-and-position-records] positions
+        backtest_runtime: 1 position record(s) reported
+        legacy engine   : null -- BacktestResult reports no positions; 0 reconstructed from fills
+        detail          : structural gap in the legacy result type
+        classification  : old-engine defect
+    - [D10-end-position] positions: end-of-run holdings
+        backtest_runtime: [{'average_price': 100.5, 'quantity': 10.0, 'symbol': 'SPKE'}]
+        legacy engine   : []
+        detail          : the legacy engine exited before the final session
+        classification  : intentional library semantic difference (LumiBot vs. the custom engine)
+    - [D1-daily-state-series-start] daily_states: covered sessions
+        backtest_runtime: 4 state(s), 2024-01-03..2024-01-08
+        legacy engine   : 5 state(s), 2024-01-02..2024-01-08
+        detail          : legacy-only session(s): ['2024-01-02']; runtime-only session(s): none
+        classification  : intentional library semantic difference (LumiBot vs. the custom engine)
+    - [D12-equity-series-values] daily_states[].cash
+        backtest_runtime: see comparison.json for the per-session table
+        legacy engine   : see comparison.json for the per-session table
+        detail          : 4 of 4 co-dated session(s) differ by more than +/-0.000001 absolute; first at 2024-01-03; largest |difference| 1080.0; differing sessions ['2024-01-03', '2024-01-04', '2024-01-05', '2024-01-08']
+        classification  : intentional library semantic difference (LumiBot vs. the custom engine)
+    - [D12-equity-series-values] daily_states[].equity
+        backtest_runtime: see comparison.json for the per-session table
+        legacy engine   : see comparison.json for the per-session table
+        detail          : 4 of 4 co-dated session(s) differ by more than +/-0.000001 absolute; first at 2024-01-03; largest |difference| 15.0; differing sessions ['2024-01-03', '2024-01-04', '2024-01-05', '2024-01-08']
+        classification  : intentional library semantic difference (LumiBot vs. the custom engine)
+    - [D8-realized-pnl-and-exit-support] daily_states[].realized_pnl
+        backtest_runtime: see comparison.json for the per-session table
+        legacy engine   : see comparison.json for the per-session table
+        detail          : 1 of 4 co-dated session(s) differ by more than +/-0.000001 absolute; first at 2024-01-08; largest |difference| 75.0; differing sessions ['2024-01-08']
+        classification  : adapter defect (in backtest_runtime) -- cannot express a capability the legacy engine has
+    - [D12-equity-series-values] daily_states[].unrealized_pnl
+        backtest_runtime: see comparison.json for the per-session table
+        legacy engine   : see comparison.json for the per-session table
+        detail          : 4 of 4 co-dated session(s) differ by more than +/-0.000001 absolute; first at 2024-01-03; largest |difference| 90.0; differing sessions ['2024-01-03', '2024-01-04', '2024-01-05', '2024-01-08']
+        classification  : intentional library semantic difference (LumiBot vs. the custom engine)
+    - [D13-drawdown-series-values] daily_states[].drawdown_fraction
+        backtest_runtime: see comparison.json for the per-session table
+        legacy engine   : see comparison.json for the per-session table
+        detail          : 1 of 4 co-dated session(s) differ by more than +/-1E-9 relative (absolute floor 1E-15); first at 2024-01-04; largest |difference| 7.49887516873E-9; differing sessions ['2024-01-04']
+        classification  : intentional library semantic difference (LumiBot vs. the custom engine)
+    - [D12-equity-series-values] final_cash
+        backtest_runtime: 98995.0
+        legacy engine   : 100075.0
+        detail          : difference 1080.0 exceeds tolerance +/-0.000001 absolute
+        classification  : intentional library semantic difference (LumiBot vs. the custom engine)
+    - [D12-equity-series-values] final_equity
+        backtest_runtime: 100090.0
+        legacy engine   : 100075.0
+        detail          : difference -15.0 exceeds tolerance +/-0.000001 absolute
+        classification  : intentional library semantic difference (LumiBot vs. the custom engine)
+    - [D12-equity-series-values] final_value
+        backtest_runtime: 100090.0
+        legacy engine   : 100075.0
+        detail          : difference -15.0 exceeds tolerance +/-0.000001 absolute
+        classification  : intentional library semantic difference (LumiBot vs. the custom engine)
+    - [D13-drawdown-series-values] max_drawdown_fraction
+        backtest_runtime: -4.999250112483127e-05
+        legacy engine   : -0.00005
+        detail          : difference -7.49887516873E-9 exceeds tolerance +/-1E-9 relative (absolute floor 1E-15)
+        classification  : intentional library semantic difference (LumiBot vs. the custom engine)
+
+------------------------------------------------------------------------------
+case_c_falling_equity -- Boundary case: falling equity, non-zero drawdown
+  input: case_c_falling_equity.input.json
+  bar-set sha256 (both sides): a4a6b7c55f13ca3e86a2825452d9bdb7361f1b9ee4cb774bbe30eabf9c60a888
+  legacy run identity: backtest-5fd2bf263779110273556801c9e8cd1b / cfg 514ff2d880c2bbc6...
+
+  AGREEMENTS
+    + bar set: identical input, sha256 a4a6b7c55f13ca3e... (computed independently on each side)
+    + orders[BUY#0]: side (BUY) and quantity (10 shares) both equal
+    + fills[0]: quantity equal (10 shares, exact)
+    + fills[0]: fees equal (0) -- but see D7
+    + entry: backtest_runtime booked 2024-01-03 at 100.0, which is that session's own open (self-consistent)
+    + entry: legacy engine booked 2024-01-04 at 110.0, which is that session's own open (self-consistent)
+
+  DIFFERENCES
+    - [D14-run-identity-fields] run identity
+        backtest_runtime: {'strategy_identity': 'backtest_runtime.reference_strategy.v2', 'run_configuration_checksum': '2f5177e301a263e810579326f0968991a40a88e54ddb6776fd510c960097c049', 'lumibot_version': '4.5.78'}
+        legacy engine   : {'backtest_run_id': 'backtest-5fd2bf263779110273556801c9e8cd1b', 'configuration_hash': '514ff2d880c2bbc665596e22537f9847b264f69cc29bddb90315b9f608684d48', 'engine_code_version': 'advanced-risk-backtest-v2-fill-sequence'}
+        detail          : different identity schemes; not comparable by value
+        classification  : intentional library semantic difference (LumiBot vs. the custom engine)
+    - [D11-order-and-position-records] orders
+        backtest_runtime: 1 order record(s) reported
+        legacy engine   : null -- BacktestResult reports no orders; 2 reconstructed from fills
+        detail          : structural gap in the legacy result type
+        classification  : old-engine defect
+    - [D16-order-type-model] orders[BUY#0]: order_type
+        backtest_runtime: market
+        legacy engine   : LIMIT
+        detail          : economically different order models, not a vocabulary difference
+        classification  : intentional library semantic difference (LumiBot vs. the custom engine)
+    - [D5-enum-vocabulary] orders[BUY#0]: status
+        backtest_runtime: fill
+        legacy engine   : FILLED
+        detail          : same status, different spelling
+        classification  : intentional library semantic difference (LumiBot vs. the custom engine)
+    - [D6-identity-scheme] orders[BUY#0]: order_id
+        backtest_runtime: bt_1
+        legacy engine   : bt-order-pr7-entry
+        classification  : intentional library semantic difference (LumiBot vs. the custom engine)
+    - [D9-mandatory-risk-exit] orders: SELL count
+        backtest_runtime: 0
+        legacy engine   : 1
+        detail          : unmatched order(s): legacy SELL 10 -- the legacy engine's mandatory risk exit has no runtime counterpart, because the reference strategy never sells
+        classification  : intentional library semantic difference (LumiBot vs. the custom engine)
+    - [D9-mandatory-risk-exit] fills: count
+        backtest_runtime: 1
+        legacy engine   : 2
+        detail          : extra legacy fill(s): SELL 10 @ 90.0 on 2024-01-08 (STOP_GAP)
+        classification  : intentional library semantic difference (LumiBot vs. the custom engine)
+    - [D3-entry-fill-price] fills[0]: fill_price
+        backtest_runtime: 100.0
+        legacy engine   : 110.0
+        detail          : difference 10.0
+        classification  : intentional library semantic difference (LumiBot vs. the custom engine)
+    - [D6-identity-scheme] fills[0]: fill_id
+        backtest_runtime: bt_1-fill-1
+        legacy engine   : bt-fill-cded6473157ae851f8b3be05e46e544d
+        classification  : intentional library semantic difference (LumiBot vs. the custom engine)
+    - [D7-fees-and-slippage-model] fills: slippage field
+        backtest_runtime: absent from backtest_runtime.result.v2
+        legacy engine   : ['0.0', '0.0']
+        classification  : adapter defect (in backtest_runtime) -- cannot express a capability the legacy engine has
+    - [D8-realized-pnl-and-exit-support] fills: exit_reason field
+        backtest_runtime: absent from backtest_runtime.result.v2 (the reference strategy never sells)
+        legacy engine   : [None, 'STOP_GAP']
+        classification  : adapter defect (in backtest_runtime) -- cannot express a capability the legacy engine has
+    - [D2-entry-session] entry: session the fill was booked in
+        backtest_runtime: 2024-01-03 (bar index 1)
+        legacy engine   : 2024-01-04 (bar index 2)
+        detail          : offset 1 session(s). LumiBot cannot submit before the second bar (the first is never a trading iteration) and books the fill in the submission session; the legacy engine cannot enter before the third (a signal is eligible only on the session after generated_after_session, and ATR needs atr_period+1 prior bars). Both dates are the engines' own records, not inferred from prices
+        classification  : intentional library semantic difference (LumiBot vs. the custom engine)
+    - [D11-order-and-position-records] positions
+        backtest_runtime: 1 position record(s) reported
+        legacy engine   : null -- BacktestResult reports no positions; 0 reconstructed from fills
+        detail          : structural gap in the legacy result type
+        classification  : old-engine defect
+    - [D10-end-position] positions: end-of-run holdings
+        backtest_runtime: [{'average_price': 100.0, 'quantity': 10.0, 'symbol': 'SPKE'}]
+        legacy engine   : []
+        detail          : the legacy engine exited before the final session
+        classification  : intentional library semantic difference (LumiBot vs. the custom engine)
+    - [D1-daily-state-series-start] daily_states: covered sessions
+        backtest_runtime: 4 state(s), 2024-01-03..2024-01-08
+        legacy engine   : 5 state(s), 2024-01-02..2024-01-08
+        detail          : legacy-only session(s): ['2024-01-02']; runtime-only session(s): none
+        classification  : intentional library semantic difference (LumiBot vs. the custom engine)
+    - [D12-equity-series-values] daily_states[].cash
+        backtest_runtime: see comparison.json for the per-session table
+        legacy engine   : see comparison.json for the per-session table
+        detail          : 4 of 4 co-dated session(s) differ by more than +/-0.000001 absolute; first at 2024-01-03; largest |difference| 1000.0; differing sessions ['2024-01-03', '2024-01-04', '2024-01-05', '2024-01-08']
+        classification  : intentional library semantic difference (LumiBot vs. the custom engine)
+    - [D12-equity-series-values] daily_states[].equity
+        backtest_runtime: see comparison.json for the per-session table
+        legacy engine   : see comparison.json for the per-session table
+        detail          : 4 of 4 co-dated session(s) differ by more than +/-0.000001 absolute; first at 2024-01-03; largest |difference| 120.0; differing sessions ['2024-01-03', '2024-01-04', '2024-01-05', '2024-01-08']
+        classification  : intentional library semantic difference (LumiBot vs. the custom engine)
+    - [D8-realized-pnl-and-exit-support] daily_states[].realized_pnl
+        backtest_runtime: see comparison.json for the per-session table
+        legacy engine   : see comparison.json for the per-session table
+        detail          : 1 of 4 co-dated session(s) differ by more than +/-0.000001 absolute; first at 2024-01-08; largest |difference| 200.0; differing sessions ['2024-01-08']
+        classification  : adapter defect (in backtest_runtime) -- cannot express a capability the legacy engine has
+    - [D12-equity-series-values] daily_states[].unrealized_pnl
+        backtest_runtime: see comparison.json for the per-session table
+        legacy engine   : see comparison.json for the per-session table
+        detail          : 4 of 4 co-dated session(s) differ by more than +/-0.000001 absolute; first at 2024-01-03; largest |difference| 100.0; differing sessions ['2024-01-03', '2024-01-04', '2024-01-05', '2024-01-08']
+        classification  : intentional library semantic difference (LumiBot vs. the custom engine)
+    - [D13-drawdown-series-values] daily_states[].drawdown_fraction
+        backtest_runtime: see comparison.json for the per-session table
+        legacy engine   : see comparison.json for the per-session table
+        detail          : 3 of 4 co-dated session(s) differ by more than +/-1E-9 relative (absolute floor 1E-15); first at 2024-01-04; largest |difference| 0.0002017982017982018; differing sessions ['2024-01-04', '2024-01-05', '2024-01-08']
+        classification  : intentional library semantic difference (LumiBot vs. the custom engine)
+    - [D12-equity-series-values] final_cash
+        backtest_runtime: 99000.0
+        legacy engine   : 99800.0
+        detail          : difference 800.0 exceeds tolerance +/-0.000001 absolute
+        classification  : intentional library semantic difference (LumiBot vs. the custom engine)
+    - [D12-equity-series-values] final_equity
+        backtest_runtime: 99920.0
+        legacy engine   : 99800.0
+        detail          : difference -120.0 exceeds tolerance +/-0.000001 absolute
+        classification  : intentional library semantic difference (LumiBot vs. the custom engine)
+    - [D12-equity-series-values] final_value
+        backtest_runtime: 99920.0
+        legacy engine   : 99800.0
+        detail          : difference -120.0 exceeds tolerance +/-0.000001 absolute
+        classification  : intentional library semantic difference (LumiBot vs. the custom engine)
+    - [D13-drawdown-series-values] max_drawdown_fraction
+        backtest_runtime: -0.001998001998001998
+        legacy engine   : -0.002
+        detail          : difference -0.000001998001998002 exceeds tolerance +/-1E-9 relative (absolute floor 1E-15)
+        classification  : intentional library semantic difference (LumiBot vs. the custom engine)
+
+------------------------------------------------------------------------------
+case_e_gapped_opens -- Gapped opens: identifies each engine's fill-price model
+  input: case_e_gapped_opens.input.json
+  bar-set sha256 (both sides): d92e40654719e1f73d02164c4a05e1688964adeeb7ed7d5bf03e2e634ae627b6
+  legacy run identity: backtest-c9b596bf3705d44516e8751da307e734 / cfg 514ff2d880c2bbc6...
+
+  AGREEMENTS
+    + bar set: identical input, sha256 d92e40654719e1f7... (computed independently on each side)
+    + orders[BUY#0]: side (BUY) and quantity (10 shares) both equal
+    + fills[0]: quantity equal (10 shares, exact)
+    + fills[0]: fees equal (0) -- but see D7
+    + entry: backtest_runtime booked 2024-01-03 at 104.0, which is that session's own open (self-consistent)
+    + entry: legacy engine booked 2024-01-04 at 106.0, which is that session's own open (self-consistent)
+    + positions[0]: quantity equal (10 shares, exact)
+    + daily_states[].realized_pnl: all 4 co-dated session(s) equal within +/-0.000001 absolute
+    + daily_states[].drawdown_fraction: all 4 co-dated session(s) equal within +/-1E-9 relative (absolute floor 1E-15)
+    + max_drawdown_fraction: equal within +/-1E-9 relative (absolute floor 1E-15) (0)
+
+  DIFFERENCES
+    - [D14-run-identity-fields] run identity
+        backtest_runtime: {'strategy_identity': 'backtest_runtime.reference_strategy.v2', 'run_configuration_checksum': '2f5177e301a263e810579326f0968991a40a88e54ddb6776fd510c960097c049', 'lumibot_version': '4.5.78'}
+        legacy engine   : {'backtest_run_id': 'backtest-c9b596bf3705d44516e8751da307e734', 'configuration_hash': '514ff2d880c2bbc665596e22537f9847b264f69cc29bddb90315b9f608684d48', 'engine_code_version': 'advanced-risk-backtest-v2-fill-sequence'}
+        detail          : different identity schemes; not comparable by value
+        classification  : intentional library semantic difference (LumiBot vs. the custom engine)
+    - [D11-order-and-position-records] orders
+        backtest_runtime: 1 order record(s) reported
+        legacy engine   : null -- BacktestResult reports no orders; 1 reconstructed from fills
+        detail          : structural gap in the legacy result type
+        classification  : old-engine defect
+    - [D16-order-type-model] orders[BUY#0]: order_type
+        backtest_runtime: market
+        legacy engine   : LIMIT
+        detail          : economically different order models, not a vocabulary difference
+        classification  : intentional library semantic difference (LumiBot vs. the custom engine)
+    - [D5-enum-vocabulary] orders[BUY#0]: status
+        backtest_runtime: fill
+        legacy engine   : FILLED
+        detail          : same status, different spelling
+        classification  : intentional library semantic difference (LumiBot vs. the custom engine)
+    - [D6-identity-scheme] orders[BUY#0]: order_id
+        backtest_runtime: bt_1
+        legacy engine   : bt-order-pr7-entry
+        classification  : intentional library semantic difference (LumiBot vs. the custom engine)
+    - [D3-entry-fill-price] fills[0]: fill_price
+        backtest_runtime: 104.0
+        legacy engine   : 106.0
+        detail          : difference 2.0
+        classification  : intentional library semantic difference (LumiBot vs. the custom engine)
+    - [D6-identity-scheme] fills[0]: fill_id
+        backtest_runtime: bt_1-fill-1
+        legacy engine   : bt-fill-cded6473157ae851f8b3be05e46e544d
+        classification  : intentional library semantic difference (LumiBot vs. the custom engine)
+    - [D7-fees-and-slippage-model] fills: slippage field
+        backtest_runtime: absent from backtest_runtime.result.v2
+        legacy engine   : ['0.0']
+        classification  : adapter defect (in backtest_runtime) -- cannot express a capability the legacy engine has
+    - [D8-realized-pnl-and-exit-support] fills: exit_reason field
+        backtest_runtime: absent from backtest_runtime.result.v2 (the reference strategy never sells)
+        legacy engine   : [None]
+        classification  : adapter defect (in backtest_runtime) -- cannot express a capability the legacy engine has
+    - [D2-entry-session] entry: session the fill was booked in
+        backtest_runtime: 2024-01-03 (bar index 1)
+        legacy engine   : 2024-01-04 (bar index 2)
+        detail          : offset 1 session(s). LumiBot cannot submit before the second bar (the first is never a trading iteration) and books the fill in the submission session; the legacy engine cannot enter before the third (a signal is eligible only on the session after generated_after_session, and ATR needs atr_period+1 prior bars). Both dates are the engines' own records, not inferred from prices
+        classification  : intentional library semantic difference (LumiBot vs. the custom engine)
+    - [D11-order-and-position-records] positions
+        backtest_runtime: 1 position record(s) reported
+        legacy engine   : null -- BacktestResult reports no positions; 1 reconstructed from fills
+        detail          : structural gap in the legacy result type
+        classification  : old-engine defect
+    - [D3-entry-fill-price] positions[0]: average_price
+        backtest_runtime: 104.0
+        legacy engine   : 106.0
+        classification  : intentional library semantic difference (LumiBot vs. the custom engine)
+    - [D1-daily-state-series-start] daily_states: covered sessions
+        backtest_runtime: 4 state(s), 2024-01-03..2024-01-08
+        legacy engine   : 5 state(s), 2024-01-02..2024-01-08
+        detail          : legacy-only session(s): ['2024-01-02']; runtime-only session(s): none
+        classification  : intentional library semantic difference (LumiBot vs. the custom engine)
+    - [D12-equity-series-values] daily_states[].cash
+        backtest_runtime: see comparison.json for the per-session table
+        legacy engine   : see comparison.json for the per-session table
+        detail          : 4 of 4 co-dated session(s) differ by more than +/-0.000001 absolute; first at 2024-01-03; largest |difference| 1040.0; differing sessions ['2024-01-03', '2024-01-04', '2024-01-05', '2024-01-08']
+        classification  : intentional library semantic difference (LumiBot vs. the custom engine)
+    - [D12-equity-series-values] daily_states[].equity
+        backtest_runtime: see comparison.json for the per-session table
+        legacy engine   : see comparison.json for the per-session table
+        detail          : 4 of 4 co-dated session(s) differ by more than +/-0.000001 absolute; first at 2024-01-03; largest |difference| 20.0; differing sessions ['2024-01-03', '2024-01-04', '2024-01-05', '2024-01-08']
+        classification  : intentional library semantic difference (LumiBot vs. the custom engine)
+    - [D12-equity-series-values] daily_states[].unrealized_pnl
+        backtest_runtime: see comparison.json for the per-session table
+        legacy engine   : see comparison.json for the per-session table
+        detail          : 4 of 4 co-dated session(s) differ by more than +/-0.000001 absolute; first at 2024-01-03; largest |difference| 20.0; differing sessions ['2024-01-03', '2024-01-04', '2024-01-05', '2024-01-08']
+        classification  : intentional library semantic difference (LumiBot vs. the custom engine)
+    - [D12-equity-series-values] final_cash
+        backtest_runtime: 98960.0
+        legacy engine   : 98940.0
+        detail          : difference -20.0 exceeds tolerance +/-0.000001 absolute
+        classification  : intentional library semantic difference (LumiBot vs. the custom engine)
+    - [D12-equity-series-values] final_equity
+        backtest_runtime: 100045.0
+        legacy engine   : 100025.0
+        detail          : difference -20.0 exceeds tolerance +/-0.000001 absolute
+        classification  : intentional library semantic difference (LumiBot vs. the custom engine)
+    - [D12-equity-series-values] final_value
+        backtest_runtime: 100045.0
+        legacy engine   : 100025.0
+        detail          : difference -20.0 exceeds tolerance +/-0.000001 absolute
+        classification  : intentional library semantic difference (LumiBot vs. the custom engine)
+
+------------------------------------------------------------------------------
+case_d_long_hold_default_atr -- 30-session hold at the legacy engine's default atr_period=14
+  input: case_d_long_hold_default_atr.input.json
+  bar-set sha256 (both sides): 18b84bec7a1196197328c3a6b78b81c5b4e482718b8e6bcb67f95f5cb8f8dd9f
+  legacy run identity: backtest-8c1a7ac9b421b8f8a71d675edb3cfa98 / cfg 55a1fb91131f3e79...
+
+  AGREEMENTS
+    + bar set: identical input, sha256 18b84bec7a119619... (computed independently on each side)
+    + orders[BUY#0]: side (BUY) and quantity (10 shares) both equal
+    + fills[0]: quantity equal (10 shares, exact)
+    + fills[0]: fees equal (0) -- but see D7
+    + entry: backtest_runtime booked 2024-01-03 at 100.8, which is that session's own open (self-consistent)
+    + entry: legacy engine booked 2024-01-24 at 100.9, which is that session's own open (self-consistent)
+    + positions[0]: quantity equal (10 shares, exact)
+    + daily_states[].realized_pnl: all 29 co-dated session(s) equal within +/-0.000001 absolute
+
+  DIFFERENCES
+    - [D14-run-identity-fields] run identity
+        backtest_runtime: {'strategy_identity': 'backtest_runtime.reference_strategy.v2', 'run_configuration_checksum': '2f5177e301a263e810579326f0968991a40a88e54ddb6776fd510c960097c049', 'lumibot_version': '4.5.78'}
+        legacy engine   : {'backtest_run_id': 'backtest-8c1a7ac9b421b8f8a71d675edb3cfa98', 'configuration_hash': '55a1fb91131f3e795b2b0ce1e415583103a24ec7789803f054cc8dbd753602be', 'engine_code_version': 'advanced-risk-backtest-v2-fill-sequence'}
+        detail          : different identity schemes; not comparable by value
+        classification  : intentional library semantic difference (LumiBot vs. the custom engine)
+    - [D11-order-and-position-records] orders
+        backtest_runtime: 1 order record(s) reported
+        legacy engine   : null -- BacktestResult reports no orders; 1 reconstructed from fills
+        detail          : structural gap in the legacy result type
+        classification  : old-engine defect
+    - [D16-order-type-model] orders[BUY#0]: order_type
+        backtest_runtime: market
+        legacy engine   : LIMIT
+        detail          : economically different order models, not a vocabulary difference
+        classification  : intentional library semantic difference (LumiBot vs. the custom engine)
+    - [D5-enum-vocabulary] orders[BUY#0]: status
+        backtest_runtime: fill
+        legacy engine   : FILLED
+        detail          : same status, different spelling
+        classification  : intentional library semantic difference (LumiBot vs. the custom engine)
+    - [D6-identity-scheme] orders[BUY#0]: order_id
+        backtest_runtime: bt_1
+        legacy engine   : bt-order-pr7-entry
+        classification  : intentional library semantic difference (LumiBot vs. the custom engine)
+    - [D3-entry-fill-price] fills[0]: fill_price
+        backtest_runtime: 100.8
+        legacy engine   : 100.9
+        detail          : difference 0.1
+        classification  : intentional library semantic difference (LumiBot vs. the custom engine)
+    - [D6-identity-scheme] fills[0]: fill_id
+        backtest_runtime: bt_1-fill-1
+        legacy engine   : bt-fill-6b7e0b584557e0b3967e9fee1f6d5523
+        classification  : intentional library semantic difference (LumiBot vs. the custom engine)
+    - [D7-fees-and-slippage-model] fills: slippage field
+        backtest_runtime: absent from backtest_runtime.result.v2
+        legacy engine   : ['0.0']
+        classification  : adapter defect (in backtest_runtime) -- cannot express a capability the legacy engine has
+    - [D8-realized-pnl-and-exit-support] fills: exit_reason field
+        backtest_runtime: absent from backtest_runtime.result.v2 (the reference strategy never sells)
+        legacy engine   : [None]
+        classification  : adapter defect (in backtest_runtime) -- cannot express a capability the legacy engine has
+    - [D2-entry-session] entry: session the fill was booked in
+        backtest_runtime: 2024-01-03 (bar index 1)
+        legacy engine   : 2024-01-24 (bar index 15)
+        detail          : offset 14 session(s). LumiBot cannot submit before the second bar (the first is never a trading iteration) and books the fill in the submission session; the legacy engine cannot enter before the third (a signal is eligible only on the session after generated_after_session, and ATR needs atr_period+1 prior bars). Both dates are the engines' own records, not inferred from prices
+        classification  : intentional library semantic difference (LumiBot vs. the custom engine)
+    - [D11-order-and-position-records] positions
+        backtest_runtime: 1 position record(s) reported
+        legacy engine   : null -- BacktestResult reports no positions; 1 reconstructed from fills
+        detail          : structural gap in the legacy result type
+        classification  : old-engine defect
+    - [D3-entry-fill-price] positions[0]: average_price
+        backtest_runtime: 100.8
+        legacy engine   : 100.9
+        classification  : intentional library semantic difference (LumiBot vs. the custom engine)
+    - [D1-daily-state-series-start] daily_states: covered sessions
+        backtest_runtime: 29 state(s), 2024-01-03..2024-02-13
+        legacy engine   : 30 state(s), 2024-01-02..2024-02-13
+        detail          : legacy-only session(s): ['2024-01-02']; runtime-only session(s): none
+        classification  : intentional library semantic difference (LumiBot vs. the custom engine)
+    - [D12-equity-series-values] daily_states[].cash
+        backtest_runtime: see comparison.json for the per-session table
+        legacy engine   : see comparison.json for the per-session table
+        detail          : 29 of 29 co-dated session(s) differ by more than +/-0.000001 absolute; first at 2024-01-03; largest |difference| 1008.0; differing sessions ['2024-01-03', '2024-01-04', '2024-01-05', '2024-01-08', '2024-01-09', '2024-01-10', '2024-01-11', '2024-01-12', '2024-01-16', '2024-01-17', '2024-01-18', '2024-01-19', '2024-01-22', '2024-01-23', '2024-01-24', '2024-01-25', '2024-01-26', '2024-01-29', '2024-01-30', '2024-01-31', '2024-02-01', '2024-02-02', '2024-02-05', '2024-02-06', '2024-02-07', '2024-02-08', '2024-02-09', '2024-02-12', '2024-02-13']
+        classification  : intentional library semantic difference (LumiBot vs. the custom engine)
+    - [D12-equity-series-values] daily_states[].equity
+        backtest_runtime: see comparison.json for the per-session table
+        legacy engine   : see comparison.json for the per-session table
+        detail          : 29 of 29 co-dated session(s) differ by more than +/-0.000001 absolute; first at 2024-01-03; largest |difference| 11.0; differing sessions ['2024-01-03', '2024-01-04', '2024-01-05', '2024-01-08', '2024-01-09', '2024-01-10', '2024-01-11', '2024-01-12', '2024-01-16', '2024-01-17', '2024-01-18', '2024-01-19', '2024-01-22', '2024-01-23', '2024-01-24', '2024-01-25', '2024-01-26', '2024-01-29', '2024-01-30', '2024-01-31', '2024-02-01', '2024-02-02', '2024-02-05', '2024-02-06', '2024-02-07', '2024-02-08', '2024-02-09', '2024-02-12', '2024-02-13']
+        classification  : intentional library semantic difference (LumiBot vs. the custom engine)
+    - [D12-equity-series-values] daily_states[].unrealized_pnl
+        backtest_runtime: see comparison.json for the per-session table
+        legacy engine   : see comparison.json for the per-session table
+        detail          : 29 of 29 co-dated session(s) differ by more than +/-0.000001 absolute; first at 2024-01-03; largest |difference| 11.0; differing sessions ['2024-01-03', '2024-01-04', '2024-01-05', '2024-01-08', '2024-01-09', '2024-01-10', '2024-01-11', '2024-01-12', '2024-01-16', '2024-01-17', '2024-01-18', '2024-01-19', '2024-01-22', '2024-01-23', '2024-01-24', '2024-01-25', '2024-01-26', '2024-01-29', '2024-01-30', '2024-01-31', '2024-02-01', '2024-02-02', '2024-02-05', '2024-02-06', '2024-02-07', '2024-02-08', '2024-02-09', '2024-02-12', '2024-02-13']
+        classification  : intentional library semantic difference (LumiBot vs. the custom engine)
+    - [D13-drawdown-series-values] daily_states[].drawdown_fraction
+        backtest_runtime: see comparison.json for the per-session table
+        legacy engine   : see comparison.json for the per-session table
+        detail          : 22 of 29 co-dated session(s) differ by more than +/-1E-9 relative (absolute floor 1E-15); first at 2024-01-05; largest |difference| 0.00010999670009899703; differing sessions ['2024-01-05', '2024-01-08', '2024-01-10', '2024-01-11', '2024-01-12', '2024-01-16', '2024-01-18', '2024-01-19', '2024-01-22', '2024-01-23', '2024-01-25', '2024-01-26', '2024-01-29', '2024-01-30', '2024-02-01', '2024-02-02', '2024-02-05', '2024-02-06', '2024-02-08', '2024-02-09', '2024-02-12', '2024-02-13']
+        classification  : intentional library semantic difference (LumiBot vs. the custom engine)
+    - [D12-equity-series-values] final_cash
+        backtest_runtime: 98992.0
+        legacy engine   : 98991.0
+        detail          : difference -1.0 exceeds tolerance +/-0.000001 absolute
+        classification  : intentional library semantic difference (LumiBot vs. the custom engine)
+    - [D12-equity-series-values] final_equity
+        backtest_runtime: 100010.0
+        legacy engine   : 100009.0
+        detail          : difference -1.0 exceeds tolerance +/-0.000001 absolute
+        classification  : intentional library semantic difference (LumiBot vs. the custom engine)
+    - [D12-equity-series-values] final_value
+        backtest_runtime: 100010.0
+        legacy engine   : 100009.0
+        detail          : difference -1.0 exceeds tolerance +/-0.000001 absolute
+        classification  : intentional library semantic difference (LumiBot vs. the custom engine)
+    - [D13-drawdown-series-values] max_drawdown_fraction
+        backtest_runtime: -0.00010999670009899703
+        legacy engine   : -0.0001099912007039436845052395808
+        detail          : difference 5.4993950533454947604192E-9 exceeds tolerance +/-1E-9 relative (absolute floor 1E-15)
+        classification  : intentional library semantic difference (LumiBot vs. the custom engine)
+
+------------------------------------------------------------------------------
+CROSS-CASE FINDINGS (invisible to any single-case comparison)
+    - [D17-run-identity-ignores-dataset] run identity across cases
+        colliding cases : ['case_a_buy_and_hold', 'case_b_perturbed_last_close']
+        shared run id   : backtest-fdc36c96d992abb14b40e584ef477a42
+        shared cfg hash : 514ff2d880c2bbc665596e22537f9847b264f69cc29bddb90315b9f608684d48
+        distinct bars   : 3c7abef9e47a7e92f254e42d8bd9c87f224d7cfb15026cf2ec25aa2571f6a46d
+        distinct bars   : e5cf5f68b4d18beb2bbdacec4db09eb5ab887ecedb33caad4fc6396205fda6a4
+        detail          : 2 cases with 2 distinct bar datasets share one backtest_run_id; their results differ (final equity: case_a_buy_and_hold=100025.0, case_b_perturbed_last_close=100075.0)
+        classification  : old-engine defect
+
+==============================================================================
+Classification tally (all cases plus cross-case findings):
+   13  old-engine defect
+   14  adapter defect (in backtest_runtime)
+   93  intentional library semantic difference (LumiBot vs. the custom engine)
+    0  unsupported requirement (neither side can express the case)
+
+  of which adapter defects, by subcategory:
+      0  behavior: reports a value that contradicts its own run
+     14  capability: cannot express a capability the legacy engine has
+
+Adapter defects reference strategy v2 resolved (no longer emitted; the comparator fails if any reappears):
+  - D4-fill-observation-lag
+      reference strategy v1 stamped fills with `self.get_datetime()` inside `on_filled_order`, which LumiBot dispatches one session after its broker books the fill, so every fill carried a date one session too late. v2 reads the booking session from the broker's own trade-event log instead. The underlying LumiBot behaviour is unchanged and is a library semantic difference, not a defect of either engine.
+  - D15-entry-session-state-lag
+      the same lag in the daily-state series: `on_trading_iteration` runs before `process_pending_orders` within a session, so the state a strategy can sample on the booking session necessarily excludes that session's own fill. v1 reported the sample verbatim, which left the entry session showing no position and untouched cash. v2 re-applies the session's authoritative fills, so a state row means end-of-session on both sides.
+
+Every result document was checked against the current fixture's own
+recomputed bar checksum before comparison; none was stale.
+
