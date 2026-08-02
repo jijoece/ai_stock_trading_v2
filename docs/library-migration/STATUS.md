@@ -1521,6 +1521,19 @@ Five review items addressed on the same branch, before merge:
 
 Tests-run counts above already reflect this round's additions.
 
+**Collateral CI fix:** the original PR 6 commit's `backtest-runtime-tests`
+job had a YAML scanner bug — the unquoted `run: pip show lumibot | grep -qx
+"Version: 4.5.78"` scalar contains a bare `: ` inside the quoted string,
+which YAML parses as a mapping-key separator inside a plain scalar. Both CI
+runs on this branch prior to this fix failed immediately with "workflow
+file issue" and never actually executed a single job — this was not caught
+before because CI had not yet been observed running end-to-end. Fixed by
+switching that one step to a block scalar (`run: |`). Confirmed on this
+branch's push after the review-fix round: all 15 CI jobs succeeded,
+including both `backtest-runtime-tests (3.10)` and
+`backtest-runtime-tests (3.11)` matrix legs
+(https://github.com/jijoece/ai_stock_trading_v2/actions/runs/30737287212).
+
 ## Next PR
 
 **PR 7 — backtest parity report. Not started.** Exact bounded prompt:
