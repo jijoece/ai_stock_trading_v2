@@ -52,3 +52,19 @@ def perturbed_input_document() -> dict:
     perturbed[-1][4] += 5.0  # close
     perturbed[-1][2] = max(perturbed[-1][2], perturbed[-1][4])  # keep high >= close
     return valid_input_document(bars=[tuple(bar) for bar in perturbed])
+
+
+# Rises to a peak on day 2, then falls -- exercises a non-zero drawdown, unlike
+# `BARS` above which never falls far enough below its own running peak to
+# produce a meaningfully distinguishable regression fixture.
+FALLING_BARS = [
+    ("2024-01-02", 100.0, 100.5, 99.5, 100.0, 1_000_000),
+    ("2024-01-03", 100.0, 111.0, 99.5, 110.0, 1_000_000),
+    ("2024-01-04", 110.0, 110.5, 94.0, 95.0, 1_000_000),
+    ("2024-01-05", 95.0, 95.5, 89.0, 90.0, 1_000_000),
+    ("2024-01-08", 90.0, 93.0, 89.5, 92.0, 1_000_000),
+]
+
+
+def falling_equity_input_document(*, symbol: str = "SPKE", quantity: int = 10, budget: float = 100_000.0) -> dict:
+    return valid_input_document(symbol=symbol, quantity=quantity, budget=budget, bars=FALLING_BARS)

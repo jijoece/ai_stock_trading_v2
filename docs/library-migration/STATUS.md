@@ -1445,17 +1445,17 @@ skip.
 - `backtest_runtime/` in its own isolated Python 3.11 venv (`pip install -e
   ".[dev]"`; no Python 3.10 interpreter was available on this development
   machine, matching every prior PR's note — the declared `>=3.10` floor is
-  substantiated by the CI job's `actions/setup-python` pin, not a local
+  substantiated by the CI job's `actions/setup-python` matrix, not a local
   reproduction) — `pip check`: clean. `pytest tests/ -q --tb=short` —
-  **47 passed, 0 failed**, twice in a row (no flakiness observed).
+  **56 passed, 0 failed** (9 new tests added in the review-fix round below).
 - `tests/unit/test_lumibot_import_boundary.py
   tests/unit/test_lumibot_adapter.py
   tests/unit/test_runtime_client_no_lumibot_import.py -v` in the main
-  project's `.venv` — **12 passed, 0 skipped** (this `.venv` happens to have
+  project's `.venv` — **13 passed, 0 skipped** (this `.venv` happens to have
   a hand-installed scratch `lumibot==4.5.74`, so `test_lumibot_adapter.py`'s
   other tests ran for real here rather than skipping; the boundary test's
   own file has no LumiBot dependency and would pass identically either way).
-- `pytest tests/ -q --tb=short` in the main project's `.venv` — **2849
+- `pytest tests/ -q --tb=short` in the main project's `.venv` — **2850
   passed, 57 skipped, 0 failed**. This `.venv` has several optional extras
   and a scratch LumiBot installed beyond the plain `.[dev]` baseline other
   PRs recorded, so the exact pass/skip counts are not directly comparable to
@@ -1464,7 +1464,7 @@ skip.
 
 **Credential and network-safety evidence:** see the bulleted list above; raw
 assertions live in `backtest_runtime/tests/test_credential_safety.py` and
-`test_network_safety.py`, re-run as part of the `47 passed` result above,
+`test_network_safety.py`, re-run as part of the `56 passed` result above,
 and re-run again by the new blocking `backtest-runtime-tests` CI job on
 every future PR against this distribution — no evidence file under `docs/`
 was produced or is required for this PR, since the properties are asserted
@@ -1475,6 +1475,51 @@ by a permanent, blocking test suite rather than a one-time spike.
 authorization rule, `paper_books` accounting code, or scheduling behavior
 was touched; no broker, provider, model, or market-data service was called;
 no live data was fetched; the scheduler was not enabled.
+
+### PR 6 review-fix round (2026-08-02)
+
+Five review items addressed on the same branch, before merge:
+
+1. **Drawdown sign convention.** `daily_states[*].drawdown_fraction` and
+   `max_drawdown_fraction` now follow `backtesting/engine.py`'s existing
+   convention — `(equity - running_peak_equity) / running_peak_equity`,
+   zero or negative, never positive. `contract.py` validation flipped from
+   `_require_non_negative_finite` to a new `_require_non_positive_finite`
+   for both fields. New regression fixture `FALLING_BARS` (`support/
+   fixtures.py`) and `tests/test_drawdown.py` assert the exact sign and
+   that the aggregate equals the minimum daily value.
+2. **Exact date syntax.** `contract.py::_require_date` now gates on
+   `^\d{4}-\d{2}-\d{2}$` before calling `date.fromisoformat`, since
+   `fromisoformat` accepts a version-dependent superset (Python 3.11+ also
+   accepts compact `20240102` and ISO week `2024-W01-2` forms; 3.10 does
+   not) — the regex keeps accepted syntax identical on both. New tests
+   cover both rejected forms for input bar dates and result
+   `daily_states[*].market_date`.
+3. **AST boundary exemption tightened.** `tests/unit/
+   test_lumibot_import_boundary.py` previously exempted any path
+   containing a directory literally named `runtime` anywhere in
+   `src/trading_research` (so a hypothetical `runtime/client/` or any
+   other future `runtime`-named package would have been silently
+   exempted, not just `runtime/lumibot/`). Now scoped to paths under
+   `src/trading_research/runtime/lumibot/` specifically, via
+   `Path.relative_to`. New regression test
+   `test_import_under_another_runtime_directory_is_reported_as_an_offender`
+   proves a `lumibot` import under `runtime/client/` (a real sibling
+   package) is reported, not silently allowed.
+4. **Docs cleanup.** `docs/milestones/rebuild/7.md` (the completed PR 6
+   execution prompt) removed — it was a one-time instruction set, not
+   enduring documentation, and this file plus `MASTER_PLAN.md`/
+   `DECISIONS.md`/`COMPONENT_MATRIX.md` are the durable record.
+   `pr7-prompt.md`'s citation of it replaced with ADR 0009 Decision 3 and
+   this file's "Completed work (PR 6)" section.
+5. **CI matrix.** `backtest-runtime-tests` now matrixes
+   `python-version: ["3.10", "3.11"]` (`fail-fast: false`, matching the
+   existing `indicator-tests` job's pattern) instead of only the declared
+   3.10 floor, so both the floor and CI's historical ceiling are proven in
+   CI on every push (this development machine has no 3.10 interpreter, so
+   3.10 is proven by CI, not locally).
+
+Tests-run counts above already reflect this round's additions.
 
 ## Next PR
 

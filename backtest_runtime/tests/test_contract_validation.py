@@ -129,6 +129,27 @@ def test_non_increasing_dates_rejected():
 def test_malformed_date_rejected():
     document = valid_input_document()
     document["bars"][0]["date"] = "not-a-date"
+    with pytest.raises(ContractError, match="YYYY-MM-DD"):
+        parse_input_document(document)
+
+
+@pytest.mark.parametrize("compact_date", ["20240102", "2024-W01-2"])
+def test_non_dashed_iso_date_forms_rejected_for_bars(compact_date):
+    """`date.fromisoformat` accepts compact ("20240102") and ISO week
+    ("2024-W01-2") forms on Python 3.11+ but not on 3.10 -- both must be
+    rejected on every supported interpreter so behavior does not vary by
+    Python version."""
+    document = valid_input_document()
+    document["bars"][0]["date"] = compact_date
+    with pytest.raises(ContractError, match="YYYY-MM-DD"):
+        parse_input_document(document)
+
+
+def test_out_of_range_dashed_date_still_rejected():
+    """Confirms the regex gate does not weaken the underlying calendar
+    validity check -- YYYY-MM-DD syntax with an impossible day still fails."""
+    document = valid_input_document()
+    document["bars"][0]["date"] = "2024-02-30"
     with pytest.raises(ContractError, match="valid ISO date"):
         parse_input_document(document)
 
@@ -189,8 +210,49 @@ def test_result_document_rejects_non_finite_final_value():
         validate_result_document(document)
 
 
-def test_result_document_rejects_negative_drawdown():
+def test_result_document_accepts_negative_drawdown():
+    """`max_drawdown_fraction` follows `backtesting/engine.py`'s convention:
+    (equity - peak_equity) / peak_equity, which is zero or negative."""
     document = copy.deepcopy(_VALID_RESULT)
     document["max_drawdown_fraction"] = -0.1
-    with pytest.raises(ContractError, match="not be negative"):
+    validate_result_document(document)
+
+
+def test_result_document_rejects_positive_drawdown():
+    document = copy.deepcopy(_VALID_RESULT)
+    document["max_drawdown_fraction"] = 0.1
+    with pytest.raises(ContractError, match="not be positive"):
+        validate_result_document(document)
+
+
+@pytest.mark.parametrize("compact_date", ["20240102", "2024-W01-2"])
+def test_non_dashed_iso_date_forms_rejected_for_result_daily_state_market_date(compact_date):
+    document = copy.deepcopy(_VALID_RESULT)
+    document["daily_states"] = [
+        {
+            "market_date": compact_date,
+            "cash": 100_000.0,
+            "equity": 100_000.0,
+            "realized_pnl": 0.0,
+            "unrealized_pnl": 0.0,
+            "drawdown_fraction": 0.0,
+        }
+    ]
+    with pytest.raises(ContractError, match="YYYY-MM-DD"):
+        validate_result_document(document)
+
+
+def test_result_document_rejects_positive_daily_drawdown_fraction():
+    document = copy.deepcopy(_VALID_RESULT)
+    document["daily_states"] = [
+        {
+            "market_date": "2024-01-02",
+            "cash": 100_000.0,
+            "equity": 100_000.0,
+            "realized_pnl": 0.0,
+            "unrealized_pnl": 0.0,
+            "drawdown_fraction": 0.1,
+        }
+    ]
+    with pytest.raises(ContractError, match="not be positive"):
         validate_result_document(document)

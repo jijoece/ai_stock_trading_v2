@@ -40,9 +40,10 @@ behavior: buy a caller-specified whole-share `quantity` of one `symbol` on
 the first bar with a resolvable price, then hold to the end of the fixture.
 No sells, no stop/target exits, no multi-symbol, no re-entry, no order
 types beyond a market buy. This was a deliberate PR 6 scope boundary (see
-`docs/milestones/rebuild/7.md` scope item 3: "no execution authority ...
-no scheduler"), not an oversight, and not something PR 7 should treat as a
-parity gap to fix silently.
+`docs/adr/0009-lumibot-backtest-distribution-boundary.md` Decision 3 and
+`docs/library-migration/STATUS.md` "Completed work (PR 6)": no execution
+authority, no scheduler), not an oversight, and not something PR 7 should
+treat as a parity gap to fix silently.
 
 Before writing any comparison code, PR 7 must decide, and record the
 decision in `docs/library-migration/DECISIONS.md`:

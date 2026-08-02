@@ -173,9 +173,9 @@ def _normalize_result(
     for state in raw_daily_states:
         peak_equity = max(peak_equity, state["equity"])
         drawdown_fraction = (
-            0.0 if peak_equity <= 0 else max(0.0, (peak_equity - state["equity"]) / peak_equity)
+            0.0 if peak_equity <= 0 else min(0.0, (state["equity"] - peak_equity) / peak_equity)
         )
-        max_drawdown = max(max_drawdown, drawdown_fraction)
+        max_drawdown = min(max_drawdown, drawdown_fraction)
         daily_states.append(
             {
                 "market_date": state["market_date"],

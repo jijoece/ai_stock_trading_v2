@@ -14,6 +14,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import re
 from dataclasses import dataclass
 from datetime import date
 
@@ -96,6 +97,13 @@ def _require_non_negative_finite(value: object, what: str) -> float:
     return number
 
 
+def _require_non_positive_finite(value: object, what: str) -> float:
+    number = _require_finite_number(value, what)
+    if number > 0:
+        raise ContractError(f"{what} must not be positive")
+    return number
+
+
 def _require_positive_int(value: object, what: str) -> int:
     if isinstance(value, bool) or not isinstance(value, int):
         raise ContractError(f"{what} must be an integer")
@@ -110,9 +118,17 @@ def _require_string(value: object, what: str) -> str:
     return value
 
 
+# `date.fromisoformat` accepts a strict superset of "YYYY-MM-DD" that varies
+# by Python version -- 3.11+ additionally accepts compact form ("20240102")
+# and ISO week dates ("2024-W01-2"), which 3.10 rejects. Gating on this
+# pattern first, before ever calling `fromisoformat`, keeps accepted syntax
+# identical across both supported interpreter versions.
+_DATE_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+
 def _require_date(value: object, what: str) -> date:
-    if not isinstance(value, str):
-        raise ContractError(f"{what} must be a string (YYYY-MM-DD)")
+    if not isinstance(value, str) or not _DATE_PATTERN.match(value):
+        raise ContractError(f"{what} must be a string in YYYY-MM-DD format")
     try:
         return date.fromisoformat(value)
     except ValueError as exc:
@@ -283,6 +299,10 @@ def _validate_fill(raw: object, index: int) -> None:
 
 
 def _validate_daily_state(raw: object, index: int) -> None:
+    """`drawdown_fraction` is (equity - running_peak_equity) / running_peak_equity:
+    zero at a new peak, otherwise negative. This matches the convention
+    already used by the project's own backtest report, not a LumiBot-specific
+    convention -- this module has no LumiBot dependency."""
     mapping = _require_mapping(raw, f"daily_states[{index}]")
     _require_no_unknown_fields(mapping, _DAILY_STATE_FIELDS, f"daily_states[{index}]")
     _require_date(mapping["market_date"], f"daily_states[{index}].market_date")
@@ -290,7 +310,7 @@ def _validate_daily_state(raw: object, index: int) -> None:
     _require_finite_number(mapping["equity"], f"daily_states[{index}].equity")
     _require_finite_number(mapping["realized_pnl"], f"daily_states[{index}].realized_pnl")
     _require_finite_number(mapping["unrealized_pnl"], f"daily_states[{index}].unrealized_pnl")
-    _require_non_negative_finite(
+    _require_non_positive_finite(
         mapping["drawdown_fraction"], f"daily_states[{index}].drawdown_fraction"
     )
 
@@ -351,4 +371,4 @@ def validate_result_document(document: object) -> None:
     _require_finite_number(mapping["final_cash"], "final_cash")
     _require_finite_number(mapping["final_equity"], "final_equity")
     _require_finite_number(mapping["final_value"], "final_value")
-    _require_non_negative_finite(mapping["max_drawdown_fraction"], "max_drawdown_fraction")
+    _require_non_positive_finite(mapping["max_drawdown_fraction"], "max_drawdown_fraction")

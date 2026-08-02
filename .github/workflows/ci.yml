@@ -193,18 +193,23 @@ jobs:
     # backtest_runtime/ is installed alone, in its own environment -- never
     # combined with the root project or paper_runtime, matching the existing
     # never-combine-extras convention (indicators/analytics/observability/
-    # research above, paper-runtime-tests). Runs on this distribution's own
-    # declared Python floor (requires-python = ">=3.10"), not CI's historical
-    # 3.11 choice -- matching python-3-10-floor's rationale, since nothing
-    # else in this job proves the floor actually resolves and passes.
+    # research above, paper-runtime-tests). Matrixed over this distribution's
+    # declared Python floor (requires-python = ">=3.10") and CI's historical
+    # 3.11 choice -- matching the indicator-tests floor+ceiling pattern above,
+    # since nothing else in this job proves either version actually resolves
+    # and passes.
     # backtest_runtime/tests/ has no importorskip guard anywhere: LumiBot is
     # a base dependency of this distribution, so every test here fails,
     # rather than skips, if it is somehow missing.
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11"]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.10"
+          python-version: ${{ matrix.python-version }}
       - name: Install backtest_runtime dependencies
         working-directory: backtest_runtime
         run: pip install -e ".[dev]"
