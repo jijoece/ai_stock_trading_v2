@@ -1,7 +1,7 @@
 # Milestone 2 analysis layer — developer guide
 
 Covers the second slice of Milestone 1 (see
-[AI-Stock-Trading-Implementation-Plan.md](AI-Stock-Trading-Implementation-Plan.md)
+[AI-Stock-Trading-Implementation-Plan.md](../AI-Stock-Trading-Implementation-Plan.md)
 and [docs/milestone-2.md](milestone-2.md)): Stories 1B.2, 1C.1–1C.4. Everything
 described here runs fully offline — no Robinhood, Reddit, market-data, or
 Claude API access required, and no network call is made anywhere in this

@@ -1,7 +1,7 @@
 # Milestone 1 foundation — developer guide
 
 Covers the first slice of Milestone 1 (see
-[AI-Stock-Trading-Implementation-Plan.md](AI-Stock-Trading-Implementation-Plan.md)):
+[AI-Stock-Trading-Implementation-Plan.md](../AI-Stock-Trading-Implementation-Plan.md)):
 Stories 1A.1–1A.3 and 1B.1. Everything described here runs fully offline —
 no Robinhood, Reddit, market-data, or Claude API access required.
 

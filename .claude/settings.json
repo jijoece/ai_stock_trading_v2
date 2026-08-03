@@ -1,4 +1,9 @@
 {
+  "permissions": {
+    "allow": [
+      "Bash(scripts/check_links.sh)"
+    ]
+  },
   "hooks": {
     "PreToolUse": [
       {

@@ -5,7 +5,7 @@
 > verification, and qualifying provider-cycle semantics. See
 > [Campaign resumability and point-in-time integrity](milestone9-3-1-campaign-resumability-and-point-in-time-integrity.md).
 
-Milestone 10 consumes the immutable activation-review output through a separate two-step, explicitly queued local-paper scheduler. See [Recurring Local Paper Trading](runbooks/recurring-local-paper-trading.md); Milestone 9.3 itself remains manual and advisory-only.
+Milestone 10 consumes the immutable activation-review output through a separate two-step, explicitly queued local-paper scheduler. See [Recurring Local Paper Trading](../runbooks/recurring-local-paper-trading.md); Milestone 9.3 itself remains manual and advisory-only.
 
 Milestone 9.3 corrects the remaining Milestone 9.2 evidence gaps and adds a manually invoked,
 multi-date local paper campaign. It does not schedule work, call providers, submit to an external

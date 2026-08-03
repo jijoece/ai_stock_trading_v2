@@ -13,6 +13,8 @@ the user decides and explicitly approves any external paper-order action.
   indicator computation, or verification of the scripts in `scripts/`.
 - Use the `deep-dive` skill only for an explicitly requested formal deep dive,
   end-to-end investigation, or evidence-backed audit.
+- After changing Markdown links, run `scripts/check_links.sh`. It uses the
+  repository's `lychee.toml`, which is also enforced by CI.
 
 ## Trading and computation guardrails
 
@@ -22,6 +24,18 @@ the user decides and explicitly approves any external paper-order action.
 - Default all broker interaction to read-only. Never submit an external paper
   order without an explicit request and the repository's confirmation gates.
 - Do not describe research output as financial advice.
+
+## Canonical validation tasks
+
+- Use the root Nox sessions documented in `README.md` as the canonical command
+  interface. Do not invent a second task interface unless debugging Nox itself.
+- Before opening or finalizing a PR, run `nox -s ci`. For targeted iterations,
+  use `nox -s tests -- <pytest arguments>` or
+  `nox -s paper_tests -- <pytest arguments>`.
+- Run `nox -s safety_typecheck` for changes to safety-critical modules. Report
+  the exact Nox sessions and results in the PR summary.
+- Never run credentialed smoke tests, broker operations, model calls, scheduler
+  activation, or external-paper submission unless the operator explicitly asks.
 
 ## Python code intelligence
 

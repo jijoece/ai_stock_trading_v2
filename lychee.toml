@@ -1,0 +1,14 @@
+# Shared by scripts/check_links.sh and the GitHub Actions link-check job.
+no_progress = true
+cache = true
+max_cache_age = "1d"
+cache_exclude_status = "400.."
+max_retries = 2
+timeout = 20
+include_fragments = "anchor-only"
+
+# These pages are reachable in a browser but reject automated link checkers.
+exclude = [
+  '^https://dl\.acm\.org/doi/10\.1145/3614419\.3643993$',
+  '^https://support\.reddithelp\.com/hc/en-us/articles/42728983564564-Responsible-Builder-Policy$',
+]
