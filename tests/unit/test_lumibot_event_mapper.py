@@ -37,3 +37,22 @@ def test_known_status_mappings(raw_status, expected):
 def test_unknown_status_fails_closed(raw_status):
     with pytest.raises(UnknownLumiBotStatusError):
         map_order_status(raw_status)
+
+
+def test_in_process_vocabulary_is_a_declared_subset_of_the_normalization_contract():
+    """PR 9. The two boundaries share one contract at two conformance levels.
+
+    LumiBot's `expired` maps to `CANCELLED` here while the isolated runtime
+    gateway maps Alpaca's `expired` to `EXPIRED`, because a
+    `PaperExecutionEvent` has no `EXPIRED` — `adapter.submit()` is
+    synchronous and always returns a resolved outcome (docs/milestone-3.md
+    Step 5). The difference is deliberate; this pins it so it stays so.
+    """
+    from trading_research.execution.models import EVENT_TYPES
+    from trading_research.runtime.lumibot.event_mapper import _STATUS_MAP
+    from trading_research.runtime.normalization import NORMALIZED_ORDER_STATUSES
+
+    assert set(_STATUS_MAP.values()) <= set(EVENT_TYPES)
+    assert set(EVENT_TYPES) <= set(NORMALIZED_ORDER_STATUSES)
+    assert map_order_status("expired") == "CANCELLED"
+    assert "EXPIRED" not in EVENT_TYPES

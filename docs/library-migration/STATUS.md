@@ -1,23 +1,24 @@
 # Migration Status
 
-**Current phase: PR 8 — the backtest removal-decision gate — DECIDED,
-IMPLEMENTED, NOT MERGED** (branch `migration/08-backtest-removal-decision`,
-PR #20, based on `5b9e1e3`; record at `docs/library-migration/pr8/DECISION.md`,
-`DECISIONS.md` D7). **Outcome: the custom backtest engine is NOT approved for
-removal.** It stays authoritative indefinitely and moves to
-`PRESERVATION_MANIFEST.md`; `backtest_runtime/` is kept as an additional,
-non-replacing offline cross-check. See "Completed work (PR 8)" below.
+**Current phase: PR 9 — the LumiBot runtime normalization contract —
+IMPLEMENTED, NOT MERGED** (branch `migration/09-lumibot-normalization-contract`,
+based on `b57f891`; `MASTER_PLAN.md` row 9, `DECISIONS.md` D8). See
+"Completed work (PR 9)" below.
 
-PR 7 — backtest parity report — is **merged** (`5b9e1e3`, PR #19; report at
-`docs/library-migration/pr7/PARITY_REPORT.md`, raw data under `pr7/results/`),
-and is PR #20's base.
+PR 8 — the backtest removal-decision gate — is **merged** (PR #20). Its
+outcome stands: the custom backtest engine is **not** approved for removal,
+stays authoritative indefinitely, and `backtest_runtime/` is kept as an
+additional, non-replacing offline cross-check. PR 7 (backtest parity report,
+`5b9e1e3`, PR #19) and PR 6 (`bbd7a1f`, PR #18) are also merged.
 
-**Next phase: PR 9 — strengthen the LumiBot runtime normalization contract**
-(`MASTER_PLAN.md` row 9). PR 8 also created row **8a**, the tracked follow-up
-for the three legacy-side items it decided must now be fixed rather than
-tolerated: run identity ignores the bar dataset (PR 7 D17), the
-`backtest_orders` table is created and never written, and bar availability is
-enforced once per run rather than per session.
+PR 8 created row **8a**, the tracked follow-up for the three legacy-side
+items it decided must now be fixed rather than tolerated: run identity
+ignores the bar dataset (PR 7 D17), the `backtest_orders` table is created
+and never written, and bar availability is enforced once per run rather than
+per session. Row 8a is **not started**.
+
+**Next phase: PR 10 — broker-to-`paper_books` reconciliation parity tests**
+(`MASTER_PLAN.md` row 10), which depends on PR 9.
 
 PR 6 is **merged** (`bbd7a1f`, PR #18) and delivered everything ADR 0009
 Decision 4 requires:
@@ -1993,3 +1994,158 @@ and deciding whether `point_in_time_safe` stays caller-asserted. The third item
 carries fixture and test churn — the 23 existing engine/adapter tests encode the
 current run-level semantics. All three are behavior changes to
 `backtesting/engine.py` and need their own review; see `pr8/DECISION.md` §8.
+
+## Completed work (PR 9)
+
+**Scope:** two new contract modules
+(`src/trading_research/runtime/normalization.py`,
+`paper_runtime/src/trading_paper_runtime/normalization.py`); the producers
+and consumers of normalized broker observations
+(`paper_runtime/.../lumibot_gateway.py`, `paper_runtime/.../models.py`,
+`src/trading_research/runtime/lumibot/adapter.py`,
+`src/trading_research/runtime/lumibot/event_mapper.py`,
+`src/trading_research/runtime/client/models.py`,
+`src/trading_research/execution/broker_snapshots.py`,
+`src/trading_research/storage/execution_repositories.py`); three new test
+files and additions to two existing ones; plus this file, `MASTER_PLAN.md`
+and `DECISIONS.md` (D8). **`src/trading_research/paper_books/external_broker.py`
+was not modified** — see "The one thing PR 9 deliberately did not change"
+below. No configuration, scheduler, trading limit, or authorization rule was
+touched.
+
+**Outcome: there is now one normalization contract**, declared once per
+distribution and enforced in both directions. Before PR 9 the normalized
+order-status vocabulary was declared independently in four places
+(`paper_runtime/models.py::SUBMISSION_STATES`,
+`execution/broker_snapshots.py::SUBMISSION_STATES`, a SQL literal inside
+`list_unresolved_submissions`, and the mapping in
+`external_broker._state_from_order`) and they disagreed with each other.
+
+### The defect that motivated the PR
+
+`lumibot_gateway._ALPACA_STATUS_MAP` maps Alpaca's `expired` to `EXPIRED` and
+`pending_cancel` to `CANCEL_REQUESTED`. Neither status existed in
+`execution/broker_snapshots.py::SUBMISSION_STATES`.
+`submit_credentialed_paper_order.py` writes `response["status"]` straight
+into `update_submission_status`, which persists it with no validation and no
+`CHECK` constraint; `_row_to_submission` reads it back through
+`BrokerOrderSubmission.__post_init__`, which validates. So one expired or
+cancel-pending broker order wrote a row that `get_submission` and
+`list_unresolved_submissions` could never read again — a permanently
+unreadable submission record, discovered by reading the chain rather than by
+any failing test. Separately, `list_unresolved_submissions` compared against
+a hardcoded SQL terminal list that also omitted `EXPIRED`, so such an order
+would additionally have stayed in the polling loop's work queue forever.
+
+`tests/unit/test_runtime_normalization_contract.py::
+test_expired_submission_round_trips_through_storage_and_leaves_the_work_queue`
+reproduces the whole path through real SQL and is the regression guard.
+
+### How the contract is declared
+
+ADR 0002 (reaffirmed by ADR 0009) forbids the two distributions from
+importing each other, so there is no shared module to put this in. The
+contract is declared **twice, identically**, and the copies are kept honest
+by `test_runtime_normalization_contract.py`, which AST-parses both files and
+compares the declared constants literally, plus asserts both expose the same
+public helper names and that neither imports the other's package. This is the
+same source-inspection technique `tests/unit/test_lumibot_import_boundary.py`
+already uses; the test process never imports `trading_paper_runtime`.
+
+Declared vocabulary (`NORMALIZATION_CONTRACT_VERSION =
+"runtime-normalization.v1"`):
+
+```text
+NORMALIZED_ORDER_STATUSES   11 states, PENDING_SUBMISSION .. ERROR
+BROKER_REPORTABLE_STATUSES  the 9 a gateway may report
+TERMINAL_ORDER_STATUSES     FILLED, CANCELLED, EXPIRED, REJECTED, ERROR
+NORMALIZED_SIDES            BUY, SELL
+NORMALIZED_TIME_IN_FORCE    DAY, GTC, IOC, FOK, OPG, CLS
+```
+
+`execution/broker_snapshots.py::SUBMISSION_STATES` and
+`TERMINAL_SUBMISSION_STATES`, and `paper_runtime/models.py::SUBMISSION_STATES`,
+are now bound from the contract rather than repeated as literals; the SQL
+terminal list is parameterized from `TERMINAL_SUBMISSION_STATES`.
+
+### Two conformance levels, enforced at import time
+
+The in-process ADR 0001 adapter emits `execution/models.py::EVENT_TYPES`, a
+strict *subset* of the contract — a `PaperExecutionEvent` has no `EXPIRED`,
+`CANCEL_REQUESTED`, `PENDING_SUBMISSION` or `SUBMISSION_UNKNOWN`, because
+`adapter.submit()` is synchronous and always returns a resolved outcome
+(docs/milestone-3.md Step 5). That is why LumiBot's `expired` maps to
+`CANCELLED` in `event_mapper.py` while the runtime gateway maps Alpaca's
+`expired` to `EXPIRED`: the same broker concept at the conformance level each
+boundary supports. That difference was already correct — what was missing was
+anything asserting it stayed deliberate. `event_mapper.py` now fails at import
+if `_STATUS_MAP`'s values leave `EVENT_TYPES`, or if `EVENT_TYPES` leaves the
+contract; `adapter.py` fails at import if its last-event-to-final-status map
+does not cover `EVENT_TYPES` exactly (previously a literal inside
+`_build_result`, so a new event type would have raised `KeyError` at fill
+time, on a live order).
+
+### Fail-closed normalization defects closed
+
+Each of these was a silent repair that is now a rejection:
+
+| Where | Was | Now |
+|---|---|---|
+| `_order_to_snapshot` limit price | `str(getattr(order, "limit_price", "")) or None` produced the literal string `"None"` for a market order — truthy, so it survived the `or None` — which then crashed the main process's `Decimal(...)` | `None` stays `None`; a malformed value fails closed |
+| `_order_to_snapshot` time-in-force | `getattr(<enum-or-str>, "value", "day")` reported a broker's plain-string `"gtc"` as `DAY`, misstating the order's lifetime | normalized, no default; absent means `DAY`, unknown fails |
+| `list_order_fills` | a FILL activity missing `qty`/`price` was stringified to `"0"`, fabricating a zero-price fill `paper_books` would have booked as free shares | fails closed |
+| `get_account` / `list_positions` | raw `str(...)`, so a missing value became `"None"`; quantities alone were exact-checked | every numeric field validated as a finite decimal |
+| adapter fill price | `Decimal(str(price))` turns a float `nan` into `Decimal('NaN')`, and `Decimal('NaN') <= 0` is `False`, so `PaperExecutionEvent`'s positive-fill-price guard accepted it | non-finite and non-positive both rejected |
+| adapter filled quantity / notional | unvalidated | exact whole numbers only, never a truncation; non-finite notional rejected |
+| `runtime/client/models.py` | bare `Decimal(payload[...])` raised an untyped `decimal.InvalidOperation`, and accepted `"NaN"`/`"Infinity"` | typed `ProtocolViolationError`, status checked against the vocabulary, `0 <= filled <= quantity`, a reported fill requires a positive price |
+
+Validation moved into `__post_init__` on `OrderSnapshotPayload`,
+`FillPayload`, `AccountSnapshotPayload` and `PositionSnapshotPayload`, so both
+the credentialed gateway and the deterministic double are held to the same
+contract, and `dataclasses.replace` re-checks it. The payloads also
+canonicalize in place — Alpaca's `str(datetime)` space separator becomes true
+ISO 8601, and decimals become plain notation rather than `1E+2`.
+
+### The one thing PR 9 deliberately did not change
+
+`paper_books/external_broker.py::_state_from_order` maps every
+broker-reportable status **except `ERROR`**, for which it raises
+`UNKNOWN_BROKER_STATUS`. An order the broker reports as `stopped` or
+`suspended` has no safe automatic ledger state, so failing closed and leaving
+it for manual reconciliation is the correct posture. PR 9 does not touch that
+safety-critical state machine; it pins the coverage in
+`test_external_broker_state_mapping_coverage_is_pinned`, which asserts the
+unmapped set is exactly `{"ERROR"}`, so the gap cannot widen or narrow
+without editing an assertion that names the trade-off. Recorded as
+`DECISIONS.md` D8 ruling 4.
+
+### Tests run
+
+- `nox -s ci` — **all four blocking sessions passed**: `tests`
+  (2901 passed, 105 skipped), `paper_tests` (93 passed), `safety_typecheck`
+  (pyright, 0 errors), `migration_smoke` (OK).
+- Local `.venv` (which has LumiBot installed, unlike the `tests` nox session):
+  `pytest tests/ -q` — **2972 passed, 57 skipped, 0 failed** (2883 before
+  this PR); `pytest paper_runtime/tests -q` — **93 passed** (59 before).
+- New: `tests/unit/test_runtime_normalization_contract.py` (42 tests),
+  `tests/unit/test_runtime_client_normalization.py` (31),
+  `paper_runtime/tests/test_normalization.py` (34). Added:
+  11 tests to `tests/unit/test_lumibot_adapter.py`, 1 to
+  `tests/unit/test_lumibot_event_mapper.py`.
+- `nox -s typecheck` is not part of `nox -s ci` and carries a large
+  pre-existing baseline (2530 errors). This PR takes it to 2535: all five are
+  the *same* pre-existing `ScriptedGateway`-does-not-satisfy-`PaperBrokerGateway`
+  error the six existing uses of that test double already produce, from the
+  five new adapter tests. No new error appears in any source file.
+
+**Known coverage note:** `tests/unit/test_lumibot_adapter.py` is guarded by
+`pytest.importorskip("lumibot")` and LumiBot is not installable via any root
+extra (`DECISIONS.md` D5), so the 11 new adapter tests skip in the `tests`
+nox session and run locally. The runtime-side gateway tests do run for real in
+`paper_tests`, where LumiBot is a base dependency. This is the pre-existing
+arrangement; PR 9 did not change it.
+
+**Safety:** no trading limit, authorization rule, `paper_books` accounting
+code, external-broker state machine, or scheduling behavior was modified; no
+broker, provider, model, or market-data service was called; no credentials
+were read; no order of any kind was submitted.

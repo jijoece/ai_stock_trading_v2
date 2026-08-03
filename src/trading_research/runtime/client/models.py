@@ -12,6 +12,50 @@ from dataclasses import dataclass
 from decimal import Decimal
 
 from ...execution.models import PaperOrderIntent
+from ..normalization import (
+    NormalizationError,
+    normalize_broker_reportable_status,
+    normalize_exact_int,
+    parse_decimal,
+)
+from .errors import ProtocolViolationError
+
+
+def _decimal(payload: dict, key: str, *, required: bool) -> Decimal | None:
+    """Parse one numeric field of a runtime response, failing closed.
+
+    PR 9: this used to be a bare `Decimal(payload[key])`, which raised an
+    untyped `decimal.InvalidOperation` on a malformed value and accepted
+    `"NaN"`/`"Infinity"` outright — `Decimal("NaN") <= 0` is `False`, so a
+    non-finite price would have passed every downstream positivity guard.
+    Every failure is now a `ProtocolViolationError`, the client's existing
+    "the runtime broke the contract" signal.
+    """
+    value = payload.get(key)
+    if value is None:
+        if required:
+            raise ProtocolViolationError(f"runtime response is missing required numeric field {key!r}")
+        return None
+    try:
+        return parse_decimal(value, key)
+    except NormalizationError as exc:
+        raise ProtocolViolationError(str(exc)) from exc
+
+
+def _exact_int(payload: dict, key: str) -> int:
+    try:
+        return normalize_exact_int(payload[key], key)
+    except KeyError as exc:
+        raise ProtocolViolationError(f"runtime response is missing required field {key!r}") from exc
+    except NormalizationError as exc:
+        raise ProtocolViolationError(str(exc)) from exc
+
+
+def _required_str(payload: dict, key: str) -> str:
+    value = payload.get(key)
+    if not isinstance(value, str) or not value:
+        raise ProtocolViolationError(f"runtime response field {key!r} must be a non-empty string")
+    return value
 
 
 def derive_client_order_id(intent: PaperOrderIntent) -> str:
@@ -54,14 +98,36 @@ class RuntimeOrderSnapshot:
 
     @classmethod
     def from_payload(cls, payload: dict) -> "RuntimeOrderSnapshot":
-        avg = payload.get("average_fill_price")
+        """PR 9: the main process re-validates the runtime's normalized
+        payload rather than trusting it, mirroring the runtime's own posture
+        of not trusting the main process's validation (docs/milestone-4.md
+        Step 3). The status is checked against the shared vocabulary here,
+        at the boundary, instead of failing much later when the value is
+        read back out of `paper_broker_submissions`."""
+        try:
+            status = normalize_broker_reportable_status(payload.get("status"), "status")
+        except NormalizationError as exc:
+            raise ProtocolViolationError(str(exc)) from exc
+        quantity = _exact_int(payload, "quantity")
+        filled_quantity = _exact_int(payload, "filled_quantity")
+        if not 0 <= filled_quantity <= quantity:
+            raise ProtocolViolationError(
+                f"runtime reported filled_quantity {filled_quantity} out of range for quantity {quantity}"
+            )
+        average_fill_price = _decimal(payload, "average_fill_price", required=False)
+        if filled_quantity > 0 and (average_fill_price is None or average_fill_price <= 0):
+            raise ProtocolViolationError(
+                "runtime reported a positive filled_quantity with no positive average_fill_price"
+            )
         return cls(
-            intent_id=payload["intent_id"], client_order_id=payload["client_order_id"],
-            broker_order_id=payload.get("broker_order_id"), status=payload["status"],
-            raw_broker_status=payload.get("raw_broker_status"), quantity=payload["quantity"],
-            filled_quantity=payload["filled_quantity"],
-            average_fill_price=Decimal(avg) if avg is not None else None,
-            submitted_at=payload["submitted_at"], updated_at=payload["updated_at"],
+            intent_id=_required_str(payload, "intent_id"),
+            client_order_id=_required_str(payload, "client_order_id"),
+            broker_order_id=payload.get("broker_order_id"), status=status,
+            raw_broker_status=payload.get("raw_broker_status"), quantity=quantity,
+            filled_quantity=filled_quantity,
+            average_fill_price=average_fill_price,
+            submitted_at=_required_str(payload, "submitted_at"),
+            updated_at=_required_str(payload, "updated_at"),
         )
 
 
@@ -75,11 +141,13 @@ class RuntimeAccountSnapshot:
 
     @classmethod
     def from_payload(cls, payload: dict) -> "RuntimeAccountSnapshot":
-        bp = payload.get("buying_power")
+        cash = _decimal(payload, "cash", required=True)
+        equity = _decimal(payload, "equity", required=True)
+        assert cash is not None and equity is not None  # `required=True` guarantees this
         return cls(
-            cash=Decimal(payload["cash"]), equity=Decimal(payload["equity"]),
-            buying_power=Decimal(bp) if bp is not None else None,
-            currency=payload["currency"], as_of=payload["as_of"],
+            cash=cash, equity=equity,
+            buying_power=_decimal(payload, "buying_power", required=False),
+            currency=_required_str(payload, "currency"), as_of=_required_str(payload, "as_of"),
         )
 
 
@@ -93,9 +161,16 @@ class RuntimePositionSnapshot:
 
     @classmethod
     def from_payload(cls, payload: dict) -> "RuntimePositionSnapshot":
-        mv = payload.get("market_value")
+        quantity = _decimal(payload, "quantity", required=True)
+        average_entry_price = _decimal(payload, "average_entry_price", required=True)
+        assert quantity is not None and average_entry_price is not None
+        if average_entry_price <= 0:
+            raise ProtocolViolationError(
+                f"runtime reported a non-positive average_entry_price {average_entry_price}"
+            )
         return cls(
-            symbol=payload["symbol"], quantity=Decimal(payload["quantity"]),
-            average_entry_price=Decimal(payload["average_entry_price"]),
-            market_value=Decimal(mv) if mv is not None else None, as_of=payload["as_of"],
+            symbol=_required_str(payload, "symbol"), quantity=quantity,
+            average_entry_price=average_entry_price,
+            market_value=_decimal(payload, "market_value", required=False),
+            as_of=_required_str(payload, "as_of"),
         )
