@@ -2,6 +2,7 @@ __pycache__/
 *.pyc
 .venv/
 .pytest_cache/
+.lycheecache
 *.egg-info/
 
 # Local Serena MCP tool config/cache — machine-specific, not a shared

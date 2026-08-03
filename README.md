@@ -569,7 +569,36 @@ and the preceding 11.1/11.2 closure reports through `docs/INDEX.md`.
 
 ## Testing and CI
 
-The default main suite is offline and skips real-provider/broker smoke tests:
+Nox is the canonical validation interface for developers, GitHub Actions, and
+coding agents. Install the development dependencies, then run the session that
+matches the distribution or check you are changing:
+
+```bash
+python -m pip install -e ".[dev]"
+nox -s tests
+nox -s paper_tests
+nox -s typecheck
+nox -s paper_typecheck
+nox -s safety_typecheck
+nox -s migration_smoke
+nox -s ci
+```
+
+`nox -s ci` is the standard safe pre-PR validation command. It runs the main
+and isolated `paper_runtime` test suites, the blocking safety-critical Pyright
+subset, and the migration smoke checks. Whole-project type checks remain
+separate because both distributions have documented pre-existing Pyright
+baselines.
+
+Pass pytest arguments after `--` for focused iterations:
+
+```bash
+nox -s tests -- tests/unit/test_scorer.py -q
+nox -s paper_tests -- tests/test_protocol.py -q
+```
+
+The direct underlying commands remain supported for debugging and package
+development:
 
 ```bash
 pytest tests/ -q --tb=short
@@ -578,7 +607,22 @@ cd paper_runtime
 pytest tests/ -q --tb=short
 ```
 
-Run focused tests while developing, then both full suites before publishing.
+The canonical Nox test sessions explicitly disable every opt-in real-provider,
+model, market-data, news, Reddit, research-cycle, shadow-cycle, and broker test
+gate. Nox tasks must not be used to enable or operate trading capabilities;
+real-provider and broker tests are not included in `nox -s ci`.
+
+Install [Lychee](https://github.com/lycheeverse/lychee#installation) once and use the shared
+repository configuration to check Markdown links:
+
+```bash
+brew install lychee  # macOS
+scripts/check_links.sh
+```
+
+The script and CI both read `lychee.toml`, so Claude Code and local developers
+exercise the same link rules as GitHub Actions.
+
 Real-provider tests require both their `RUN_*` opt-in flag and any associated
 credentials. Important markers include `external_paper_broker`, `claude_api`,
 `sec_api`, `market_data_api`, `news_api`, `reddit_sentiment_real`,
@@ -586,11 +630,12 @@ credentials. Important markers include `external_paper_broker`, `claude_api`,
 
 GitHub Actions currently runs:
 
-- the main offline test suite;
-- the isolated paper-runtime test suite;
-- Pyright for both distributions (currently non-blocking because of the
+- the canonical Nox main and isolated paper-runtime test sessions;
+- Nox Pyright sessions for both distributions (currently non-blocking because of the
   documented pre-existing type-error baseline);
-- migration smoke coverage against a file-backed SQLite database.
+- blocking Nox safety-critical type checking;
+- the Nox migration smoke session against temporary SQLite databases;
+- blocking Lychee checks for local, anchor, and external Markdown links.
 
 ## Claude Code and MCP usage
 
@@ -641,12 +686,11 @@ deterministic boundaries.
 1. Create a focused branch and keep unrelated changes separate.
 2. Start from the package and tests listed in
    [Where to start for common changes](#where-to-start-for-common-changes).
-3. Run focused tests while iterating.
-4. Run both full suites before publishing:
+3. Run focused Nox test sessions while iterating.
+4. Run the full safe validation aggregate before publishing:
 
    ```bash
-   pytest tests/ -q --tb=short
-   (cd paper_runtime && pytest tests/ -q --tb=short)
+   nox -s ci
    ```
 
 5. Update this README, the relevant runbook, or an ADR when behavior or an
