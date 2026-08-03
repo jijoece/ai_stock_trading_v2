@@ -23,6 +23,8 @@ docs/milestone3-lumibot-paper-integration.md "Known limitations".
 """
 from __future__ import annotations
 
+from ...execution.models import EVENT_TYPES
+from ..normalization import NORMALIZED_ORDER_STATUSES
 from .errors import UnknownLumiBotStatusError
 
 _STATUS_MAP: dict[str, str] = {
@@ -37,6 +39,32 @@ _STATUS_MAP: dict[str, str] = {
     "expired": "CANCELLED",
     "error": "ERROR",
 }
+
+# PR 9: the two boundaries in this repository do not share one vocabulary —
+# they share one *contract*, at two conformance levels, and that relationship
+# is now enforced at import time instead of being coincidental.
+#
+# `NORMALIZED_ORDER_STATUSES` (runtime/normalization.py) is the full closed
+# set for the ADR 0002/0009 process boundary. This in-process ADR 0001
+# adapter emits `execution.models.EVENT_TYPES`, a strict *subset* of it: a
+# `PaperExecutionEvent` has no `EXPIRED`, `CANCEL_REQUESTED`,
+# `PENDING_SUBMISSION` or `SUBMISSION_UNKNOWN`, because `adapter.submit()`
+# is synchronous and always returns a resolved outcome
+# (docs/milestone-3.md Step 5). That is why LumiBot's `expired` maps to
+# `CANCELLED` here while the runtime gateway maps Alpaca's `expired` to
+# `EXPIRED` — the same broker concept, expressed at the conformance level
+# each boundary supports. The difference is deliberate; what was missing
+# before PR 9 was anything asserting it stayed deliberate.
+if not set(_STATUS_MAP.values()) <= set(EVENT_TYPES):  # pragma: no cover - import-time guard
+    raise UnknownLumiBotStatusError(
+        "_STATUS_MAP maps a LumiBot status to a value outside execution.models.EVENT_TYPES: "
+        f"{sorted(set(_STATUS_MAP.values()) - set(EVENT_TYPES))}"
+    )
+if not set(EVENT_TYPES) <= set(NORMALIZED_ORDER_STATUSES):  # pragma: no cover - import-time guard
+    raise UnknownLumiBotStatusError(
+        "execution.models.EVENT_TYPES must be a subset of the runtime normalization contract: "
+        f"{sorted(set(EVENT_TYPES) - set(NORMALIZED_ORDER_STATUSES))}"
+    )
 
 
 def map_order_status(raw_status: str) -> str:

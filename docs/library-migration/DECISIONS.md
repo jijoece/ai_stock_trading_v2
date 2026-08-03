@@ -788,3 +788,66 @@ point-in-time availability axis that is actually enforced on the runtime side
 accounting-boundary decision for float equity series; or a LumiBot capability
 change that makes those cheap. A superseding ADR is required only if the
 proposal is removal.
+
+## D8 — PR 9: one normalization contract, mirrored, with `ERROR` left deliberately unmapped
+
+**Context.** PR 9 (`MASTER_PLAN.md` row 9) set out to "strengthen the LumiBot
+runtime normalization contract." Reading the chain end to end found that no
+single contract existed: the normalized order-status vocabulary was declared
+independently in three places, and they disagreed.
+
+**Ruling 1 — the contract is declared twice, on purpose, and drift-tested.**
+ADR 0002 (reaffirmed by ADR 0009) forbids the main package and the isolated
+`trading_paper_runtime` distribution from importing each other, so a shared
+module is not available. The contract therefore lives in
+`src/trading_research/runtime/normalization.py` and
+`paper_runtime/src/trading_paper_runtime/normalization.py`, declaring
+identical constants and identically-named helpers, and
+`tests/unit/test_runtime_normalization_contract.py` AST-parses both files and
+compares them literally. The two sides share a vocabulary and a set of rules;
+they still share no Python type, and each raises its own error class. This is
+the same technique the repository already uses for the LumiBot import
+boundary — source inspection, not a cross-distribution import.
+
+**Ruling 2 — `EXPIRED` and `CANCEL_REQUESTED` join the main-side vocabulary.**
+`lumibot_gateway._ALPACA_STATUS_MAP` could emit both (Alpaca `expired` and
+`pending_cancel`), and neither existed in
+`execution/broker_snapshots.py::SUBMISSION_STATES`. Because
+`update_submission_status` writes the status unvalidated while
+`_row_to_submission` reads it back through a validating dataclass, a single
+expired or cancel-pending broker order wrote a row that `get_submission` and
+`list_unresolved_submissions` could never read again. `EXPIRED` is terminal;
+`CANCEL_REQUESTED` is not. `list_unresolved_submissions`' hardcoded SQL
+terminal list — a fourth copy, which also omitted `EXPIRED` — is now bound
+from `TERMINAL_SUBMISSION_STATES`.
+
+**Ruling 3 — two conformance levels, not two vocabularies.** The in-process
+ADR 0001 adapter emits `execution/models.py::EVENT_TYPES`, a strict subset of
+the contract: a `PaperExecutionEvent` has no `EXPIRED` or `CANCEL_REQUESTED`
+because `adapter.submit()` is synchronous and always returns a resolved
+outcome. That is why LumiBot's `expired` maps to `CANCELLED` there while the
+runtime gateway maps Alpaca's `expired` to `EXPIRED`. The difference was
+already correct; what was missing was anything asserting it stayed
+deliberate. Both subset relationships are now enforced at import time.
+
+**Ruling 4 — `ERROR` stays unmapped in `external_broker._state_from_order`,
+and that is a decision, not an oversight.** An order the broker reports as
+`stopped` or `suspended` normalizes to `ERROR`, for which
+`_state_from_order` raises `UNKNOWN_BROKER_STATUS`. There is no safe
+automatic ledger state for such an order, so failing closed and leaving it
+for manual reconciliation is the correct posture, consistent with D3's hard
+safety layer. PR 9 does **not** change that state machine; it pins the
+coverage in a test, so the set of statuses `external_broker` refuses can
+never widen or narrow without a deliberate edit to an assertion that names
+the trade-off. Changing this stance is a separate, reviewed decision.
+
+**Ruling 5 — normalization fails closed and never repairs.** No helper
+defaults, coerces, or truncates. Concretely closed in this PR: a `None` limit
+price no longer becomes the string `"None"` (which crashed the consumer's
+`Decimal(...)` parse); a broker FILL activity missing `qty`/`price` no longer
+becomes `"0"` (which would have booked free shares); a non-enum
+`time_in_force` no longer silently becomes `DAY`; a float `NaN` fill price no
+longer survives as `Decimal('NaN')` past a `<= 0` guard; and a fractional
+broker quantity fails rather than truncating. This extends the posture
+already established for TA-Lib in PR 4 and for the vectorized adapter in
+PR 5 to the broker boundary.

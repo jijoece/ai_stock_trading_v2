@@ -29,14 +29,19 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
-from decimal import Decimal
 import hashlib
 
 from .configuration import RuntimeConfiguration
 from .errors import ErrorCode, RuntimeOperationError
 from .models import (
     AccountSnapshotPayload, FillPayload, OrderIntentPayload, OrderSnapshotPayload, PositionSnapshotPayload,
-    _parse_exact_int,
+)
+from .normalization import (
+    normalize_broker_reportable_status,
+    normalize_exact_int,
+    normalize_optional_decimal_string,
+    normalize_side,
+    normalize_time_in_force,
 )
 
 # Alpaca (alpaca-py) raw order statuses -> internal runtime status
@@ -69,7 +74,11 @@ def _map_status(raw: str) -> str:
         raise RuntimeOperationError(
             ErrorCode.UNKNOWN_BROKER_STATUS, f"unrecognized Alpaca order status {raw!r} — fail closed"
         )
-    return _ALPACA_STATUS_MAP[key]
+    # PR 9: assert the mapped value is inside the shared normalization
+    # vocabulary. Without this, adding a row to `_ALPACA_STATUS_MAP` with a
+    # status the main process does not know about would only surface much
+    # later — as an unreadable persisted row, not as a mapping bug here.
+    return normalize_broker_reportable_status(_ALPACA_STATUS_MAP[key], "mapped Alpaca order status")
 
 
 @dataclass
@@ -248,13 +257,18 @@ class LumiBotAlpacaPaperGateway:
         for activity in activities:
             if str(getattr(activity, "order_id", "")) != str(order.broker_order_id):
                 continue
+            # PR 9: no `"0"` defaults. A FILL activity missing its quantity
+            # or price is a malformed observation, not a zero-price fill —
+            # the payload's `__post_init__` rejects it, and the whole read
+            # fails closed rather than returning a fabricated fill that
+            # `paper_books` would book as free shares.
             result.append(FillPayload(
                 fill_id=str(getattr(activity, "id", "")), broker_order_id=str(order.broker_order_id),
                 client_order_id=client_order_id, book_id=order.book_id or "",
-                symbol=str(getattr(activity, "symbol", order.symbol or "")),
-                side=str(getattr(activity, "side", order.side or "")).upper(),
-                quantity=str(getattr(activity, "qty", "0")), price=str(getattr(activity, "price", "0")),
-                filled_at=str(getattr(activity, "transaction_time", order.updated_at)),
+                symbol=str(getattr(activity, "symbol", None) or order.symbol or ""),
+                side=getattr(activity, "side", None) or order.side,
+                quantity=getattr(activity, "qty", None), price=getattr(activity, "price", None),
+                filled_at=getattr(activity, "transaction_time", None) or order.updated_at,
                 account_fingerprint=fingerprint,
             ))
         return result
@@ -280,10 +294,13 @@ class LumiBotAlpacaPaperGateway:
     def get_account(self) -> AccountSnapshotPayload:
         self._require_verified()
         account = self._api.get_account()
+        # PR 9: raw values are handed to the payload, whose `__post_init__`
+        # is the single normalization boundary. Previously `str(account.cash)`
+        # turned a missing value into the literal `"None"`.
         return AccountSnapshotPayload(
-            cash=str(account.cash), equity=str(account.equity),
-            buying_power=str(getattr(account, "buying_power", None)) if getattr(account, "buying_power", None) is not None else None,
-            currency=getattr(account, "currency", "USD") or "USD",
+            cash=getattr(account, "cash", None), equity=getattr(account, "equity", None),
+            buying_power=getattr(account, "buying_power", None),
+            currency=getattr(account, "currency", None) or "USD",
             as_of=datetime.now(timezone.utc).isoformat(),
         )
 
@@ -291,10 +308,15 @@ class LumiBotAlpacaPaperGateway:
         self._require_verified()
         positions = self._api.get_all_positions()
         now = datetime.now(timezone.utc).isoformat()
+        # PR 9: quantity/cost-basis normalization happens in the payload's
+        # `__post_init__`, so an unparseable broker value fails closed here
+        # instead of reaching ledger reconciliation as a string.
         return [
             PositionSnapshotPayload(
-                symbol=p.symbol, quantity=str(p.qty), average_entry_price=str(p.avg_entry_price),
-                market_value=str(p.market_value) if getattr(p, "market_value", None) is not None else None,
+                symbol=str(getattr(p, "symbol", "")),
+                quantity=getattr(p, "qty", None),
+                average_entry_price=getattr(p, "avg_entry_price", None),
+                market_value=getattr(p, "market_value", None),
                 as_of=now,
             )
             for p in positions
@@ -320,24 +342,48 @@ class LumiBotAlpacaPaperGateway:
         return result
 
     def _order_to_snapshot(self, order: object) -> OrderSnapshotPayload:
+        """Translate one raw `alpaca-py` order into the normalized contract.
+
+        PR 9: every field goes through `normalization.py` rather than a bare
+        `str(...)`. Three concrete defects this closes:
+
+        * `limit_price` used `str(getattr(order, "limit_price", "")) or None`,
+          which yields the *string* `"None"` for a market order — truthy, so
+          it survived the `or None`, and then crashed the main process's
+          `Decimal(...)` parse.
+        * `time_in_force` read `getattr(<enum-or-str>, "value", "day")`, so a
+          broker reporting a plain string `"gtc"` silently normalized to
+          `DAY`, misstating the order's lifetime.
+        * nothing asserted the mapped status was in the shared vocabulary.
+        """
         raw_status = getattr(order.status, "value", order.status)
         status = _map_status(raw_status)
-        filled_qty = _parse_exact_int(order.filled_qty or 0, "broker order filled_qty")
-        avg_price = str(order.filled_avg_price) if getattr(order, "filled_avg_price", None) else None
+        raw_side = getattr(order, "side", None)
+        raw_tif = getattr(order, "time_in_force", None)
         now = datetime.now(timezone.utc).isoformat()
         return OrderSnapshotPayload(
             intent_id=str(order.client_order_id), client_order_id=str(order.client_order_id),
             broker_order_id=str(order.id) if getattr(order, "id", None) else None,
             status=status, raw_broker_status=str(raw_status),
-            quantity=_parse_exact_int(order.qty or 0, "broker order quantity"),
-            filled_quantity=filled_qty, average_fill_price=avg_price,
+            quantity=normalize_exact_int(order.qty, "broker order quantity"),
+            filled_quantity=normalize_exact_int(order.filled_qty or 0, "broker order filled_qty"),
+            average_fill_price=normalize_optional_decimal_string(
+                getattr(order, "filled_avg_price", None), "broker order filled_avg_price"
+            ),
             submitted_at=str(order.submitted_at) if getattr(order, "submitted_at", None) else now,
             updated_at=str(order.updated_at) if getattr(order, "updated_at", None) else now,
             book_id=_book_from_client_order_id(str(order.client_order_id)),
             symbol=str(getattr(order, "symbol", "")) or None,
-            side=str(getattr(getattr(order, "side", None), "value", getattr(order, "side", ""))).upper() or None,
-            limit_price=str(getattr(order, "limit_price", "")) or None,
-            time_in_force=str(getattr(getattr(order, "time_in_force", None), "value", "day")).upper(),
+            side=normalize_side(getattr(raw_side, "value", raw_side), "broker order side"),
+            limit_price=normalize_optional_decimal_string(
+                getattr(order, "limit_price", None), "broker order limit_price"
+            ),
+            # Absent is DAY (this runtime submits DAY orders only); present
+            # but unrecognized fails closed rather than defaulting.
+            time_in_force=normalize_time_in_force(
+                getattr(raw_tif, "value", raw_tif) if raw_tif is not None else "DAY",
+                "broker order time_in_force",
+            ),
             account_fingerprint=self.account_fingerprint(),
         )
 
