@@ -16,9 +16,12 @@ from trading_research.runtime.client.process_client import RuntimeClient
 
 from tests.support.runtime_client_fixtures import (
     FakeTransport,
+    account_payload,
     capabilities_payload,
     fake_transport_factory,
     health_payload,
+    order_payload,
+    position_payload,
     sequential_fake_transport_factory,
     start_ready_client,
 )
@@ -252,7 +255,7 @@ def test_readonly_recovery_lookup_transparently_restarts_onto_a_clean_process():
     # never touching fake1's now-dead transport again.
     fake2.queue_success(health_payload(), operation="health")
     fake2.queue_success(capabilities_payload(), operation="capabilities")
-    fake2.queue_success({"intent_id": "i1", "status": "ACCEPTED"})
+    fake2.queue_success(order_payload(intent_id="i1", client_order_id="i1", status="ACCEPTED"))
     result = client.get_order("i1")
     assert result["status"] == "ACCEPTED"
     assert fake1.written_lines[-1] != "" and len(fake2.written_lines) == 3  # health, capabilities, get_order
@@ -282,12 +285,12 @@ def test_late_stale_response_never_reaches_a_later_call_after_restart():
         "protocol_version": stale["protocol_version"], "request_id": stale["request_id"],
         "operation": stale["operation"], "runtime_version": "fake-runtime-1",
         "success": True, "retryable": False, "error": None,
-        "payload": {"intent_id": "i1", "status": "ACCEPTED"},
+        "payload": order_payload(intent_id="i1", client_order_id="i1", status="ACCEPTED"),
     }))
 
     fake2.queue_success(health_payload(), operation="health")
     fake2.queue_success(capabilities_payload(), operation="capabilities")
-    fake2.queue_success({"intent_id": "i2", "status": "REJECTED"})
+    fake2.queue_success(order_payload(intent_id="i2", client_order_id="i2", status="REJECTED"))
     result = client.get_order("i2")
     assert result["status"] == "REJECTED"  # fake2's response, never fake1's stale one
 
@@ -310,6 +313,128 @@ def test_repeated_start_shutdown_cycles_join_pump_threads_without_leaking():
         assert not transport._stderr_thread.is_alive()
     after = {t.ident for t in threading.enumerate()}
     assert after <= before  # no new threads left running
+
+
+# --- PR 9 item 2: RuntimeClient re-validates every response through the
+# normalization contract, so a malformed runtime response is rejected at the
+# client boundary with `ProtocolViolationError` -- it never reaches a
+# service (`submit_credentialed_paper_order`, `sync_paper_orders`,
+# `reconcile_paper_account_and_positions`) as an untyped dict a caller has
+# to defensively re-check. -----------------------------------------------
+
+
+def test_submit_order_rejects_a_response_with_an_unknown_status():
+    fake = FakeTransport()
+    client = _client(fake)
+    start_ready_client(client, fake)
+    fake.queue_success(order_payload(status="PROBABLY_FINE"))
+    with pytest.raises(ProtocolViolationError):
+        client.submit_order({"intent_id": "i1"})
+
+
+def test_get_order_rejects_a_non_finite_fill_price():
+    fake = FakeTransport()
+    client = _client(fake)
+    start_ready_client(client, fake)
+    fake.queue_success(
+        order_payload(status="FILLED", filled_quantity=10, average_fill_price="NaN")
+    )
+    with pytest.raises(ProtocolViolationError):
+        client.get_order("i1")
+
+
+def test_get_order_rejects_a_fractional_quantity():
+    fake = FakeTransport()
+    client = _client(fake)
+    start_ready_client(client, fake)
+    fake.queue_success(order_payload(quantity="10.5"))
+    with pytest.raises(ProtocolViolationError):
+        client.get_order("i1")
+
+
+def test_get_order_rejects_a_response_missing_a_required_field():
+    fake = FakeTransport()
+    client = _client(fake)
+    start_ready_client(client, fake)
+    fake.queue_success(order_payload(submitted_at=None))
+    with pytest.raises(ProtocolViolationError):
+        client.get_order("i1")
+
+
+def test_cancel_paper_order_rejects_a_malformed_response():
+    fake = FakeTransport()
+    client = _client(fake)
+    start_ready_client(client, fake)
+    fake.queue_success(order_payload(status="PENDING_SUBMISSION"))  # not broker-reportable
+    with pytest.raises(ProtocolViolationError):
+        client.cancel_paper_order("i1")
+
+
+def test_list_open_orders_rejects_a_malformed_order_in_the_list():
+    fake = FakeTransport()
+    client = _client(fake)
+    start_ready_client(client, fake)
+    fake.queue_success({"orders": [order_payload(), order_payload(quantity=None)]})
+    with pytest.raises(ProtocolViolationError):
+        client.list_open_orders()
+
+
+def test_list_recent_orders_rejects_a_malformed_order_in_the_list():
+    fake = FakeTransport()
+    client = _client(fake)
+    start_ready_client(client, fake)
+    fake.queue_success({"orders": [order_payload(status="not-a-status")]})
+    with pytest.raises(ProtocolViolationError):
+        client.list_recent_orders()
+
+
+def test_get_account_rejects_a_malformed_cash_value():
+    fake = FakeTransport()
+    client = _client(fake)
+    start_ready_client(client, fake)
+    fake.queue_success(account_payload(cash="Infinity"))
+    with pytest.raises(ProtocolViolationError):
+        client.get_account()
+
+
+def test_get_account_rejects_a_missing_currency():
+    fake = FakeTransport()
+    client = _client(fake)
+    start_ready_client(client, fake)
+    fake.queue_success(account_payload(currency=""))
+    with pytest.raises(ProtocolViolationError):
+        client.get_account()
+
+
+def test_list_positions_rejects_a_non_positive_cost_basis():
+    fake = FakeTransport()
+    client = _client(fake)
+    start_ready_client(client, fake)
+    fake.queue_success({"positions": [position_payload(average_entry_price="0")]})
+    with pytest.raises(ProtocolViolationError):
+        client.list_positions()
+
+
+def test_list_positions_rejects_a_malformed_quantity():
+    fake = FakeTransport()
+    client = _client(fake)
+    start_ready_client(client, fake)
+    fake.queue_success({"positions": [position_payload(quantity="None")]})
+    with pytest.raises(ProtocolViolationError):
+        client.list_positions()
+
+
+def test_get_order_returns_the_canonical_shape_for_a_well_formed_response():
+    """The happy path still round-trips: a well-formed payload comes back
+    with normalized (uppercased, fixed-point) values."""
+    fake = FakeTransport()
+    client = _client(fake)
+    start_ready_client(client, fake)
+    fake.queue_success(order_payload(status="FILLED", filled_quantity=10, average_fill_price="1E+2"))
+    result = client.get_order("i1")
+    assert result["status"] == "FILLED"
+    assert result["average_fill_price"] == "100"
+    assert result["filled_quantity"] == 10
 
 
 def test_transport_termination_escalates_to_kill_when_process_ignores_terminate():

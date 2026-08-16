@@ -23,6 +23,7 @@ from .errors import (
     RuntimeStartupTimeoutError,
     RuntimeUnavailableError,
 )
+from .models import RuntimeAccountSnapshot, RuntimeOrderSnapshot, RuntimePositionSnapshot
 from .protocol import build_request_line, parse_response_line
 
 # Milestone 11.3.1 Item 4: the default single-request timeout, exposed as a
@@ -331,31 +332,40 @@ class RuntimeClient:
         """Never retried internally. A caller that gets
         `RuntimeRequestTimeoutError`/`RuntimeUnavailableError` from this call
         must call `get_order` with the same idempotency key before deciding
-        whether to submit again — never resubmit blindly."""
-        return self._request("submit_order", intent_payload)
+        whether to submit again — never resubmit blindly.
+
+        PR 9: the raw response is re-validated through `RuntimeOrderSnapshot`
+        before it reaches any caller — the runtime's own normalization is not
+        trusted a second time at this boundary (docs/milestone-4.md Step 3's
+        posture, applied in the other direction)."""
+        return RuntimeOrderSnapshot.from_payload(self._request("submit_order", intent_payload)).to_dict()
 
     def get_order(self, client_order_id: str) -> dict | None:
         try:
-            return self._request("get_order", {"client_order_id": client_order_id})
+            raw = self._request("get_order", {"client_order_id": client_order_id})
         except RuntimeOperationError as exc:
             if exc.code == "UNKNOWN_ORDER":
                 return None
             raise
+        return RuntimeOrderSnapshot.from_payload(raw).to_dict()
 
     def list_open_orders(self) -> list[dict]:
-        return self._request("list_open_orders", {})["orders"]
+        return [RuntimeOrderSnapshot.from_payload(o).to_dict() for o in self._request("list_open_orders", {})["orders"]]
 
     def list_recent_orders(self, limit: int = 50) -> list[dict]:
-        return self._request("list_recent_orders", {"limit": limit})["orders"]
+        orders = self._request("list_recent_orders", {"limit": limit})["orders"]
+        return [RuntimeOrderSnapshot.from_payload(o).to_dict() for o in orders]
 
     def get_account(self) -> dict:
-        return self._request("get_account", {})
+        return RuntimeAccountSnapshot.from_payload(self._request("get_account", {})).to_dict()
 
     def list_positions(self) -> list[dict]:
-        return self._request("list_positions", {})["positions"]
+        positions = self._request("list_positions", {})["positions"]
+        return [RuntimePositionSnapshot.from_payload(p).to_dict() for p in positions]
 
     def cancel_paper_order(self, client_order_id: str) -> dict:
-        return self._request("cancel_paper_order", {"client_order_id": client_order_id})
+        raw = self._request("cancel_paper_order", {"client_order_id": client_order_id})
+        return RuntimeOrderSnapshot.from_payload(raw).to_dict()
 
     # -- Milestone 11 normalized external-paper operations ----------------
 

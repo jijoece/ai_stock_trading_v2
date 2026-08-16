@@ -1777,7 +1777,7 @@ including both `backtest-runtime-tests (3.10)` and
 `backtest-runtime-tests (3.11)` matrix legs
 (https://github.com/jijoece/ai_stock_trading_v2/actions/runs/30737287212).
 
-## Completed work (PR 8) — DECIDED, IMPLEMENTED, NOT MERGED
+## Completed work (PR 8) — DECIDED, IMPLEMENTED, MERGED (PR #20)
 
 **Scope:** documentation only — `docs/library-migration/pr8/DECISION.md` (new,
 the decision record), `DECISIONS.md` (**D7**), `REMOVAL_MANIFEST.md`,
@@ -1975,7 +1975,9 @@ service was called; no live data was fetched; the scheduler was not enabled.
 
 ## Next PR
 
-**PR 9 — strengthen the LumiBot runtime normalization contract. Not started.**
+**PR 9 — strengthen the LumiBot runtime normalization contract. IMPLEMENTED,
+NOT MERGED** (see "Completed work (PR 9)" below and `DECISIONS.md` D8; this
+paragraph is left as the historical "next PR" note written when PR 8 closed).
 `runtime/lumibot/adapter.py` and `paper_runtime/.../lumibot_gateway.py`:
 normalize orders, statuses, fills, positions and account snapshots
 (`MASTER_PLAN.md` row 9, `DECISIONS.md` D1). PR 10 then proves reconciliation
@@ -1983,7 +1985,7 @@ against `paper_books` without removing the book ledger.
 
 **PR 8a — legacy backtest run identity, order records, and per-session bar
 availability** is also now open (`MASTER_PLAN.md` row 8a). It is independent of
-the migration sequence and can run at any point after PR 8 merges: bind a
+the migration sequence and can run at any point now that PR 8 has merged: bind a
 canonical bar-dataset digest into the legacy engine's `input_hash` so two runs
 over different bars cannot collide onto one persisted identity; resolve the
 `backtest_orders` table — persist orders and rejections, or delete the table and
@@ -2119,19 +2121,82 @@ unmapped set is exactly `{"ERROR"}`, so the gap cannot widen or narrow
 without editing an assertion that names the trade-off. Recorded as
 `DECISIONS.md` D8 ruling 4.
 
+### Follow-up: completing the polling lifecycle, production wiring, drift protection, and the last silent repairs
+
+A second pass over this PR found the contract declared correctly but not yet
+fully load-bearing in four places. All four are recorded as `DECISIONS.md`
+D8 rulings 6-9:
+
+1. **The broker-status polling path crashed on the very statuses PR 9 added.**
+   `services/sync_paper_orders.py::_sync_one` validated a polled status
+   against `execution/models.py::EVENT_TYPES` (the narrower, synchronous-
+   adapter vocabulary), not `BROKER_REPORTABLE_STATUSES` — so the first poll
+   that observed `CANCEL_REQUESTED` or `EXPIRED` raised
+   `UNKNOWN_BROKER_STATUS` before the submission-row fix could matter.
+   `_sync_one` now validates against `BROKER_REPORTABLE_STATUSES`.
+   `CANCEL_REQUESTED` stays nonterminal and pollable with no further change
+   needed. `EXPIRED` has no `RESULT_STATUSES` counterpart; rather than widen
+   the vocabulary shared with the synchronous ADR 0001 adapter (which can
+   never emit it), a new `_DOMAIN_STATUS_PROJECTION` maps it to `CANCELLED`
+   for the `PaperExecutionEvent`/`PaperExecutionResult` the ledger sees,
+   while the submission row and the event's `raw_status` keep the true
+   `EXPIRED` value. Tested end to end, both before and after a partial fill,
+   in `tests/unit/test_sync_paper_orders.py`.
+2. **`RuntimeClient` never called the parsers PR 9 added.**
+   `runtime/client/process_client.py` returned every runtime response as a
+   raw, unvalidated dict — `RuntimeOrderSnapshot`/`RuntimeAccountSnapshot`/
+   `RuntimePositionSnapshot` existed but nothing invoked them. `submit_order`,
+   `get_order`, `cancel_paper_order`, `list_open_orders`, `list_recent_orders`,
+   `get_account`, and `list_positions` now parse through the matching
+   `from_payload` and re-serialize through a new `to_dict()` to the same
+   wire-compatible shape, so no caller needed to change. New fake-transport
+   tests in `tests/unit/test_runtime_client.py` prove a malformed status, a
+   non-finite price, a fractional quantity, and a missing required field are
+   all rejected with `ProtocolViolationError` at the client boundary.
+3. **Constant/name equality does not prove decision equality.**
+   `test_runtime_normalization_contract.py` proves both `normalization.py`
+   files declare the same constants and function names; it cannot prove they
+   accept/reject the same input the same way. `tests/fixtures/
+   normalization_corpus.json` is one declarative corpus of (function, args,
+   accept/reject, canonical-output) cases, read as plain JSON by both
+   `tests/unit/test_normalization_corpus.py` and `paper_runtime/tests/
+   test_normalization_corpus.py`, each run independently against its own
+   distribution's module.
+4. **Three more silent repairs in `lumibot_gateway.py`.** `order.filled_qty
+   or 0` conflated a genuinely missing `filled_qty` with a broker reporting
+   zero shares filled; a missing `submitted_at`/`updated_at` was replaced
+   with this process's own clock reading; a missing account `currency` was
+   defaulted to `"USD"`. All three now fail closed. Two intentional defaults
+   remain — an absent `time_in_force` still normalizes to `DAY` (this
+   runtime only ever submits DAY orders) and a naive broker timestamp is
+   still treated as UTC (Alpaca's paper API reports UTC) — both are now
+   documented in-line as contract rules and pinned by regression tests in
+   `paper_runtime/tests/test_normalization.py` rather than left as unstated
+   coercions.
+
 ### Tests run
 
-- `nox -s ci` — **all four blocking sessions passed**: `tests`
-  (2901 passed, 105 skipped), `paper_tests` (93 passed), `safety_typecheck`
-  (pyright, 0 errors), `migration_smoke` (OK).
-- Local `.venv` (which has LumiBot installed, unlike the `tests` nox session):
-  `pytest tests/ -q` — **2972 passed, 57 skipped, 0 failed** (2883 before
-  this PR); `pytest paper_runtime/tests -q` — **93 passed** (59 before).
-- New: `tests/unit/test_runtime_normalization_contract.py` (42 tests),
-  `tests/unit/test_runtime_client_normalization.py` (31),
-  `paper_runtime/tests/test_normalization.py` (34). Added:
-  11 tests to `tests/unit/test_lumibot_adapter.py`, 1 to
+- `nox -s ci` — **all four blocking sessions passed** (re-run after the
+  follow-up above): `tests` (2977 passed, 105 skipped), `paper_tests`
+  (158 passed), `safety_typecheck` (pyright, 0 errors), `migration_smoke`
+  (OK).
+- Local `.venv` (which has LumiBot installed, unlike the `tests` nox
+  session): `pytest tests/unit -q` — **2931 passed, 41 skipped, 0 failed**;
+  `nox -s paper_tests -- -q` — **158 passed** (34 before the follow-up).
+- New in the original PR: `tests/unit/test_runtime_normalization_contract.py`
+  (42 tests), `tests/unit/test_runtime_client_normalization.py` (31),
+  `paper_runtime/tests/test_normalization.py` (34, now 38 after the
+  follow-up). Added 11 tests to `tests/unit/test_lumibot_adapter.py`, 1 to
   `tests/unit/test_lumibot_event_mapper.py`.
+- New in the follow-up: 3 lifecycle tests in `tests/unit/test_sync_paper_orders.py`
+  (`CANCEL_REQUESTED` stays pollable; `EXPIRED` before and after a partial
+  fill); 11 malformed-response tests plus 2 fixture updates in
+  `tests/unit/test_runtime_client.py`; `tests/unit/test_normalization_corpus.py`
+  and `paper_runtime/tests/test_normalization_corpus.py` (61 shared-corpus
+  cases each); 4 new gateway regression tests in
+  `paper_runtime/tests/test_normalization.py` (missing `filled_qty` on a
+  `FILLED` order, missing `submitted_at`/`updated_at`, missing account
+  `currency`).
 - `nox -s typecheck` is not part of `nox -s ci` and carries a large
   pre-existing baseline (2530 errors). This PR takes it to 2535: all five are
   the *same* pre-existing `ScriptedGateway`-does-not-satisfy-`PaperBrokerGateway`

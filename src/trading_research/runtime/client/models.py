@@ -130,6 +130,19 @@ class RuntimeOrderSnapshot:
             updated_at=_required_str(payload, "updated_at"),
         )
 
+    def to_dict(self) -> dict:
+        """The canonical, re-validated wire shape `RuntimeClient` hands its
+        callers — same field names as the raw runtime payload, but every
+        value has passed `from_payload`'s checks."""
+        return {
+            "intent_id": self.intent_id, "client_order_id": self.client_order_id,
+            "broker_order_id": self.broker_order_id, "status": self.status,
+            "raw_broker_status": self.raw_broker_status, "quantity": self.quantity,
+            "filled_quantity": self.filled_quantity,
+            "average_fill_price": format(self.average_fill_price, "f") if self.average_fill_price is not None else None,
+            "submitted_at": self.submitted_at, "updated_at": self.updated_at,
+        }
+
 
 @dataclass(frozen=True)
 class RuntimeAccountSnapshot:
@@ -149,6 +162,13 @@ class RuntimeAccountSnapshot:
             buying_power=_decimal(payload, "buying_power", required=False),
             currency=_required_str(payload, "currency"), as_of=_required_str(payload, "as_of"),
         )
+
+    def to_dict(self) -> dict:
+        return {
+            "cash": format(self.cash, "f"), "equity": format(self.equity, "f"),
+            "buying_power": format(self.buying_power, "f") if self.buying_power is not None else None,
+            "currency": self.currency, "as_of": self.as_of,
+        }
 
 
 @dataclass(frozen=True)
@@ -174,3 +194,11 @@ class RuntimePositionSnapshot:
             market_value=_decimal(payload, "market_value", required=False),
             as_of=_required_str(payload, "as_of"),
         )
+
+    def to_dict(self) -> dict:
+        return {
+            "symbol": self.symbol, "quantity": format(self.quantity, "f"),
+            "average_entry_price": format(self.average_entry_price, "f"),
+            "market_value": format(self.market_value, "f") if self.market_value is not None else None,
+            "as_of": self.as_of,
+        }

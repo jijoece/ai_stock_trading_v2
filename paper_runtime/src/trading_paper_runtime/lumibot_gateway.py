@@ -42,6 +42,7 @@ from .normalization import (
     normalize_optional_decimal_string,
     normalize_side,
     normalize_time_in_force,
+    normalize_timestamp_string,
 )
 
 # Alpaca (alpaca-py) raw order statuses -> internal runtime status
@@ -296,11 +297,14 @@ class LumiBotAlpacaPaperGateway:
         account = self._api.get_account()
         # PR 9: raw values are handed to the payload, whose `__post_init__`
         # is the single normalization boundary. Previously `str(account.cash)`
-        # turned a missing value into the literal `"None"`.
+        # turned a missing value into the literal `"None"`, and a missing
+        # `currency` was silently defaulted to `"USD"` rather than rejected
+        # — a broker that stops reporting its account currency is a
+        # malformed observation, not evidence the account is USD.
         return AccountSnapshotPayload(
             cash=getattr(account, "cash", None), equity=getattr(account, "equity", None),
             buying_power=getattr(account, "buying_power", None),
-            currency=getattr(account, "currency", None) or "USD",
+            currency=getattr(account, "currency", None),
             as_of=datetime.now(timezone.utc).isoformat(),
         )
 
@@ -355,31 +359,56 @@ class LumiBotAlpacaPaperGateway:
           broker reporting a plain string `"gtc"` silently normalized to
           `DAY`, misstating the order's lifetime.
         * nothing asserted the mapped status was in the shared vocabulary.
+
+        Also no longer fabricated: a missing `filled_qty` used to become the
+        integer `0` via `order.filled_qty or 0` — indistinguishable from a
+        broker genuinely reporting zero shares filled — and a missing
+        `submitted_at`/`updated_at` used to become *this process's* current
+        clock reading, fabricating a broker timestamp that was never
+        observed. Both now fail closed through `normalize_exact_int`/
+        `normalize_timestamp_string` instead.
         """
         raw_status = getattr(order.status, "value", order.status)
         status = _map_status(raw_status)
         raw_side = getattr(order, "side", None)
         raw_tif = getattr(order, "time_in_force", None)
-        now = datetime.now(timezone.utc).isoformat()
         return OrderSnapshotPayload(
             intent_id=str(order.client_order_id), client_order_id=str(order.client_order_id),
             broker_order_id=str(order.id) if getattr(order, "id", None) else None,
             status=status, raw_broker_status=str(raw_status),
             quantity=normalize_exact_int(order.qty, "broker order quantity"),
-            filled_quantity=normalize_exact_int(order.filled_qty or 0, "broker order filled_qty"),
+            filled_quantity=normalize_exact_int(
+                getattr(order, "filled_qty", None), "broker order filled_qty"
+            ),
             average_fill_price=normalize_optional_decimal_string(
                 getattr(order, "filled_avg_price", None), "broker order filled_avg_price"
             ),
-            submitted_at=str(order.submitted_at) if getattr(order, "submitted_at", None) else now,
-            updated_at=str(order.updated_at) if getattr(order, "updated_at", None) else now,
+            # A naive (tzinfo-less) broker timestamp is treated as UTC by
+            # `normalize_timestamp_string` — Alpaca's paper API reports UTC —
+            # rather than silently defaulted from this process's own clock.
+            # This is a documented contract rule (docs/library-migration/
+            # DECISIONS.md D8), not an unstated coercion.
+            submitted_at=normalize_timestamp_string(
+                getattr(order, "submitted_at", None), "broker order submitted_at"
+            ),
+            updated_at=normalize_timestamp_string(
+                getattr(order, "updated_at", None), "broker order updated_at"
+            ),
             book_id=_book_from_client_order_id(str(order.client_order_id)),
             symbol=str(getattr(order, "symbol", "")) or None,
             side=normalize_side(getattr(raw_side, "value", raw_side), "broker order side"),
             limit_price=normalize_optional_decimal_string(
                 getattr(order, "limit_price", None), "broker order limit_price"
             ),
-            # Absent is DAY (this runtime submits DAY orders only); present
-            # but unrecognized fails closed rather than defaulting.
+            # This is the one deliberate default in this method (re-checked
+            # against D8's fail-closed posture, docs/library-migration/
+            # DECISIONS.md): this runtime only ever *submits* DAY LIMIT
+            # orders (its own capability advertisement restricts it to
+            # that), so a broker order with no `time_in_force` attribute at
+            # all can only be one this runtime itself created as DAY — it is
+            # a documented, tested contract rule, not a repair of an
+            # ambiguous broker value. A *present but unrecognized* value
+            # still fails closed rather than defaulting.
             time_in_force=normalize_time_in_force(
                 getattr(raw_tif, "value", raw_tif) if raw_tif is not None else "DAY",
                 "broker order time_in_force",

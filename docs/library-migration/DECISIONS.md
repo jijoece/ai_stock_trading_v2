@@ -851,3 +851,88 @@ longer survives as `Decimal('NaN')` past a `<= 0` guard; and a fractional
 broker quantity fails rather than truncating. This extends the posture
 already established for TA-Lib in PR 4 and for the vectorized adapter in
 PR 5 to the broker boundary.
+
+**Ruling 6 — the broker-status polling path now actually reaches
+`CANCEL_REQUESTED` and `EXPIRED`, not just the submission row.**
+`services/sync_paper_orders.py::_sync_one` validated the polled status
+against `execution/models.py::EVENT_TYPES` — the narrower, synchronous-
+adapter-compatible vocabulary from Ruling 3 — not against
+`BROKER_REPORTABLE_STATUSES`. Since `EVENT_TYPES` has no `CANCEL_REQUESTED`
+or `EXPIRED`, the very first poll that observed either status raised
+`UNKNOWN_BROKER_STATUS` and crashed the polling loop, before Ruling 2's fix
+to the submission row could ever matter in practice. `_sync_one` now
+validates against `BROKER_REPORTABLE_STATUSES`. `CANCEL_REQUESTED` needed no
+further change: it is nonterminal, so the existing `delta > 0 or status in
+TERMINAL_SUBMISSION_STATES` guard already skips building an event/result for
+it, and the submission row update (which was never restricted to
+`EVENT_TYPES`) leaves it on the unresolved-submissions queue for the next
+poll — Ruling 3's "two conformance levels" holds exactly as designed once the
+crash is removed. `EXPIRED` is terminal and has no `RESULT_STATUSES`
+counterpart; rather than widen the domain vocabulary shared with the
+synchronous ADR 0001 adapter (which can never emit `EXPIRED` at all — see
+Ruling 3), `sync_paper_orders._DOMAIN_STATUS_PROJECTION` projects it to
+`CANCELLED` for the `PaperExecutionEvent`/`PaperExecutionResult` the ledger
+sees, while `paper_broker_submissions.submission_status` and the event's
+`raw_status` both keep the true `EXPIRED` value — nothing is lost, only the
+ledger-facing status is coarsened, exactly as an operator cancellation
+already is. Covered by `tests/unit/test_sync_paper_orders.py`'s
+`CANCEL_REQUESTED`/`EXPIRED`-before-fill/`EXPIRED`-after-partial-fill tests.
+
+**Ruling 7 — `RuntimeClient` re-validates every response, not just the two
+new typed dataclasses that sat unused beside it.** PR 9 originally added
+`RuntimeOrderSnapshot`/`RuntimeAccountSnapshot`/`RuntimePositionSnapshot`
+under `runtime/client/models.py` but never wired them into
+`runtime/client/process_client.py::RuntimeClient` — every one of its typed
+operations (`submit_order`, `get_order`, `cancel_paper_order`,
+`list_open_orders`, `list_recent_orders`, `get_account`, `list_positions`)
+still returned the runtime's raw dict untouched. The parsers now sit on the
+request path itself: each method parses the raw response through the
+matching `from_payload`, then serializes back through a new `to_dict()` to
+the same wire-compatible shape callers already expected, so
+`submit_credentialed_paper_order`/`sync_paper_orders`/`reconcile_paper`
+needed no shape changes — only every value they read is now guaranteed to
+have passed the boundary check instead of merely being available to a caller
+that remembered to invoke it. `tests/unit/test_runtime_client.py` adds
+fake-transport tests proving a malformed status, a non-finite fill price, a
+fractional quantity, and a missing required field are all rejected with
+`ProtocolViolationError` before reaching a service.
+
+**Ruling 8 — constant/name equality is not decision equality; a shared
+corpus closes that gap.** `test_runtime_normalization_contract.py` proves
+both `normalization.py` files declare the same constants and the same
+function names by AST comparison. It does not prove the two implementations
+make the same accept/reject decision for a given input, or produce the same
+canonical output — two independently maintained fail-closed rule sets can
+still drift on an edge case (e.g. one side accepting `"1E+2"` and the other
+rejecting it) without either drift test noticing. `tests/fixtures/
+normalization_corpus.json` is one declarative list of (function, args,
+accept/reject, canonical-output) cases, read as plain JSON — not a Python
+import — by both `tests/unit/test_normalization_corpus.py` (against
+`trading_research.runtime.normalization`) and `paper_runtime/tests/
+test_normalization_corpus.py` (against `trading_paper_runtime.
+normalization`). Each side catches its own `NormalizationError` subclass, as
+Ruling 1 already permits; only the accept/reject verdict and the canonical
+output are required to match.
+
+**Ruling 9 — the remaining silent repairs in `lumibot_gateway.py` are
+closed, and the two that survive as intentional defaults are now documented
+contract rules with regression tests, not unstated coercions.** Reviewed
+against Ruling 5's "no helper defaults, coerces, or truncates" claim, three
+more repairs existed in `_order_to_snapshot`/`get_account`: `order.filled_qty
+or 0` turned a genuinely missing `filled_qty` into the same value as a
+broker reporting zero shares filled; a missing `submitted_at`/`updated_at`
+was replaced with `datetime.now(timezone.utc)` at translation time,
+fabricating a broker timestamp this process never observed; and a missing
+account `currency` was defaulted to `"USD"`. All three now fail closed
+(`normalize_exact_int`/`normalize_timestamp_string` on the raw attribute,
+and `AccountSnapshotPayload.__post_init__`'s existing `currency` check with
+no default upstream of it). Two defaults remain, deliberately, each now
+documented in-line and pinned by a regression test rather than left as an
+unstated coercion: an *absent* `time_in_force` still normalizes to `DAY`,
+because this runtime only ever submits DAY LIMIT orders (its own capability
+advertisement enforces that), so an order with no `time_in_force` attribute
+at all can only be one this runtime itself created; and a naive
+(tzinfo-less) broker timestamp is still treated as UTC by
+`normalize_timestamp_string`, because Alpaca's paper API reports UTC — this
+is the contract's stated timestamp rule, not an unstated guess, and applies
+identically on both sides of the process boundary.

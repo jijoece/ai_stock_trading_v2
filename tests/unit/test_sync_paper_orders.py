@@ -175,3 +175,88 @@ def test_no_unresolved_submissions_is_a_no_op(conn, ledger):
     client, fake = _client_with_fake()
     outcomes = sync_paper_orders(conn=conn, ledger=ledger, client=client, clock=lambda: NOW)
     assert outcomes == []
+
+
+# --- broker-status polling lifecycle (item 1: ACCEPTED -> CANCEL_REQUESTED
+# -> EXPIRED) --------------------------------------------------------------
+
+
+def test_cancel_requested_stays_nonterminal_and_pollable(conn, ledger):
+    """`CANCEL_REQUESTED` (Alpaca `pending_cancel`) is broker-reportable but
+    not in `execution.models.EVENT_TYPES` — before this fix, `_sync_one`
+    raised UNKNOWN_BROKER_STATUS on first sight of it. It must instead be a
+    quiet, non-finalizing status update that leaves the order on the
+    unresolved-submissions queue for the next poll."""
+    client, fake = _client_with_fake()
+    intent = _submit_and_accept(conn, client, fake, "rec-sync-cancel-requested")
+
+    fake.queue_success(_order_snapshot(intent.intent_id, status="CANCEL_REQUESTED", filled_quantity=0))
+    outcomes = sync_paper_orders(conn=conn, ledger=ledger, client=client, clock=lambda: NOW + timedelta(minutes=1))
+
+    assert outcomes[0].outcome == OUTCOME_UPDATED
+    assert outcomes[0].submission_status == "CANCEL_REQUESTED"
+    assert outcomes[0].new_events == 0
+    assert exec_repo.get_result(conn, intent.intent_id) is None
+    assert ledger.positions() == []
+
+    unresolved = exec_repo.list_unresolved_submissions(conn)
+    assert len(unresolved) == 1
+    assert unresolved[0].submission_status == "CANCEL_REQUESTED"
+    assert not unresolved[0].is_terminal()
+
+
+def test_expiry_before_any_fill_finalizes_as_cancelled_with_raw_status_preserved(conn, ledger):
+    """`EXPIRED` (Alpaca `expired`) is broker-reportable but has no matching
+    domain value in `RESULT_STATUSES` — it is projected to `CANCELLED` for
+    the ledger/result, while the submission row keeps the true `EXPIRED`
+    status and the event keeps the true raw broker status."""
+    client, fake = _client_with_fake()
+    intent = _submit_and_accept(conn, client, fake, "rec-sync-expired-1")
+
+    fake.queue_success(_order_snapshot(intent.intent_id, status="EXPIRED", filled_quantity=0))
+    outcomes = sync_paper_orders(conn=conn, ledger=ledger, client=client, clock=lambda: NOW + timedelta(minutes=1))
+
+    assert outcomes[0].outcome == OUTCOME_UPDATED
+    assert outcomes[0].submission_status == "EXPIRED"
+
+    result = exec_repo.get_result(conn, intent.intent_id)
+    assert result is not None
+    assert result.final_status == "CANCELLED"
+    assert result.filled_quantity == 0
+    assert ledger.positions() == []
+
+    # Terminal: cleared from the work queue.
+    assert exec_repo.list_unresolved_submissions(conn) == []
+    # The true broker status is not lost: the submission row and the raw
+    # event status both still say EXPIRED, only the domain projection says
+    # CANCELLED.
+    submission = exec_repo.get_submission(conn, intent.intent_id)
+    assert submission.submission_status == "EXPIRED"
+    events = exec_repo.list_events(conn, intent.intent_id)
+    assert events[-1].event_type == "CANCELLED"
+    assert events[-1].raw_status == "expired"
+
+
+def test_expiry_after_partial_fill_finalizes_as_cancelled_preserving_partial_quantity(conn, ledger):
+    client, fake = _client_with_fake()
+    intent = _submit_and_accept(conn, client, fake, "rec-sync-expired-2")
+
+    fake.queue_success(
+        _order_snapshot(intent.intent_id, status="PARTIALLY_FILLED", filled_quantity=20, average_fill_price="15.00")
+    )
+    sync_paper_orders(conn=conn, ledger=ledger, client=client, clock=lambda: NOW + timedelta(minutes=1))
+    assert ledger.positions()[0]["qty"] == 20
+
+    fake.queue_success(
+        _order_snapshot(intent.intent_id, status="EXPIRED", filled_quantity=20, average_fill_price="15.00")
+    )
+    sync_paper_orders(conn=conn, ledger=ledger, client=client, clock=lambda: NOW + timedelta(minutes=2))
+
+    result = exec_repo.get_result(conn, intent.intent_id)
+    assert result.final_status == "CANCELLED"
+    assert result.filled_quantity == 20
+    assert ledger.positions()[0]["qty"] == 20
+
+    submission = exec_repo.get_submission(conn, intent.intent_id)
+    assert submission.submission_status == "EXPIRED"
+    assert exec_repo.list_unresolved_submissions(conn) == []

@@ -257,6 +257,46 @@ def test_gateway_fails_closed_on_a_fill_with_no_price(gateway):
         gateway._order_to_snapshot(_raw_order(status=SimpleNamespace(value="filled"), filled_qty="10"))
 
 
+# --- item 4: no remaining silent repairs -----------------------------------
+
+
+def test_gateway_fails_closed_on_a_filled_order_with_no_filled_qty_reported(gateway):
+    """Before this fix, `order.filled_qty or 0` turned a genuinely missing
+    `filled_qty` into the same value as a broker legitimately reporting zero
+    shares filled — the two are not the same observation and must not be
+    conflated, especially for a status claiming shares were filled."""
+    with pytest.raises(RuntimeOperationError):
+        gateway._order_to_snapshot(
+            _raw_order(status=SimpleNamespace(value="filled"), filled_qty=None, filled_avg_price="101.5")
+        )
+
+
+def test_gateway_fails_closed_on_a_missing_submitted_at_instead_of_using_the_clock(gateway):
+    """Before this fix, a missing `submitted_at`/`updated_at` was replaced
+    with `datetime.now(timezone.utc)` — fabricating a broker timestamp this
+    process never observed."""
+    with pytest.raises(NormalizationError):
+        gateway._order_to_snapshot(_raw_order(submitted_at=None))
+
+
+def test_gateway_fails_closed_on_a_missing_updated_at_instead_of_using_the_clock(gateway):
+    with pytest.raises(NormalizationError):
+        gateway._order_to_snapshot(_raw_order(updated_at=None))
+
+
+def test_get_account_fails_closed_on_a_missing_currency_instead_of_defaulting_to_usd(gateway):
+    """Before this fix, a missing `currency` attribute was silently
+    defaulted to `"USD"` — a broker that stops reporting account currency is
+    a malformed observation, not evidence the account is denominated in
+    dollars."""
+    object.__setattr__(
+        gateway, "_api",
+        SimpleNamespace(get_account=lambda: SimpleNamespace(cash="1000", equity="1000", buying_power="2000")),
+    )
+    with pytest.raises(RuntimeOperationError):
+        gateway.get_account()
+
+
 def test_every_mapped_alpaca_status_is_inside_the_contract():
     from trading_paper_runtime.lumibot_gateway import _ALPACA_STATUS_MAP, _map_status
 

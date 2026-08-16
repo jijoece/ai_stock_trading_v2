@@ -154,8 +154,42 @@ def capabilities_payload(**overrides) -> dict:
     return base
 
 
+def account_payload(**overrides) -> dict:
+    base = {
+        "cash": "1000.00", "equity": "1000.00", "buying_power": "2000.00",
+        "currency": "USD", "as_of": "2026-08-02T15:00:00+00:00",
+    }
+    base.update(overrides)
+    return base
+
+
+def position_payload(**overrides) -> dict:
+    base = {
+        "symbol": "AAPL", "quantity": "10", "average_entry_price": "101.5",
+        "market_value": "1015", "as_of": "2026-08-02T15:00:00+00:00",
+    }
+    base.update(overrides)
+    return base
+
+
 def start_ready_client(client, fake: FakeTransport, *, health: dict | None = None, capabilities: dict | None = None) -> None:
     """Queue a passing health+capabilities pair and call client.start()."""
     fake.queue_success(health or health_payload(), operation="health")
     fake.queue_success(capabilities or capabilities_payload(), operation="capabilities")
     client.start()
+
+
+def order_payload(**overrides) -> dict:
+    """A well-formed `RuntimeOrderSnapshot`-shaped wire payload — PR 9 wires
+    `RuntimeClient` to re-validate every order response through
+    `RuntimeOrderSnapshot.from_payload`, so a test-side stand-in must satisfy
+    that contract (every required field present) to reach the assertion it
+    actually cares about."""
+    base = {
+        "intent_id": "i1", "client_order_id": "i1", "broker_order_id": "b-1",
+        "status": "ACCEPTED", "raw_broker_status": "new", "quantity": 10, "filled_quantity": 0,
+        "average_fill_price": None, "submitted_at": "2026-08-02T15:00:00+00:00",
+        "updated_at": "2026-08-02T15:00:00+00:00",
+    }
+    base.update(overrides)
+    return base
