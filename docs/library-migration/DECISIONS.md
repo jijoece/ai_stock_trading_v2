@@ -936,3 +936,56 @@ at all can only be one this runtime itself created; and a naive
 `normalize_timestamp_string`, because Alpaca's paper API reports UTC — this
 is the contract's stated timestamp rule, not an unstated guess, and applies
 identically on both sides of the process boundary.
+
+**Ruling 10 (Milestone 11 follow-up) — the `time_in_force` default from
+Ruling 9 was narrower than claimed; it now applies only to orders this
+runtime can prove it created.** Ruling 9's "this runtime only ever submits
+DAY LIMIT orders" justification is true for `submit_order`/`get_order`, but
+`list_open_orders`/`list_recent_orders`/`get_order_by_broker_id` are
+account-wide broker reads that can return an order placed manually, or by
+another application, against the same paper account — for such an order the
+DAY assumption does not hold. `_order_to_snapshot` now defaults an absent
+`time_in_force` to `DAY` only when the order's own `client_order_id` is
+inside this project's own id namespace (`"intent-"` for in-process ADR 0001
+orders, `"epb-"` for external paper-book orders —
+`_is_runtime_owned_client_order_id` in `lumibot_gateway.py`); for any other
+`client_order_id`, an absent `time_in_force` now fails closed like every
+other malformed field. A present-but-unrecognized value still fails closed
+regardless of ownership, unchanged from Ruling 9.
+
+**Ruling 11 (Milestone 11 follow-up) — `RuntimeOrderSnapshot` now matches
+`OrderSnapshotPayload`'s behavior instead of a narrower subset of it.**
+Before this follow-up, `RuntimeOrderSnapshot` (the main-process parser for
+the synchronous `submit_order`/`get_order`/`list_open_orders`/
+`list_recent_orders` responses) accepted a non-positive `quantity`, treated
+`submitted_at`/`updated_at` as opaque required strings instead of validating
+them as timestamps, and silently dropped `book_id`/`symbol`/`side`/
+`limit_price`/`time_in_force`/`account_fingerprint` from its `to_dict()` even
+though the runtime always sends them (`OrderSnapshotPayload.to_dict()`
+includes all of them). It now rejects `quantity <= 0`, canonicalizes both
+timestamps through `normalize_timestamp_string`, and preserves the six
+previously-dropped fields (validated: `side` through `normalize_side` when
+present, `limit_price` through the client's positive-decimal check,
+`time_in_force` through `normalize_time_in_force` — required, since the
+runtime always sets it — and `book_id`/`symbol`/`account_fingerprint` as
+optional strings).
+
+**Ruling 12 (Milestone 11 follow-up) — the enriched external-order wire ops
+are now re-validated at the `RuntimeClient` boundary, not left as raw dicts
+until `external_broker.py`'s own checks run.** `get_order_by_client_order_id`,
+`get_order_by_broker_order_id`, `cancel_external_order`, and
+`list_recent_external_orders` all return the same enriched shape
+(`dispatcher._external_order_dict`: `RuntimeOrderSnapshot`'s fields plus
+`provider`/`environment`/`rejection_code` scoping) and now parse it through a
+new `ExternalOrderSnapshot`; `list_order_fills` parses each entry through a
+new `ExternalFillSnapshot`; `get_external_positions` and
+`get_external_account_snapshot` parse their book/account-scoped envelopes
+through new `ExternalPositionsSnapshot`/`ExternalAccountSnapshot` wrappers
+(the latter reusing `RuntimeAccountSnapshot` for its shared fields). As with
+`RuntimeOrderSnapshot`, these parsers validate structure and type (status
+vocabulary, side/time-in-force vocabulary, finite/positive decimals, exact
+integers, canonical timestamps) and leave `external_broker.py`'s own
+business-rule checks (matching the approved intent, paper-endpoint scoping)
+in place downstream — a malformed nested field now fails with
+`ProtocolViolationError` before it can reach `paper_books` at all, rather
+than surfacing later as an ad hoc `MALFORMED_RUNTIME_RESPONSE`.

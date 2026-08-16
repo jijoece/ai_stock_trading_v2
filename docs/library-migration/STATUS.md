@@ -2174,21 +2174,61 @@ D8 rulings 6-9:
    `paper_runtime/tests/test_normalization.py` rather than left as unstated
    coercions.
 
+### Follow-up 2: Milestone 11 external-order validation and a corrected time-in-force default
+
+A third pass extended validation to the Milestone 11 external-paper methods
+and tightened `RuntimeOrderSnapshot` to match `OrderSnapshotPayload`'s
+behavior. Recorded as `DECISIONS.md` D8 rulings 10-12:
+
+1. **`RuntimeOrderSnapshot` now matches `OrderSnapshotPayload`'s behavior
+   instead of a narrower subset of it.** It rejects a non-positive
+   `quantity`, canonicalizes `submitted_at`/`updated_at` through
+   `normalize_timestamp_string` instead of treating them as opaque required
+   strings, and preserves `book_id`/`symbol`/`side`/`limit_price`/
+   `time_in_force`/`account_fingerprint` in `to_dict()` instead of silently
+   dropping them — the runtime always sends all six.
+2. **The Milestone 11 external-order methods on `RuntimeClient` never
+   validated their responses.** `get_order_by_client_order_id`,
+   `get_order_by_broker_order_id`, `cancel_external_order`,
+   `list_order_fills`, `get_external_positions`,
+   `get_external_account_snapshot`, and `list_recent_external_orders`
+   returned raw dicts straight from the wire. Four new parsers —
+   `ExternalOrderSnapshot`, `ExternalFillSnapshot`,
+   `ExternalPositionsSnapshot`, `ExternalAccountSnapshot` — now validate and
+   re-serialize every one of them to the exact enriched shape
+   `external_broker.py` already expects (`_validate_order_response`'s
+   `expected_fields`, the fill shape checked in `apply_external_fills`, and
+   the `_BASELINE_POSITIONS_FIELDS`/`_BASELINE_ACCOUNT_FIELDS` envelopes), so
+   no caller needed to change. New fake-transport tests prove a malformed
+   status, a non-positive quantity, a malformed limit price, a missing
+   `broker_order_id`, a non-positive fill price, a malformed side, and a
+   malformed nested position/cash value all fail with
+   `ProtocolViolationError` before reaching `paper_books`.
+3. **The `time_in_force` default from ruling 9 was too broad.** It applied
+   regardless of an order's origin, but `list_open_orders`/
+   `list_recent_orders` are account-wide broker reads that can return an
+   order this runtime never submitted. `_order_to_snapshot` now defaults an
+   absent `time_in_force` to `DAY` only when the order's `client_order_id`
+   is inside this project's own id namespace (`"intent-"` or `"epb-"` —
+   `_is_runtime_owned_client_order_id`); otherwise it fails closed. The
+   test that previously asserted `None -> DAY` unconditionally now asserts
+   that behavior only for a runtime-owned `client_order_id`, plus a new
+   test asserting the fail-closed path for a foreign one.
+
 ### Tests run
 
-- `nox -s ci` — **all four blocking sessions passed** (re-run after the
-  follow-up above): `tests` (2977 passed, 105 skipped), `paper_tests`
-  (158 passed), `safety_typecheck` (pyright, 0 errors), `migration_smoke`
+- `nox -s ci` — **all four blocking sessions passed** (re-run after both
+  follow-ups above): `tests` (2997 passed, 105 skipped), `paper_tests`
+  (160 passed), `safety_typecheck` (pyright, 0 errors), `migration_smoke`
   (OK).
 - Local `.venv` (which has LumiBot installed, unlike the `tests` nox
-  session): `pytest tests/unit -q` — **2931 passed, 41 skipped, 0 failed**;
-  `nox -s paper_tests -- -q` — **158 passed** (34 before the follow-up).
+  session): `pytest tests/unit -q` — **2951 passed, 41 skipped, 0 failed**.
 - New in the original PR: `tests/unit/test_runtime_normalization_contract.py`
   (42 tests), `tests/unit/test_runtime_client_normalization.py` (31),
-  `paper_runtime/tests/test_normalization.py` (34, now 38 after the
-  follow-up). Added 11 tests to `tests/unit/test_lumibot_adapter.py`, 1 to
+  `paper_runtime/tests/test_normalization.py` (34, now 40 after both
+  follow-ups). Added 11 tests to `tests/unit/test_lumibot_adapter.py`, 1 to
   `tests/unit/test_lumibot_event_mapper.py`.
-- New in the follow-up: 3 lifecycle tests in `tests/unit/test_sync_paper_orders.py`
+- New in follow-up 1: 3 lifecycle tests in `tests/unit/test_sync_paper_orders.py`
   (`CANCEL_REQUESTED` stays pollable; `EXPIRED` before and after a partial
   fill); 11 malformed-response tests plus 2 fixture updates in
   `tests/unit/test_runtime_client.py`; `tests/unit/test_normalization_corpus.py`
@@ -2197,6 +2237,17 @@ D8 rulings 6-9:
   `paper_runtime/tests/test_normalization.py` (missing `filled_qty` on a
   `FILLED` order, missing `submitted_at`/`updated_at`, missing account
   `currency`).
+- New in follow-up 2: 20 new tests in `tests/unit/test_runtime_client.py`
+  covering the Milestone 11 external-order methods (found/not-found,
+  canonical-shape, and malformed-nested-field cases for each of the seven
+  methods) plus `get_order`'s preserved-shape/non-positive-quantity/missing-
+  `time_in_force` cases; 3 fixture updates in
+  `tests/unit/test_sync_paper_orders.py`, `tests/unit/
+  test_submit_credentialed_paper_order.py`, and `tests/unit/
+  test_runtime_client_normalization.py` to add the six now-required/
+  preserved order fields; 2 new gateway tests in `paper_runtime/tests/
+  test_normalization.py` (`DAY` default applies for a runtime-owned
+  `client_order_id`, fails closed for a foreign one).
 - `nox -s typecheck` is not part of `nox -s ci` and carries a large
   pre-existing baseline (2530 errors). This PR takes it to 2535: all five are
   the *same* pre-existing `ScriptedGateway`-does-not-satisfy-`PaperBrokerGateway`

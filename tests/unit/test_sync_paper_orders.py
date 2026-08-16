@@ -70,6 +70,8 @@ def _order_snapshot(intent_id, *, status, filled_quantity=0, average_fill_price=
         "status": status, "raw_broker_status": status.lower(), "quantity": 70,
         "filled_quantity": filled_quantity, "average_fill_price": average_fill_price,
         "submitted_at": NOW.isoformat(), "updated_at": NOW.isoformat(),
+        "book_id": None, "symbol": "AAPL", "side": "BUY", "limit_price": "101.50",
+        "time_in_force": "DAY", "account_fingerprint": None,
     }
 
 

@@ -32,6 +32,8 @@ def _order_payload(**overrides) -> dict:
         "intent_id": "intent-1", "client_order_id": "intent-1", "broker_order_id": "b-1",
         "status": "ACCEPTED", "raw_broker_status": "new", "quantity": 10, "filled_quantity": 0,
         "average_fill_price": None, "submitted_at": _NOW, "updated_at": _NOW,
+        "book_id": None, "symbol": "AAPL", "side": "BUY", "limit_price": "101.50",
+        "time_in_force": "DAY", "account_fingerprint": None,
     }
     payload.update(overrides)
     return payload

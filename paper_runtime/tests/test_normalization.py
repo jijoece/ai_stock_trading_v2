@@ -237,9 +237,27 @@ def test_gateway_does_not_silently_default_a_plain_string_time_in_force(gateway)
     previously fell through `getattr(str, "value", "day")` and was reported
     as DAY regardless of what it actually said."""
     assert gateway._order_to_snapshot(_raw_order(time_in_force="gtc")).time_in_force == "GTC"
-    assert gateway._order_to_snapshot(_raw_order(time_in_force=None)).time_in_force == "DAY"
     with pytest.raises(NormalizationError):
         gateway._order_to_snapshot(_raw_order(time_in_force="forever"))
+
+
+def test_gateway_defaults_an_absent_time_in_force_to_day_only_for_a_runtime_owned_order(gateway):
+    """`client_order_id="intent-1"` (the fixture default) is inside this
+    project's own id namespace, so a DAY default is a documented contract
+    rule for it -- see D8 Ruling 9 / Milestone 11 follow-up."""
+    assert gateway._order_to_snapshot(_raw_order(time_in_force=None)).time_in_force == "DAY"
+    assert gateway._order_to_snapshot(
+        _raw_order(client_order_id="epb-baseline-abc123", time_in_force=None)
+    ).time_in_force == "DAY"
+
+
+def test_gateway_rejects_an_absent_time_in_force_for_an_order_outside_its_namespace(gateway):
+    """`list_open_orders`/`list_recent_orders` are account-wide broker
+    reads and can surface an order this runtime never submitted -- a
+    missing time_in_force on such an order must fail closed rather than be
+    assumed DAY."""
+    with pytest.raises(NormalizationError):
+        gateway._order_to_snapshot(_raw_order(client_order_id="manually-placed-order-1", time_in_force=None))
 
 
 def test_gateway_canonicalizes_alpaca_timestamps(gateway):

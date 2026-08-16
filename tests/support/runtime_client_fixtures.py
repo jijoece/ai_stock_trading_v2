@@ -190,6 +190,34 @@ def order_payload(**overrides) -> dict:
         "status": "ACCEPTED", "raw_broker_status": "new", "quantity": 10, "filled_quantity": 0,
         "average_fill_price": None, "submitted_at": "2026-08-02T15:00:00+00:00",
         "updated_at": "2026-08-02T15:00:00+00:00",
+        "book_id": None, "symbol": "AAPL", "side": "BUY", "limit_price": "101.50",
+        "time_in_force": "DAY", "account_fingerprint": None,
+    }
+    base.update(overrides)
+    return base
+
+
+def external_order_payload(**overrides) -> dict:
+    """A well-formed `ExternalOrderSnapshot`-shaped wire payload — the
+    enriched Milestone 11 external-order shape
+    (`dispatcher._external_order_dict` on the runtime side)."""
+    base = {
+        "provider": "alpaca_paper", "environment": "paper", "account_fingerprint": "acct_test",
+        "book_id": "BASELINE", "client_order_id": "epb-baseline-abc123", "broker_order_id": "b-1",
+        "symbol": "AAPL", "side": "BUY", "quantity": 10, "limit_price": "101.50",
+        "time_in_force": "DAY", "status": "ACCEPTED", "submitted_at": "2026-08-02T15:00:00+00:00",
+        "updated_at": "2026-08-02T15:00:00+00:00", "filled_quantity": 0, "average_fill_price": None,
+        "rejection_code": None,
+    }
+    base.update(overrides)
+    return base
+
+
+def external_fill_payload(**overrides) -> dict:
+    base = {
+        "fill_id": "f-1", "broker_order_id": "b-1", "client_order_id": "epb-baseline-abc123",
+        "book_id": "BASELINE", "symbol": "AAPL", "side": "BUY", "quantity": "10",
+        "price": "101.50", "filled_at": "2026-08-02T15:00:00+00:00", "account_fingerprint": "acct_test",
     }
     base.update(overrides)
     return base
