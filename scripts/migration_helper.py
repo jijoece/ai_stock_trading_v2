@@ -20,16 +20,19 @@ Usage:
 
     python scripts/migration_helper.py status
     python scripts/migration_helper.py continue-prompt
+    python scripts/migration_helper.py run-claude --fix-current-pr-only
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import shlex
 import subprocess
 import sys
+import threading
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -77,6 +80,20 @@ REVIEW_FINDINGS_RELATIVE_PATH = Path("REVIEW_FINDINGS.md")
 
 CLAUDE_BINARY = "claude"
 CLAUDE_TIMEOUT_SECONDS = 3600
+CLAUDE_ALLOWED_TOOLS = (
+    "Bash(.venv/bin/nox *)",
+    "Bash(nox *)",
+    "Bash(.venv/bin/python -m pytest *)",
+    "Bash(pytest *)",
+    "Bash(scripts/check_links.sh)",
+    "Bash(git status *)",
+    "Bash(git diff *)",
+    "Bash(git add *)",
+    "Bash(git commit *)",
+    "Bash(git rev-parse *)",
+    "Bash(git push)",
+    "Bash(git push *)",
+)
 
 # Heuristic only -- `claude`'s exact wording for quota exhaustion is not a
 # stable contract, so this scans combined stdout/stderr rather than trusting
@@ -303,7 +320,7 @@ def aggregate_ci_state(rollup: list[dict] | None) -> tuple[str, tuple[str, ...]]
 
 
 def _run_subprocess(
-    argv: list[str], repo_root: Path, *, timeout: int
+    argv: list[str], repo_root: Path, *, timeout: int, stream_output: bool = False
 ) -> subprocess.CompletedProcess[str]:
     """The one place this file shells out.
 
@@ -312,8 +329,48 @@ def _run_subprocess(
     explicit `run-claude` command). Nothing else in this file may call
     `subprocess.run` directly.
     """
+    if stream_output:
+        process_factory = subprocess.Popen
+        process = process_factory(
+            argv,
+            cwd=repo_root,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
+        )
+        assert process.stdout is not None
+        output: list[str] = []
+
+        def pump_output() -> None:
+            for line in process.stdout:
+                output.append(line)
+                print(line, end="", flush=True)
+
+        pump = threading.Thread(target=pump_output, daemon=True)
+        pump.start()
+        try:
+            returncode = process.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait()
+            pump.join()
+            raise
+        pump.join()
+        return subprocess.CompletedProcess(
+            argv,
+            returncode,
+            stdout="".join(output),
+            stderr="",
+        )
+
     return subprocess.run(
-        argv, cwd=repo_root, capture_output=True, text=True, check=False, timeout=timeout
+        argv,
+        cwd=repo_root,
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=timeout,
     )
 
 
@@ -381,6 +438,43 @@ def describe_pull_request(number: int, repo_root: Path) -> dict:
         repo_root,
     )
     return json.loads(raw)
+
+
+def current_pull_request(repo_root: Path) -> PullRequest:
+    """Return the open PR for the checked-out branch, or fail closed.
+
+    This deliberately uses `gh pr view`'s current-branch lookup instead of the
+    migration branch parser. It exists for external-review fix sessions on
+    non-migration PRs and can never select or start a migration phase.
+    """
+    raw = _run_gh(
+        [
+            "pr",
+            "view",
+            "--json",
+            "number,headRefName,headRefOid,state,isDraft",
+        ],
+        repo_root,
+    )
+    payload = json.loads(raw)
+    branch = payload.get("headRefName") or ""
+    head_sha = payload.get("headRefOid") or ""
+    state = (payload.get("state") or "").upper()
+    if not branch or not head_sha or not payload.get("number"):
+        raise HelperError("GitHub returned an incomplete current-PR description")
+    if state != "OPEN":
+        raise HelperError(
+            f"the pull request for `{branch}` is {state or 'in an unknown state'}, not open"
+        )
+    return PullRequest(
+        number=int(payload["number"]),
+        phase_id=phase_id_for_branch(branch) or "current",
+        branch=branch,
+        is_open=True,
+        is_merged=False,
+        is_draft=bool(payload.get("isDraft")),
+        head_sha=head_sha,
+    )
 
 
 # --------------------------------------------------------------------------
@@ -841,7 +935,7 @@ class ClaudeResult:
 
 def build_claude_argv(prompt: str) -> list[str]:
     """The exact, fixed `claude` invocation. Never bypasses permission checks."""
-    return [
+    argv = [
         CLAUDE_BINARY,
         "-p",
         prompt,
@@ -849,18 +943,29 @@ def build_claude_argv(prompt: str) -> list[str]:
         "json",
         "--permission-mode",
         "acceptEdits",
+        "--allowedTools",
+        " ".join(CLAUDE_ALLOWED_TOOLS),
     ]
+    if os.environ.get("MIGRATION_HELPER_STREAM_CLAUDE_OUTPUT") == "1":
+        argv[4] = "stream-json"
+        argv.append("--verbose")
+    return argv
 
 
 def _run_claude(argv: list[str], repo_root: Path, *, timeout: int) -> ClaudeResult:
+    stream_output = os.environ.get("MIGRATION_HELPER_STREAM_CLAUDE_OUTPUT") == "1"
     try:
-        completed = _run_subprocess(argv, repo_root, timeout=timeout)
+        completed = _run_subprocess(
+            argv, repo_root, timeout=timeout, stream_output=stream_output
+        )
     except FileNotFoundError as error:
         raise HelperError("the `claude` CLI is required") from error
     except subprocess.TimeoutExpired as error:
         raise HelperError("`claude` timed out") from error
     return ClaudeResult(
-        returncode=completed.returncode, stdout=completed.stdout, stderr=completed.stderr
+        returncode=completed.returncode,
+        stdout=completed.stdout or "",
+        stderr=completed.stderr or "",
     )
 
 
@@ -1019,6 +1124,47 @@ def build_fix_prompt(situation: Situation, findings: ReviewFindings) -> str:
     )
 
 
+def build_current_pr_fix_prompt(pull_request: PullRequest) -> str:
+    """Build a bounded fix prompt for the open PR on the current branch."""
+    return "\n".join(
+        [
+            "Fix the review findings on the existing current pull request. "
+            "Do not open a new PR.",
+            "",
+            f"Continue this exact branch: `{pull_request.branch}` "
+            f"(PR #{pull_request.number}), currently at {pull_request.head_sha}.",
+            "",
+            "Read only the bounded context you need:",
+            "1. REVIEW_FINDINGS.md",
+            "2. the current diff on this PR",
+            "3. the applicable AGENTS.md files",
+            "4. only the source, tests, configuration, ADRs, and current runbooks "
+            "needed to verify each finding",
+            "",
+            "For every finding recorded in REVIEW_FINDINGS.md:",
+            "- confirm it against the current code before changing anything",
+            "- fix every finding that is still valid",
+            "- add a regression test for each fix",
+            "",
+            "Then, in order:",
+            "- run the focused tests for the files you changed",
+            "- run the repository's canonical validation required by AGENTS.md",
+            "- commit the fix and its tests",
+            "- run `git rev-parse HEAD` to read that commit's SHA",
+            "- update REVIEW_FINDINGS.md: set `Review status: "
+            f"{REVIEW_STATUS_FIXES_APPLIED}`, `Finding count: 0`, and add a "
+            "`Fix commit: <the SHA you just read>` line; keep the original "
+            "`Reviewed HEAD:` line unchanged as the historical record of what was reviewed",
+            "- commit that documentation update as a separate commit",
+            f"- push both commits to `{pull_request.branch}`",
+            "",
+            _SHARED_RULES,
+            "Do not open a replacement PR.",
+            "Do not merge.",
+        ]
+    )
+
+
 def _preflight_branch_and_head(repo_root: Path, pull_request: PullRequest) -> None:
     """Fail closed unless the local checkout is exactly the PR's branch and HEAD."""
     branch = _git_current_branch(repo_root)
@@ -1093,22 +1239,39 @@ def _validate_fix_outcome(
     )
 
 
-def _run_fix_session(repo_root: Path, situation: Situation, *, dry_run: bool) -> int:
-    pull_request = situation.pull_request
-    assert pull_request is not None
-
-    findings = read_review_findings(repo_root)
-    check_review_findings_not_stale(findings, pull_request.head_sha or "")
-
+def _run_prepared_fix_session(
+    repo_root: Path,
+    pull_request: PullRequest,
+    findings: ReviewFindings,
+    prompt: str,
+    *,
+    dry_run: bool,
+) -> int:
+    """Run one already-scoped review-fix session for an existing PR."""
     if not findings.is_actionable:
+        status = findings.status.upper()
+        if status == REVIEW_STATUS_CLEAN:
+            print(
+                f"REVIEW_FINDINGS.md for PR #{pull_request.number} is clean; "
+                "waiting for a human to merge."
+            )
+            return EXIT_OK
+        if status == REVIEW_STATUS_FIXES_APPLIED:
+            print(
+                f"REVIEW_FINDINGS.md for PR #{pull_request.number} records fixes applied "
+                f"in {findings.fix_commit or 'an unrecorded commit'}; an external review of "
+                "the current PR HEAD is still required before merge."
+            )
+            return EXIT_OK
         print(
-            f"REVIEW_FINDINGS.md for PR #{pull_request.number} is clean; "
-            "waiting for a human to merge."
+            f"error: REVIEW_FINDINGS.md for PR #{pull_request.number} reports no findings "
+            f"under the unrecognized status `{findings.status}`; refusing to judge merge "
+            "readiness",
+            file=sys.stderr,
         )
-        return EXIT_OK
+        return EXIT_HUMAN_ATTENTION
 
     _preflight_branch_and_head(repo_root, pull_request)
-    prompt = build_fix_prompt(situation, findings)
     argv = build_claude_argv(prompt)
 
     if dry_run:
@@ -1122,15 +1285,14 @@ def _run_fix_session(repo_root: Path, situation: Situation, *, dry_run: bool) ->
     pre_run_head = _git_head_sha(repo_root)
     result = _run_claude(argv, repo_root, timeout=CLAUDE_TIMEOUT_SECONDS)
 
-    if looks_like_quota_exhaustion(result):
-        print(
-            "Claude quota appears exhausted; this is resumable -- re-run `run-claude` "
-            "once quota is available.",
-            file=sys.stderr,
-        )
-        return EXIT_CLAUDE_QUOTA
-
     if result.returncode != 0:
+        if looks_like_quota_exhaustion(result):
+            print(
+                "Claude quota appears exhausted; this is resumable -- re-run `run-claude` "
+                "once quota is available.",
+                file=sys.stderr,
+            )
+            return EXIT_CLAUDE_QUOTA
         print(f"error: the Claude fix session failed (exit {result.returncode})", file=sys.stderr)
         if result.stderr.strip():
             print(result.stderr.strip(), file=sys.stderr)
@@ -1139,6 +1301,34 @@ def _run_fix_session(repo_root: Path, situation: Situation, *, dry_run: bool) ->
     ok, explanation = _validate_fix_outcome(repo_root, pull_request, pre_run_head=pre_run_head)
     print(explanation)
     return EXIT_OK if ok else EXIT_ERROR
+
+
+def _run_fix_session(repo_root: Path, situation: Situation, *, dry_run: bool) -> int:
+    pull_request = situation.pull_request
+    assert pull_request is not None
+
+    findings = read_review_findings(repo_root)
+    check_review_findings_not_stale(findings, pull_request.head_sha or "")
+    return _run_prepared_fix_session(
+        repo_root,
+        pull_request,
+        findings,
+        build_fix_prompt(situation, findings),
+        dry_run=dry_run,
+    )
+
+
+def _run_current_pr_fix_session(repo_root: Path, *, dry_run: bool) -> int:
+    pull_request = current_pull_request(repo_root)
+    findings = read_review_findings(repo_root)
+    check_review_findings_not_stale(findings, pull_request.head_sha or "")
+    return _run_prepared_fix_session(
+        repo_root,
+        pull_request,
+        findings,
+        build_current_pr_fix_prompt(pull_request),
+        dry_run=dry_run,
+    )
 
 
 def _run_new_phase_session(
@@ -1151,11 +1341,20 @@ def _run_new_phase_session(
     row = situation.active_row
     assert row is not None
 
-    other_open = [
-        pr for pr in all_pull_requests if pr.is_open and pr.phase_id != situation.active_phase_id
-    ]
-    if other_open:
-        numbers = ", ".join(f"#{pr.number} (PR {pr.phase_id})" for pr in other_open)
+    still_open = [pr for pr in all_pull_requests if pr.is_open]
+    same_phase = [pr for pr in still_open if pr.phase_id == situation.active_phase_id]
+    if same_phase:
+        numbers = ", ".join(f"#{pr.number}" for pr in same_phase)
+        print(
+            f"error: refusing to start PR {row.phase_id}: a PR for that same phase "
+            f"({numbers}) is already open -- another session created it after this one "
+            "discovered the phase. Re-run discovery and continue that PR instead of "
+            "starting a duplicate.",
+            file=sys.stderr,
+        )
+        return EXIT_HUMAN_ATTENTION
+    if still_open:
+        numbers = ", ".join(f"#{pr.number} (PR {pr.phase_id})" for pr in still_open)
         print(
             f"error: refusing to start PR {row.phase_id}: another migration PR is still "
             f"open on a different phase ({numbers})",
@@ -1176,15 +1375,14 @@ def _run_new_phase_session(
 
     result = _run_claude(argv, repo_root, timeout=CLAUDE_TIMEOUT_SECONDS)
 
-    if looks_like_quota_exhaustion(result):
-        print(
-            "Claude quota appears exhausted; this is resumable -- re-run `run-claude` "
-            "once quota is available.",
-            file=sys.stderr,
-        )
-        return EXIT_CLAUDE_QUOTA
-
     if result.returncode != 0:
+        if looks_like_quota_exhaustion(result):
+            print(
+                "Claude quota appears exhausted; this is resumable -- re-run `run-claude` "
+                "once quota is available.",
+                file=sys.stderr,
+            )
+            return EXIT_CLAUDE_QUOTA
         print(
             f"error: the Claude session for PR {row.phase_id} failed (exit {result.returncode})",
             file=sys.stderr,
@@ -1197,14 +1395,24 @@ def _run_new_phase_session(
     return EXIT_OK
 
 
-def run_claude(repo_root: Path, *, dry_run: bool = False) -> int:
+def run_claude(
+    repo_root: Path, *, dry_run: bool = False, fix_current_pr_only: bool = False
+) -> int:
     """The one command that may invoke `claude` for real.
 
-    Discovery uses the same read-only logic `status` uses. From there this
-    either fixes an open PR's recorded findings or starts exactly the
-    documented next phase -- never both, and never a phase `STATUS.md` did
-    not name.
+    By default, discovery uses the same read-only logic `status` uses. From
+    there this either fixes an open migration PR's recorded findings or starts
+    exactly the documented next phase -- never both, and never a phase
+    `STATUS.md` did not name. `fix_current_pr_only` instead resolves only the
+    PR for the checked-out branch and can never start a migration phase.
     """
+    if fix_current_pr_only:
+        try:
+            return _run_current_pr_fix_session(repo_root, dry_run=dry_run)
+        except (HelperError, json.JSONDecodeError) as error:
+            print(f"error: {error}", file=sys.stderr)
+            return EXIT_ERROR
+
     try:
         situation = discover(repo_root, offline=False)
     except HelperError as error:
@@ -1265,13 +1473,29 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="run-claude only: print the proposed Claude command and prompt without invoking it",
     )
+    parser.add_argument(
+        "--fix-current-pr-only",
+        action="store_true",
+        help=(
+            "run-claude only: fix REVIEW_FINDINGS.md on the open PR for the checked-out "
+            "branch; never discover or start a migration phase"
+        ),
+    )
     args = parser.parse_args(argv)
 
     if args.command == "run-claude":
         if args.offline:
             print("error: run-claude requires GitHub; --offline is not supported", file=sys.stderr)
             return EXIT_ERROR
-        return run_claude(args.repo_root.resolve(), dry_run=args.dry_run)
+        return run_claude(
+            args.repo_root.resolve(),
+            dry_run=args.dry_run,
+            fix_current_pr_only=args.fix_current_pr_only,
+        )
+
+    if args.fix_current_pr_only:
+        print("error: --fix-current-pr-only requires run-claude", file=sys.stderr)
+        return EXIT_ERROR
 
     try:
         situation = discover(args.repo_root.resolve(), offline=args.offline)

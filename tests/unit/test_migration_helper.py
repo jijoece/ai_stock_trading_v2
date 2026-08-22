@@ -716,6 +716,52 @@ def test_run_claude_with_a_clean_findings_file_waits_for_human_merge(
     assert helper.run_claude(tmp_path) == helper.EXIT_OK
 
 
+def test_run_claude_with_applied_fixes_requires_external_review(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Applied fixes are not equivalent to an externally clean current HEAD."""
+    situation = _open_pr_situation(tmp_path)
+    monkeypatch.setattr(helper, "discover", lambda root, offline=False: situation)
+    _write_findings(
+        tmp_path,
+        reviewed_head=situation.pull_request.head_sha,
+        status=helper.REVIEW_STATUS_FIXES_APPLIED,
+        finding_count=0,
+        fix_commit="b" * 40,
+    )
+    monkeypatch.setattr(helper, "_run_claude", _fail_if_called)
+
+    assert helper.run_claude(tmp_path) == helper.EXIT_OK
+    output = capsys.readouterr().out
+    assert "external review" in output
+    assert "still required before merge" in output
+    assert "b" * 40 in output
+    assert "is clean" not in output
+    assert "waiting for a human to merge" not in output
+
+
+def test_run_claude_refuses_to_judge_an_unrecognized_zero_finding_status(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A zero-count status that is neither documented state fails closed."""
+    request = pull_request(22, "9")
+    findings = helper.ReviewFindings(
+        reviewed_head=request.head_sha,
+        status="SOMETHING_NEW",
+        finding_count=0,
+        fix_commit=None,
+    )
+
+    exit_code = helper._run_prepared_fix_session(
+        tmp_path, request, findings, "unused prompt", dry_run=True
+    )
+
+    assert exit_code == helper.EXIT_HUMAN_ATTENTION
+    captured = capsys.readouterr()
+    assert "unrecognized status" in captured.err
+    assert "waiting for a human to merge" not in captured.out
+
+
 def test_run_claude_with_unresolved_findings_invokes_a_fix_session(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -783,6 +829,149 @@ def test_run_claude_dry_run_invokes_nothing(
     assert "DRY RUN" in out
     assert helper.CLAUDE_BINARY in out
     assert "Prompt:" in out
+
+
+def test_run_claude_fix_current_pr_only_bypasses_migration_discovery(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A non-migration PR can be fixed without exposing the phase-start path."""
+    pull_request = helper.PullRequest(
+        number=24,
+        phase_id="current",
+        branch="automation/phase-b-claude-runner",
+        is_open=True,
+        is_merged=False,
+        head_sha="a" * 40,
+    )
+    _write_findings(
+        tmp_path, reviewed_head="a" * 40, status="NEEDS_FIXES", finding_count=2
+    )
+    monkeypatch.setattr(helper, "current_pull_request", lambda root: pull_request)
+    monkeypatch.setattr(helper, "discover", _fail_if_called)
+    monkeypatch.setattr(helper, "_git_current_branch", lambda root: pull_request.branch)
+    monkeypatch.setattr(helper, "_git_head_sha", lambda root: pull_request.head_sha)
+    monkeypatch.setattr(helper, "_run_claude", _fail_if_called)
+
+    assert (
+        helper.run_claude(tmp_path, dry_run=True, fix_current_pr_only=True)
+        == helper.EXIT_OK
+    )
+    output = capsys.readouterr().out
+    assert "existing current pull request" in output
+    assert "PR #24" in output
+    assert "Do not open a new PR" in output
+    assert "start another migration phase" not in output
+
+
+def test_visible_claude_mode_streams_and_preserves_output_for_quota_detection(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    seen: list[bool] = []
+
+    def fake_subprocess(
+        argv: list[str],
+        root: Path,
+        *,
+        timeout: int,
+        stream_output: bool = False,
+    ) -> object:
+        seen.append(stream_output)
+        return helper.subprocess.CompletedProcess(
+            argv,
+            1,
+            stdout="Claude usage limit reached; resets later.\n",
+            stderr="",
+        )
+
+    monkeypatch.setenv("MIGRATION_HELPER_STREAM_CLAUDE_OUTPUT", "1")
+    monkeypatch.setattr(helper, "_run_subprocess", fake_subprocess)
+    argv = helper.build_claude_argv("fix it")
+    result = helper._run_claude(argv, tmp_path, timeout=10)
+
+    assert "stream-json" in argv
+    assert "--verbose" in argv
+    assert seen == [True]
+    assert helper.looks_like_quota_exhaustion(result)
+
+
+def test_successful_stream_that_quotes_quota_text_is_not_classified_as_quota(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pull_request = helper.PullRequest(
+        number=24,
+        phase_id="current",
+        branch="automation/phase-b-claude-runner",
+        is_open=True,
+        is_merged=False,
+        head_sha="a" * 40,
+    )
+    findings = helper.ReviewFindings("a" * 40, "NEEDS_FIXES", 1, None)
+    monkeypatch.setattr(helper, "_git_current_branch", lambda root: pull_request.branch)
+    monkeypatch.setattr(helper, "_git_head_sha", lambda root: pull_request.head_sha)
+    monkeypatch.setattr(
+        helper,
+        "_run_claude",
+        lambda argv, root, *, timeout: helper.ClaudeResult(
+            returncode=0,
+            stdout="Inspected source containing the words Claude quota appears exhausted.",
+            stderr="",
+        ),
+    )
+    monkeypatch.setattr(
+        helper,
+        "_validate_fix_outcome",
+        lambda root, pr, *, pre_run_head: (False, "no validated fix commit"),
+    )
+
+    assert (
+        helper._run_prepared_fix_session(
+            tmp_path,
+            pull_request,
+            findings,
+            "fix it",
+            dry_run=False,
+        )
+        == helper.EXIT_ERROR
+    )
+
+
+def test_claude_argv_allows_only_bounded_validation_and_git_write_commands() -> None:
+    argv = helper.build_claude_argv("fix it")
+    allowed_tools = argv[argv.index("--allowedTools") + 1]
+
+    assert "Bash(.venv/bin/nox *)" in allowed_tools
+    assert "Bash(git commit *)" in allowed_tools
+    assert "Bash(git push *)" in allowed_tools
+    assert "Bash(git *)" not in allowed_tools
+    assert "dangerously" not in " ".join(argv).lower()
+
+
+def test_current_pull_request_reads_only_the_checked_out_branch_pr(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    seen: list[list[str]] = []
+
+    def fake_gh(args: list[str], root: Path) -> str:
+        seen.append(args)
+        return json.dumps(
+            {
+                "number": 24,
+                "headRefName": "automation/phase-b-claude-runner",
+                "headRefOid": "a" * 40,
+                "state": "OPEN",
+                "isDraft": False,
+            }
+        )
+
+    monkeypatch.setattr(helper, "_run_gh", fake_gh)
+    pull_request = helper.current_pull_request(tmp_path)
+
+    assert pull_request.number == 24
+    assert pull_request.branch == "automation/phase-b-claude-runner"
+    assert pull_request.head_sha == "a" * 40
+    assert seen == [
+        ["pr", "view", "--json", "number,headRefName,headRefOid,state,isDraft"]
+    ]
 
 
 def test_run_claude_reports_a_failed_claude_session(
@@ -962,7 +1151,7 @@ def test_run_claude_never_selects_row_8a_by_sorting(
 
 
 def test_run_claude_refuses_a_second_active_phase_when_another_pr_is_open(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     """No duplicate PR or second active migration phase: a stray open PR on a
     different phase must block starting a new one, not be silently ignored."""
@@ -979,6 +1168,31 @@ def test_run_claude_refuses_a_second_active_phase_when_another_pr_is_open(
     monkeypatch.setattr(helper, "_run_claude", _fail_if_called)
 
     assert helper.run_claude(tmp_path, dry_run=True) == helper.EXIT_HUMAN_ATTENTION
+
+
+def test_run_claude_refuses_a_concurrently_created_pr_for_the_same_phase(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A same-phase PR appearing after discovery must prevent duplicate work."""
+    documents = helper.read_migration_documents(write_docs(tmp_path))
+    merged = pull_request(22, "9", is_open=False, is_merged=True)
+    situation = helper.build_situation(documents, (merged,))
+    assert situation.state == helper.NEXT_PHASE_READY
+
+    same_phase_open = pull_request(31, situation.active_phase_id)
+    monkeypatch.setattr(helper, "discover", lambda root, offline=False: situation)
+    monkeypatch.setattr(
+        helper,
+        "list_migration_pull_requests",
+        lambda root: (merged, same_phase_open),
+    )
+    monkeypatch.setattr(helper, "_run_claude", _fail_if_called)
+
+    assert helper.run_claude(tmp_path, dry_run=True) == helper.EXIT_HUMAN_ATTENTION
+    error = capsys.readouterr().err
+    assert "#31" in error
+    assert "same phase" in error
+    assert "different phase" not in error
 
 
 def test_run_claude_needing_human_attention_never_invokes_claude(

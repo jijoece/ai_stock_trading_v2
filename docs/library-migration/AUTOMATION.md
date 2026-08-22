@@ -64,6 +64,7 @@ python scripts/migration_helper.py status                # where are we?
 python scripts/migration_helper.py continue-prompt        # prompt for a fresh session
 python scripts/migration_helper.py run-claude --dry-run   # what run-claude would do
 python scripts/migration_helper.py run-claude             # actually invoke Claude once
+python scripts/migration_helper.py run-claude --fix-current-pr-only  # fix this branch's PR only
 ./scripts/continue-migration.sh                            # status + continue-prompt, in one go
 ```
 
@@ -72,7 +73,10 @@ Useful flags: `--json` for machine-readable output (`status` only),
 (`status`/`continue-prompt` only -- `run-claude` requires GitHub and rejects
 `--offline`), `--repo-root` to point at another checkout, `--dry-run` to make
 `run-claude` print the proposed Claude command and prompt without invoking
-Claude or mutating anything.
+Claude or mutating anything. `--fix-current-pr-only` is the fail-closed mode
+used by the local Codex review hook: it resolves only the open PR for the
+checked-out branch and either fixes that PR's `REVIEW_FINDINGS.md` or stops.
+It never performs migration discovery and therefore can never start a phase.
 
 Exit codes: `0` reported normally (including "nothing actionable right now"),
 `1` an error, or a `run-claude` fix/advancement attempt that failed
@@ -185,15 +189,23 @@ the PR's branch on `origin`. Any of those failing is reported and the command
 exits non-zero -- it never claims success on Claude's word alone, and it never
 opens a replacement PR.
 
+For an external review on a non-migration branch, `run-claude
+--fix-current-pr-only` uses `gh pr view` to resolve the open PR for the
+checked-out branch, requires its GitHub head SHA to match both local `HEAD`
+and `REVIEW_FINDINGS.md`, and then applies the same bounded prompt and
+post-run validation. Missing, closed, stale, or mismatched PR state fails
+closed. This mode never enters the new-phase path.
+
 **No PR exists yet for the active phase** (`NEXT_PHASE_READY`, exactly as
 `status` would report it). This only happens when GitHub confirms the
 prerequisite phase merged, or the active phase never had a PR to begin with --
 the same reconciliation `status` already performs, including the rule that a
 phase is never selected by sorting identifiers (row `8a` is only ever
 prepared when `STATUS.md`'s documented edge names it next). Before starting
-anything, `run-claude` also checks that no *other* migration PR is currently
-open on a different phase; if one is, it stops and asks for a human rather
-than risking a second active phase. Otherwise it sends Claude exactly the
+anything, `run-claude` refreshes the migration PR listing and stops if *any*
+open migration PR has appeared, including one for that same phase. This
+prevents a concurrent session from creating a duplicate after initial
+discovery. Otherwise it sends Claude exactly the
 prompt `continue-prompt` would have printed, as one attempt, and stops. It
 does not itself validate the resulting PR beyond reporting whether the Claude
 process exited cleanly -- that PR goes through the same
