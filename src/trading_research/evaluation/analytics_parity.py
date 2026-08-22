@@ -93,6 +93,12 @@ def cumulative_return_parity(
     returns = _completed_returns(evaluations)
     if len(returns) < min_sample_size:
         return _insufficient(len(returns), f"need at least {min_sample_size} completed evaluations")
+    if not returns:
+        # empyrical.cum_returns_final on an empty Series returns NaN;
+        # evaluation/metrics.py's identity-element product over zero terms
+        # yields exactly zero. Preserve that when min_sample_size permits
+        # an empty sample (e.g. min_sample_size=0).
+        return MetricsResult(status="OK", value=0.0, sample_size=0)
     value = float(empyrical.cum_returns_final(pd.Series([float(r) for r in returns]), starting_value=0))
     return MetricsResult(status="OK", value=value, sample_size=len(returns))
 
@@ -145,6 +151,12 @@ def max_drawdown_parity(
     returns = _completed_returns(evaluations)
     if len(returns) < min_sample_size:
         return _insufficient(len(returns), f"need at least {min_sample_size} completed evaluations")
+    if not returns:
+        # empyrical.max_drawdown on an empty Series returns NaN;
+        # evaluation/metrics.py's equity curve starts flat at 1 with no
+        # observed drawdown, yielding exactly zero. Preserve that when
+        # min_sample_size permits an empty sample (e.g. min_sample_size=0).
+        return MetricsResult(status="OK", value=0.0, sample_size=0)
     value = float(empyrical.max_drawdown(pd.Series([float(r) for r in returns])))
     return MetricsResult(status="OK", value=value, sample_size=len(returns))
 

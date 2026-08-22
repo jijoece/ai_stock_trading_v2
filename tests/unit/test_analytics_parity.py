@@ -161,3 +161,21 @@ def test_presentation_summary_returns_bounded_keys():
 def test_presentation_summary_empty_evaluations():
     summary = analytics_parity.presentation_summary([])
     assert summary == {"sharpe": None, "sortino": None, "max_drawdown": None}
+
+
+def test_cumulative_return_parity_empty_with_zero_min_sample_size():
+    # min_sample_size=0 is a valid public parameter combination: the
+    # authoritative function's empty-product loop yields a deterministic
+    # zero, not empyrical's NaN on an empty Series. Regression for the
+    # candidate silently diverging from that boundary behavior.
+    _assert_parity(
+        metrics.cumulative_return([], min_sample_size=0),
+        analytics_parity.cumulative_return_parity([], min_sample_size=0),
+    )
+
+
+def test_max_drawdown_parity_empty_with_zero_min_sample_size():
+    _assert_parity(
+        metrics.max_drawdown([], min_sample_size=0),
+        analytics_parity.max_drawdown_parity([], min_sample_size=0),
+    )
