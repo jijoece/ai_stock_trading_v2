@@ -161,3 +161,81 @@ def test_lumibot_objects_do_not_reach_repositories():
 # skip under main-tests instead of actually running. See that file's
 # docstring and docs/adr/0009-lumibot-backtest-distribution-boundary.md
 # section 4.
+
+
+# --- PR 9: the injected gateway's numbers are untrusted input --------------
+#
+# `PaperBrokerGateway` is a `Protocol` satisfied by whatever object is
+# injected, so its floats are a broker observation like any other. Before
+# PR 9 the adapter did a bare `Decimal(str(price))`, which turns a float
+# `nan` into `Decimal('NaN')` — and `Decimal('NaN') <= 0` is `False`, so
+# `PaperExecutionEvent`'s "a positive filled_quantity requires a positive
+# fill_price" guard accepted it and a NaN cost basis reached the ledger.
+
+
+@pytest.mark.parametrize("bad_price", [float("nan"), float("inf"), float("-inf")])
+def test_non_finite_fill_price_fails_closed(intent, bad_price):
+    adapter = LumiBotPaperExecutionAdapter(
+        broker_gateway=ScriptedGateway([("fill", 70, bad_price, "b-1")]),
+        config=LumiBotAdapterConfig(),
+        clock=lambda: NOW,
+    )
+    with pytest.raises(LumiBotAdapterError):
+        adapter.submit(intent)
+
+
+@pytest.mark.parametrize("bad_price", [0.0, -1.5])
+def test_non_positive_fill_price_fails_closed(intent, bad_price):
+    adapter = LumiBotPaperExecutionAdapter(
+        broker_gateway=ScriptedGateway([("fill", 70, bad_price, "b-1")]),
+        config=LumiBotAdapterConfig(),
+        clock=lambda: NOW,
+    )
+    with pytest.raises(LumiBotAdapterError):
+        adapter.submit(intent)
+
+
+@pytest.mark.parametrize("bad_qty", [70.5, float("nan"), None, "seventy"])
+def test_non_integral_filled_quantity_fails_closed(intent, bad_qty):
+    """Whole shares only — never `int(float(...))`, which would silently
+    round a fractional broker quantity."""
+    adapter = LumiBotPaperExecutionAdapter(
+        broker_gateway=ScriptedGateway([("fill", bad_qty, 14.25, "b-1")]),
+        config=LumiBotAdapterConfig(),
+        clock=lambda: NOW,
+    )
+    with pytest.raises(LumiBotAdapterError):
+        adapter.submit(intent)
+
+
+def test_an_integral_float_quantity_is_accepted_without_truncation(intent):
+    adapter = LumiBotPaperExecutionAdapter(
+        broker_gateway=ScriptedGateway([("fill", 70.0, 14.25, "b-1")]),
+        config=LumiBotAdapterConfig(),
+        clock=lambda: NOW,
+    )
+    events, result = adapter.submit(intent)
+    assert events[0].filled_quantity == 70
+    assert result.filled_quantity == 70
+
+
+@pytest.mark.parametrize("bad_notional", [float("nan"), float("inf"), -1.0, None])
+def test_reconcile_fails_closed_on_a_malformed_notional(intent, bad_notional):
+    adapter = LumiBotPaperExecutionAdapter(
+        broker_gateway=ScriptedGateway([], snapshot=(70, bad_notional, "fill")),
+        config=LumiBotAdapterConfig(),
+        clock=lambda: NOW,
+    )
+    with pytest.raises(LumiBotAdapterError):
+        adapter.reconcile(intent.intent_id)
+
+
+def test_final_status_map_covers_every_event_type():
+    """PR 9: the last-event -> final-status map is checked against
+    `EVENT_TYPES` at import time, so a new event type is a startup failure
+    rather than a `KeyError` raised at fill time on a live order."""
+    from trading_research.execution.models import EVENT_TYPES, RESULT_STATUSES
+    from trading_research.runtime.lumibot.adapter import _FINAL_STATUS_BY_EVENT_TYPE
+
+    assert set(_FINAL_STATUS_BY_EVENT_TYPE) == set(EVENT_TYPES)
+    assert set(_FINAL_STATUS_BY_EVENT_TYPE.values()) <= set(RESULT_STATUSES)

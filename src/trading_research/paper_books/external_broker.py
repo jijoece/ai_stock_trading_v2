@@ -1413,6 +1413,15 @@ def submit_external_paper_order(
             order = runtime.get_order_by_client_order_id(book_id, client_order_id)
             if order is None:
                 raise ExternalPaperError("ORDER_MISSING_AT_BROKER", "existing external order was not found at broker")
+            # The RuntimeClient-level lookup parser only binds `order` to the
+            # requested book_id/client_order_id and paper-scoping (Milestone
+            # 11 follow-up 4) -- it has no way to know the *approved intent*
+            # this duplicate-submit call is re-reporting on. Validate against
+            # it here, the same check every other broker-response path in
+            # this module runs, so a runtime bug or compromise cannot report
+            # a quantity/price/side/account-fingerprint mismatch as a
+            # successful existing submission.
+            _validate_order_response(order, intent, client_order_id, fingerprint, now)
             return {"status": current["new_state"], "event": current, "order": order, "duplicate_submit": False}
         reservation = _reserve_daily_notional(
             conn, config, book_id=book_id, fingerprint=fingerprint, client_order_id=client_order_id,

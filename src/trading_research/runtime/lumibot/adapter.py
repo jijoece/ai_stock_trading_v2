@@ -44,7 +44,14 @@ from lumibot.entities import Asset
 from lumibot.entities.order import Order as LumiBotOrder
 
 from ...execution.adapter_protocol import BrokerExecutionSnapshot
-from ...execution.models import PaperExecutionEvent, PaperExecutionResult, PaperOrderIntent
+from ...execution.models import (
+    EVENT_TYPES,
+    RESULT_STATUSES,
+    PaperExecutionEvent,
+    PaperExecutionResult,
+    PaperOrderIntent,
+)
+from ..normalization import NormalizationError, normalize_exact_int, parse_decimal
 from .configuration import LumiBotAdapterConfig
 from .errors import LumiBotAdapterError
 from .event_mapper import map_order_status
@@ -95,20 +102,70 @@ def _translate_intent(intent: PaperOrderIntent, config: LumiBotAdapterConfig) ->
     return LumiBotOrder(**kwargs)
 
 
+def _normalized_fill_price(price: object, intent_id: str) -> Decimal:
+    """Convert an injected gateway's fill price to `Decimal`, failing closed.
+
+    The `float -> Decimal` step is unavoidable (`PaperBrokerGateway` yields a
+    plain float, matching LumiBot's own entity types); PR 9 makes it a
+    checked boundary rather than a bare `Decimal(str(price))`.
+    """
+    try:
+        value = parse_decimal(price, "fill price")
+    except NormalizationError as exc:
+        raise LumiBotAdapterError(f"broker event for intent {intent_id}: {exc}") from exc
+    if value <= 0:
+        raise LumiBotAdapterError(
+            f"broker event for intent {intent_id} reported a non-positive fill price {price!r}"
+        )
+    return value
+
+
+def _normalized_filled_quantity(filled_qty: object, intent_id: str) -> int:
+    """Whole shares only — never a truncation of a fractional quantity."""
+    try:
+        value = normalize_exact_int(filled_qty, "filled quantity")
+    except NormalizationError as exc:
+        raise LumiBotAdapterError(f"broker event for intent {intent_id}: {exc}") from exc
+    if value < 0:
+        raise LumiBotAdapterError(
+            f"broker event for intent {intent_id} reported a negative filled quantity {filled_qty!r}"
+        )
+    return value
+
+
+# Last-event type -> the intent's final `PaperExecutionResult` status.
+# `SUBMITTED`/`ACCEPTED` mean the broker event stream ended without a
+# resolution, which is an `ERROR` outcome, never an assumed fill.
+#
+# PR 9: this map is now checked for exhaustiveness against `EVENT_TYPES`
+# at import time. It was previously a literal inside `_build_result`, so
+# adding an event type would have surfaced as a `KeyError` at fill time, on
+# a live order, rather than immediately.
+_FINAL_STATUS_BY_EVENT_TYPE: dict[str, str] = {
+    "FILLED": "FILLED",
+    "PARTIALLY_FILLED": "PARTIALLY_FILLED",
+    "CANCELLED": "CANCELLED",
+    "REJECTED": "REJECTED",
+    "ERROR": "ERROR",
+    "SUBMITTED": "ERROR",
+    "ACCEPTED": "ERROR",
+}
+
+if set(_FINAL_STATUS_BY_EVENT_TYPE) != set(EVENT_TYPES):  # pragma: no cover - import-time guard
+    raise LumiBotAdapterError(
+        "_FINAL_STATUS_BY_EVENT_TYPE must cover exactly execution.models.EVENT_TYPES; "
+        f"missing={set(EVENT_TYPES) - set(_FINAL_STATUS_BY_EVENT_TYPE)}, "
+        f"unexpected={set(_FINAL_STATUS_BY_EVENT_TYPE) - set(EVENT_TYPES)}"
+    )
+if not set(_FINAL_STATUS_BY_EVENT_TYPE.values()) <= set(RESULT_STATUSES):  # pragma: no cover
+    raise LumiBotAdapterError("_FINAL_STATUS_BY_EVENT_TYPE maps to a status outside RESULT_STATUSES")
+
+
 def _build_result(intent: PaperOrderIntent, events: tuple[PaperExecutionEvent, ...]) -> PaperExecutionResult:
     if not events:
         raise LumiBotAdapterError(f"adapter produced no events for intent {intent.intent_id}")
     last = events[-1]
-    status_map = {
-        "FILLED": "FILLED",
-        "PARTIALLY_FILLED": "PARTIALLY_FILLED",
-        "CANCELLED": "CANCELLED",
-        "REJECTED": "REJECTED",
-        "ERROR": "ERROR",
-        "SUBMITTED": "ERROR",  # a stream that ends without a broker resolution is a fail-closed error
-        "ACCEPTED": "ERROR",
-    }
-    final_status = status_map[last.event_type]
+    final_status = _FINAL_STATUS_BY_EVENT_TYPE[last.event_type]
     fills = [e for e in events if e.filled_quantity > 0 and e.fill_price is not None]
     total_filled = sum(e.filled_quantity for e in fills)
     if total_filled > 0:
@@ -150,7 +207,15 @@ class LumiBotPaperExecutionAdapter:
         events: list[PaperExecutionEvent] = []
         for raw_status, filled_qty, price, broker_order_id in self.broker_gateway.submit_order(order):
             event_type = map_order_status(raw_status)  # fail closed on unknown status
-            fill_price = Decimal(str(price)) if price is not None else None  # float -> Decimal, explicit
+            # PR 9: `Decimal(str(price))` alone is not a boundary. It turns a
+            # float `nan` into `Decimal('NaN')`, and `Decimal('NaN') <= 0` is
+            # `False`, so `PaperExecutionEvent`'s "a positive filled_quantity
+            # requires a positive fill_price" guard would have accepted it.
+            # The gateway is an injected `Protocol` implementation, so its
+            # numbers are untrusted input like any other broker observation.
+            fill_price = (
+                _normalized_fill_price(price, intent.intent_id) if price is not None else None
+            )
             events.append(
                 PaperExecutionEvent(
                     event_id=f"{intent.intent_id}-evt-{len(events) + 1}",
@@ -160,7 +225,7 @@ class LumiBotPaperExecutionAdapter:
                     event_type=event_type,
                     broker_order_id=broker_order_id,
                     quantity=intent.quantity,
-                    filled_quantity=filled_qty,
+                    filled_quantity=_normalized_filled_quantity(filled_qty, intent.intent_id),
                     fill_price=fill_price,
                     occurred_at=self.clock(),
                     raw_status=raw_status,
@@ -172,10 +237,22 @@ class LumiBotPaperExecutionAdapter:
 
     def reconcile(self, intent_id: str) -> BrokerExecutionSnapshot:
         filled_qty, notional, raw_status = self.broker_gateway.snapshot(intent_id)
+        # PR 9: `BrokerExecutionSnapshot` is a plain dataclass with no
+        # validation of its own, and this notional feeds reconciliation
+        # comparisons — a non-finite value here would silently mismatch
+        # against every ledger quantity rather than fail.
+        try:
+            broker_notional = parse_decimal(notional, "broker snapshot notional")
+        except NormalizationError as exc:
+            raise LumiBotAdapterError(f"broker snapshot for intent {intent_id}: {exc}") from exc
+        if broker_notional < 0:
+            raise LumiBotAdapterError(
+                f"broker snapshot for intent {intent_id} reported a negative notional {notional!r}"
+            )
         return BrokerExecutionSnapshot(
             intent_id=intent_id,
-            broker_quantity=filled_qty,
-            broker_notional=Decimal(str(notional)),
+            broker_quantity=_normalized_filled_quantity(filled_qty, intent_id),
+            broker_notional=broker_notional,
             broker_status=raw_status,
             as_of=self.clock(),
         )

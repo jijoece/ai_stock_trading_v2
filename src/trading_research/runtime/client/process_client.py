@@ -23,6 +23,17 @@ from .errors import (
     RuntimeStartupTimeoutError,
     RuntimeUnavailableError,
 )
+from .models import (
+    ExternalAccountSnapshot,
+    ExternalFillSnapshot,
+    ExternalOrderSnapshot,
+    ExternalPositionsSnapshot,
+    RuntimeAccountSnapshot,
+    RuntimeOrderSnapshot,
+    RuntimePositionSnapshot,
+    parse_broker_order_lookup_response,
+    parse_client_order_lookup_response,
+)
 from .protocol import build_request_line, parse_response_line
 
 # Milestone 11.3.1 Item 4: the default single-request timeout, exposed as a
@@ -331,31 +342,40 @@ class RuntimeClient:
         """Never retried internally. A caller that gets
         `RuntimeRequestTimeoutError`/`RuntimeUnavailableError` from this call
         must call `get_order` with the same idempotency key before deciding
-        whether to submit again — never resubmit blindly."""
-        return self._request("submit_order", intent_payload)
+        whether to submit again — never resubmit blindly.
+
+        PR 9: the raw response is re-validated through `RuntimeOrderSnapshot`
+        before it reaches any caller — the runtime's own normalization is not
+        trusted a second time at this boundary (docs/milestone-4.md Step 3's
+        posture, applied in the other direction)."""
+        return RuntimeOrderSnapshot.from_payload(self._request("submit_order", intent_payload)).to_dict()
 
     def get_order(self, client_order_id: str) -> dict | None:
         try:
-            return self._request("get_order", {"client_order_id": client_order_id})
+            raw = self._request("get_order", {"client_order_id": client_order_id})
         except RuntimeOperationError as exc:
             if exc.code == "UNKNOWN_ORDER":
                 return None
             raise
+        return RuntimeOrderSnapshot.from_payload(raw).to_dict()
 
     def list_open_orders(self) -> list[dict]:
-        return self._request("list_open_orders", {})["orders"]
+        return [RuntimeOrderSnapshot.from_payload(o).to_dict() for o in self._request("list_open_orders", {})["orders"]]
 
     def list_recent_orders(self, limit: int = 50) -> list[dict]:
-        return self._request("list_recent_orders", {"limit": limit})["orders"]
+        orders = self._request("list_recent_orders", {"limit": limit})["orders"]
+        return [RuntimeOrderSnapshot.from_payload(o).to_dict() for o in orders]
 
     def get_account(self) -> dict:
-        return self._request("get_account", {})
+        return RuntimeAccountSnapshot.from_payload(self._request("get_account", {})).to_dict()
 
     def list_positions(self) -> list[dict]:
-        return self._request("list_positions", {})["positions"]
+        positions = self._request("list_positions", {})["positions"]
+        return [RuntimePositionSnapshot.from_payload(p).to_dict() for p in positions]
 
     def cancel_paper_order(self, client_order_id: str) -> dict:
-        return self._request("cancel_paper_order", {"client_order_id": client_order_id})
+        raw = self._request("cancel_paper_order", {"client_order_id": client_order_id})
+        return RuntimeOrderSnapshot.from_payload(raw).to_dict()
 
     # -- Milestone 11 normalized external-paper operations ----------------
 
@@ -366,42 +386,70 @@ class RuntimeClient:
         return self._request("PREVIEW_LIMIT_ORDER", payload)
 
     def submit_limit_order(self, payload: dict) -> dict:
-        """Mutation is never retried by this client."""
-        return self._request("SUBMIT_LIMIT_ORDER", payload)
+        """Mutation is never retried by this client (`SUBMIT_LIMIT_ORDER` is
+        absent from `_RETRYABLE_ON_TIMEOUT` above — unchanged by this
+        validation).
+
+        Milestone 11 follow-up 3: the response — the same enriched shape
+        `cancel_external_order`/`list_recent_external_orders` return
+        (`dispatcher._external_order_dict`) — is now re-validated through
+        `ExternalOrderSnapshot` before it reaches `external_broker.py`, so a
+        malformed submission response (unknown status, non-positive
+        quantity, malformed timestamp, missing broker_order_id, non-finite
+        price) fails with `ProtocolViolationError` at this boundary."""
+        return ExternalOrderSnapshot.from_payload(self._request("SUBMIT_LIMIT_ORDER", payload)).to_dict()
 
     def get_order_by_client_order_id(self, book_id: str, client_order_id: str) -> dict | None:
+        """Milestone 11 follow-up: the enriched external-order response is
+        re-validated through `ExternalOrderSnapshot` before it reaches
+        `paper_books` — a malformed nested field (bad status, non-finite
+        price, wrong-typed timestamp, …) now fails with
+        `ProtocolViolationError` at this boundary instead of surfacing much
+        later as an ad hoc `MALFORMED_RUNTIME_RESPONSE`.
+
+        Milestone 11 follow-up 3: the `found`/`order` envelope itself is now
+        validated too (`parse_client_order_lookup_response`) — a malformed
+        envelope (missing/non-boolean `found`, a wrong echoed
+        book_id/client_order_id, an unexpected field) raises instead of
+        being read as an authoritative "not found", which
+        `external_broker.py` can otherwise use to unlock a retry."""
         result = self._request(
             "GET_ORDER_BY_CLIENT_ID", {"book_id": book_id, "client_order_id": client_order_id},
         )
-        return result.get("order") if result.get("found") else None
+        return parse_client_order_lookup_response(result, book_id=book_id, client_order_id=client_order_id)
 
     def get_order_by_broker_order_id(self, book_id: str, broker_order_id: str) -> dict | None:
         result = self._request("GET_ORDER", {"book_id": book_id, "broker_order_id": broker_order_id})
-        return result.get("order") if result.get("found") else None
+        return parse_broker_order_lookup_response(result, book_id=book_id, broker_order_id=broker_order_id)
 
     def cancel_external_order(self, book_id: str, client_order_id: str, account_fingerprint: str) -> dict:
-        return self._request(
+        result = self._request(
             "CANCEL_ORDER",
             {
                 "book_id": book_id, "client_order_id": client_order_id,
                 "account_fingerprint": account_fingerprint,
             },
         )
+        return ExternalOrderSnapshot.from_payload(result).to_dict()
 
     def list_order_fills(self, book_id: str, client_order_id: str) -> list[dict]:
-        return self._request(
+        fills = self._request(
             "LIST_ORDER_FILLS", {"book_id": book_id, "client_order_id": client_order_id},
         )["fills"]
+        return [ExternalFillSnapshot.from_payload(fill).to_dict() for fill in fills]
 
     def get_external_positions(self, book_id: str) -> dict:
-        return self._request("GET_POSITIONS", {"book_id": book_id})
+        return ExternalPositionsSnapshot.from_payload(self._request("GET_POSITIONS", {"book_id": book_id})).to_dict()
 
     def get_external_account_snapshot(self, book_id: str) -> dict:
-        return self._request("GET_ACCOUNT_SNAPSHOT", {"book_id": book_id})
+        return ExternalAccountSnapshot.from_payload(
+            self._request("GET_ACCOUNT_SNAPSHOT", {"book_id": book_id})
+        ).to_dict()
 
     def list_recent_external_orders(self, book_id: str, *, limit: int = 50) -> list[dict]:
         """Bounded read-only duplicate-detection support (Part 9). Distinct
         method name from the pre-existing `list_recent_orders(limit)` above,
         which is book-agnostic and takes a positional `limit` — reusing that
         name here would silently pass `book_id` where `limit` is expected."""
-        return self._request("LIST_RECENT_ORDERS", {"book_id": book_id, "limit": limit})["orders"]
+        orders = self._request("LIST_RECENT_ORDERS", {"book_id": book_id, "limit": limit})["orders"]
+        return [ExternalOrderSnapshot.from_payload(order).to_dict() for order in orders]
