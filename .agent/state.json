@@ -1,0 +1,16 @@
+{
+  "active_phase": "9",
+  "branch": "migration/09-lumibot-normalization-contract",
+  "github_pr": 22,
+  "head_sha": "fb14532d7b689cd94e9bceb8f655f1ae43f2067d",
+  "last_reviewed_sha": null,
+  "next_action": "wait_for_ci",
+  "notes": [
+    "STATUS.md names PR 8 current, but GitHub shows #20 merged; advancing to the documented next phase",
+    "CI has not reported a complete result yet",
+    "automation is disabled (`enabled: false`); no action will be taken"
+  ],
+  "review_round": 0,
+  "state": "WAITING_FOR_CI",
+  "updated_at": "2026-08-22T08:38:02.544807+00:00"
+}
