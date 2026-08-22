@@ -1043,3 +1043,36 @@ downgrades to non-authoritative — closing the gap with no change needed on
 the `paper_books` side. `tests/unit/test_external_paper_broker.py::
 test_malformed_lookup_response_cannot_create_authoritative_not_found_or_unlock_retry`
 is the end-to-end regression.
+
+**Ruling 15 (review fix on commit `3193b0b`) — a structurally valid *found*
+lookup response was not bound to the identifiers that were requested, and
+the repeat-submission path never validated it against the approved
+intent.** Ruling 14's envelope parsers validated that a `found: true`
+response parsed as a well-typed `ExternalOrderSnapshot`, but not that the
+enclosed order actually *was* the order asked for: `parse_client_order_
+lookup_response`/`parse_broker_order_lookup_response` accepted an order
+with a different `book_id`/`client_order_id` (or `book_id`/
+`broker_order_id`), or one claiming `environment: "live"` / an unrelated
+`provider`. Separately, `submit_external_paper_order`'s duplicate-submit
+branch (`current["new_state"] not in (STATE_PREVIEWED,)`) returned a found
+order straight to its caller without ever calling `_validate_order_
+response` — every other broker-response path in this module runs that
+check, but this one, added by Milestone 11.2, did not. Combined, a runtime
+bug or a compromised runtime process could report an unrelated book's
+order, a foreign account's order, or a live (non-paper) order as this
+book's successful existing submission. Fixed on both sides: the two lookup
+parsers now reject a *found* response whose `book_id`/`client_order_id`
+(or `book_id`/`broker_order_id`) does not match the request, or whose
+`provider`/`environment` is not paper-scoped, before returning it; and the
+duplicate-submit branch now calls `_validate_order_response(order, intent,
+client_order_id, fingerprint, now)` — the same check reconciliation and
+cancellation already run — before returning, closing the
+account-fingerprint/quantity/price/side/time-in-force gap the parser layer
+cannot close on its own (it has no access to the expected account
+fingerprint or the approved intent). New tests: 9 `RuntimeClient` cases
+covering mismatched `book_id`/`client_order_id`/`broker_order_id` and a
+claimed live environment/unrelated provider for both lookup methods (plus
+two "correctly matched" happy-path cases); 3 `external_broker.py`
+regressions proving the duplicate-submit path now rejects a foreign
+account fingerprint, a live environment, and a mismatched quantity instead
+of reporting success.

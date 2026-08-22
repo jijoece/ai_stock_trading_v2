@@ -860,3 +860,87 @@ def test_get_order_by_broker_order_id_rejects_an_unexpected_extra_field():
     fake.queue_success({"found": False, "order": None, "unexpected": "field"})
     with pytest.raises(ProtocolViolationError):
         client.get_order_by_broker_order_id("BASELINE", "b-1")
+
+
+# -- found=True responses must bind to the request, not just parse cleanly --
+
+
+def test_get_order_by_client_order_id_rejects_a_found_order_with_a_mismatched_book_id():
+    fake = FakeTransport()
+    client = _client(fake)
+    start_ready_client(client, fake)
+    fake.queue_success({"found": True, "order": external_order_payload(book_id="ENHANCED")})
+    with pytest.raises(ProtocolViolationError):
+        client.get_order_by_client_order_id("BASELINE", "epb-baseline-abc123")
+
+
+def test_get_order_by_client_order_id_rejects_a_found_order_with_a_mismatched_client_order_id():
+    fake = FakeTransport()
+    client = _client(fake)
+    start_ready_client(client, fake)
+    fake.queue_success({"found": True, "order": external_order_payload(client_order_id="epb-baseline-other")})
+    with pytest.raises(ProtocolViolationError):
+        client.get_order_by_client_order_id("BASELINE", "epb-baseline-abc123")
+
+
+def test_get_order_by_client_order_id_rejects_a_found_order_claiming_a_live_environment():
+    fake = FakeTransport()
+    client = _client(fake)
+    start_ready_client(client, fake)
+    fake.queue_success({"found": True, "order": external_order_payload(environment="live")})
+    with pytest.raises(ProtocolViolationError):
+        client.get_order_by_client_order_id("BASELINE", "epb-baseline-abc123")
+
+
+def test_get_order_by_client_order_id_rejects_a_found_order_from_an_unrelated_provider():
+    fake = FakeTransport()
+    client = _client(fake)
+    start_ready_client(client, fake)
+    fake.queue_success({"found": True, "order": external_order_payload(provider="unrelated_broker")})
+    with pytest.raises(ProtocolViolationError):
+        client.get_order_by_client_order_id("BASELINE", "epb-baseline-abc123")
+
+
+def test_get_order_by_client_order_id_accepts_a_correctly_matched_found_order():
+    fake = FakeTransport()
+    client = _client(fake)
+    start_ready_client(client, fake)
+    fake.queue_success({"found": True, "order": external_order_payload()})
+    result = client.get_order_by_client_order_id("BASELINE", "epb-baseline-abc123")
+    assert result["status"] == "ACCEPTED"
+
+
+def test_get_order_by_broker_order_id_rejects_a_found_order_with_a_mismatched_book_id():
+    fake = FakeTransport()
+    client = _client(fake)
+    start_ready_client(client, fake)
+    fake.queue_success({"found": True, "order": external_order_payload(book_id="ENHANCED")})
+    with pytest.raises(ProtocolViolationError):
+        client.get_order_by_broker_order_id("BASELINE", "b-1")
+
+
+def test_get_order_by_broker_order_id_rejects_a_found_order_with_a_mismatched_broker_order_id():
+    fake = FakeTransport()
+    client = _client(fake)
+    start_ready_client(client, fake)
+    fake.queue_success({"found": True, "order": external_order_payload(broker_order_id="b-unrelated")})
+    with pytest.raises(ProtocolViolationError):
+        client.get_order_by_broker_order_id("BASELINE", "b-1")
+
+
+def test_get_order_by_broker_order_id_rejects_a_found_order_claiming_a_live_environment():
+    fake = FakeTransport()
+    client = _client(fake)
+    start_ready_client(client, fake)
+    fake.queue_success({"found": True, "order": external_order_payload(environment="live")})
+    with pytest.raises(ProtocolViolationError):
+        client.get_order_by_broker_order_id("BASELINE", "b-1")
+
+
+def test_get_order_by_broker_order_id_accepts_a_correctly_matched_found_order():
+    fake = FakeTransport()
+    client = _client(fake)
+    start_ready_client(client, fake)
+    fake.queue_success({"found": True, "order": external_order_payload()})
+    result = client.get_order_by_broker_order_id("BASELINE", "b-1")
+    assert result["status"] == "ACCEPTED"

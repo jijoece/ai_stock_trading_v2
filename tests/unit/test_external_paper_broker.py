@@ -251,6 +251,68 @@ def test_success_partial_final_fill_and_replay_are_book_scoped():
     assert replay["duplicate_submit"] is False
 
 
+def test_duplicate_submit_replay_rejects_a_lookup_reporting_a_foreign_account_fingerprint():
+    """The repeat-submission path in `submit_external_paper_order` reports
+    an existing order back to its caller without re-attempting submission --
+    it must still validate that reported order against the approved intent
+    (Milestone 11 follow-up 4), or a runtime bug/compromise could report an
+    unrelated account's order as this book's successful submission."""
+    conn = connect(":memory:")
+    _seed(conn)
+    cfg, runtime = _config(), FakeRuntime()
+    preview = _preview(conn, runtime, cfg)
+    result = submit_external_paper_order(
+        conn, book_id="BASELINE", paper_order_intent_id="intent-1", preview_id=preview["preview_id"],
+        operator="alice", reason="paper test", runtime=runtime, config=cfg, clock=lambda: NOW,
+    )
+    assert result["status"] == STATE_SUBMITTED
+    runtime.order["account_fingerprint"] = "acct_" + "f" * 32
+    with pytest.raises(ExternalPaperError) as exc:
+        submit_external_paper_order(
+            conn, book_id="BASELINE", paper_order_intent_id="intent-1", preview_id=preview["preview_id"],
+            operator="alice", reason="replay", runtime=runtime, config=cfg, clock=lambda: NOW,
+        )
+    assert exc.value.code == "BROKER_ORDER_MISMATCH"
+
+
+def test_duplicate_submit_replay_rejects_a_lookup_claiming_a_live_environment():
+    conn = connect(":memory:")
+    _seed(conn)
+    cfg, runtime = _config(), FakeRuntime()
+    preview = _preview(conn, runtime, cfg)
+    result = submit_external_paper_order(
+        conn, book_id="BASELINE", paper_order_intent_id="intent-1", preview_id=preview["preview_id"],
+        operator="alice", reason="paper test", runtime=runtime, config=cfg, clock=lambda: NOW,
+    )
+    assert result["status"] == STATE_SUBMITTED
+    runtime.order["environment"] = "live"
+    with pytest.raises(ExternalPaperError) as exc:
+        submit_external_paper_order(
+            conn, book_id="BASELINE", paper_order_intent_id="intent-1", preview_id=preview["preview_id"],
+            operator="alice", reason="replay", runtime=runtime, config=cfg, clock=lambda: NOW,
+        )
+    assert exc.value.code == "NOT_PAPER_ENDPOINT"
+
+
+def test_duplicate_submit_replay_rejects_a_lookup_reporting_a_mismatched_quantity():
+    conn = connect(":memory:")
+    _seed(conn)
+    cfg, runtime = _config(), FakeRuntime()
+    preview = _preview(conn, runtime, cfg)
+    result = submit_external_paper_order(
+        conn, book_id="BASELINE", paper_order_intent_id="intent-1", preview_id=preview["preview_id"],
+        operator="alice", reason="paper test", runtime=runtime, config=cfg, clock=lambda: NOW,
+    )
+    assert result["status"] == STATE_SUBMITTED
+    runtime.order["quantity"] = 999
+    with pytest.raises(ExternalPaperError) as exc:
+        submit_external_paper_order(
+            conn, book_id="BASELINE", paper_order_intent_id="intent-1", preview_id=preview["preview_id"],
+            operator="alice", reason="replay", runtime=runtime, config=cfg, clock=lambda: NOW,
+        )
+    assert exc.value.code == "BROKER_ORDER_MISMATCH"
+
+
 def test_local_simulated_position_does_not_contaminate_external_reconciliation():
     """Milestone 23 Part A3/A5: a book that also carries unrelated
     local-simulated activity (e.g. an earlier fixture-mode fill never

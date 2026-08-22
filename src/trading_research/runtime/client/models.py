@@ -467,7 +467,15 @@ def parse_client_order_lookup_response(payload: dict, *, book_id: str, client_or
     recognize as one of the two documented envelopes — missing/non-boolean
     `found`, an echoed book_id/client_order_id that does not match the
     request, a contradictory `found`/`order` combination, or any
-    unexpected field — must raise rather than fall through to `None`."""
+    unexpected field — must raise rather than fall through to `None`.
+
+    A *found* response is bound to the request too: the enclosed order's
+    own `book_id`/`client_order_id` must match what was asked for, and it
+    must be paper-scoped (`provider`/`environment`). Without this, a
+    runtime bug or a compromised process could return an unrelated or
+    non-paper order and have it accepted as the answer to this lookup —
+    concretely dangerous at `submit_external_paper_order`'s duplicate-submit
+    path, which returns a found order to its caller directly."""
     if not isinstance(payload, dict):
         raise ProtocolViolationError("runtime GET_ORDER_BY_CLIENT_ID response must be a mapping")
     found = payload.get("found")
@@ -486,14 +494,26 @@ def parse_client_order_lookup_response(payload: dict, *, book_id: str, client_or
         return None
     if set(payload) != {"found", "order"}:
         raise ProtocolViolationError("runtime GET_ORDER_BY_CLIENT_ID found response has an unexpected shape")
-    return ExternalOrderSnapshot.from_payload(payload.get("order")).to_dict()
+    order = ExternalOrderSnapshot.from_payload(payload.get("order")).to_dict()
+    if order["book_id"] != book_id or order["client_order_id"] != client_order_id:
+        raise ProtocolViolationError(
+            "runtime GET_ORDER_BY_CLIENT_ID found response does not match the requested "
+            "book_id/client_order_id"
+        )
+    if order["provider"] != "alpaca_paper" or order["environment"] != "paper":
+        raise ProtocolViolationError(
+            "runtime GET_ORDER_BY_CLIENT_ID found response is not paper-scoped"
+        )
+    return order
 
 
-def parse_broker_order_lookup_response(payload: dict) -> dict | None:
+def parse_broker_order_lookup_response(payload: dict, *, book_id: str, broker_order_id: str) -> dict | None:
     """Validates the `GET_ORDER` envelope (`dispatcher._op_GET_ORDER`)
     before any `found`/`order` value is trusted — see
     `parse_client_order_lookup_response` above for why a malformed envelope
-    must raise rather than silently resolve to `None`."""
+    must raise rather than silently resolve to `None`, and why a *found*
+    response must be bound to the requested book_id/broker_order_id and
+    paper-scoped rather than trusted on structure alone."""
     if not isinstance(payload, dict):
         raise ProtocolViolationError("runtime GET_ORDER response must be a mapping")
     found = payload.get("found")
@@ -505,4 +525,11 @@ def parse_broker_order_lookup_response(payload: dict) -> dict | None:
         if payload.get("order") is not None:
             raise ProtocolViolationError("runtime GET_ORDER not-found response must have order=null")
         return None
-    return ExternalOrderSnapshot.from_payload(payload.get("order")).to_dict()
+    order = ExternalOrderSnapshot.from_payload(payload.get("order")).to_dict()
+    if order["book_id"] != book_id or order["broker_order_id"] != broker_order_id:
+        raise ProtocolViolationError(
+            "runtime GET_ORDER found response does not match the requested book_id/broker_order_id"
+        )
+    if order["provider"] != "alpaca_paper" or order["environment"] != "paper":
+        raise ProtocolViolationError("runtime GET_ORDER found response is not paper-scoped")
+    return order

@@ -2279,11 +2279,9 @@ further. Recorded as `DECISIONS.md` D8 rulings 13-14:
 ### Tests run
 
 - `nox -s ci` — **all four blocking sessions passed** (re-run after all
-  three follow-ups above): `tests` (3016 passed, 105 skipped), `paper_tests`
-  (160 passed), `safety_typecheck` (pyright, 0 errors), `migration_smoke`
-  (OK).
-- Local `.venv` (which has LumiBot installed, unlike the `tests` nox
-  session): `pytest tests/unit -q` — **2970 passed, 41 skipped, 0 failed**.
+  three follow-ups and the review fix below): `tests` (3028 passed, 105
+  skipped), `paper_tests` (160 passed), `safety_typecheck` (pyright, 0
+  errors), `migration_smoke` (OK).
 - New in the original PR: `tests/unit/test_runtime_normalization_contract.py`
   (42 tests), `tests/unit/test_runtime_client_normalization.py` (31),
   `paper_runtime/tests/test_normalization.py` (34, now 40 after all three
@@ -2324,6 +2322,19 @@ further. Recorded as `DECISIONS.md` D8 rulings 13-14:
   (`test_gateway_rejects_an_absent_time_in_force_regardless_of_client_order_id`,
   `test_gateway_rejects_an_absent_time_in_force_from_an_account_wide_listing`
   — the latter using a forged `"intent-"`-prefixed `client_order_id`).
+- New in the review fix on commit `3193b0b` (D8 Ruling 15): a *found*
+  lookup response was validated for shape but not bound to the requested
+  identifiers, and `submit_external_paper_order`'s duplicate-submit path
+  never ran `_validate_order_response` at all — together allowing an
+  unrelated book's order, a foreign account's order, or a live (non-paper)
+  order to be reported as a successful existing submission. 9 new
+  `RuntimeClient` tests in `tests/unit/test_runtime_client.py` (mismatched
+  `book_id`/`client_order_id`/`broker_order_id`, claimed live
+  environment/unrelated provider, for both lookup methods, plus two
+  correctly-matched happy-path cases); 3 new regressions in `tests/unit/
+  test_external_paper_broker.py` proving the duplicate-submit path now
+  rejects a foreign account fingerprint, a live environment, and a
+  mismatched quantity instead of reporting success.
 - `nox -s typecheck` is not part of `nox -s ci` and carries a large
   pre-existing baseline (2530 errors). This PR takes it to 2535: all five are
   the *same* pre-existing `ScriptedGateway`-does-not-satisfy-`PaperBrokerGateway`

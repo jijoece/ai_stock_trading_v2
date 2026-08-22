@@ -420,7 +420,7 @@ class RuntimeClient:
 
     def get_order_by_broker_order_id(self, book_id: str, broker_order_id: str) -> dict | None:
         result = self._request("GET_ORDER", {"book_id": book_id, "broker_order_id": broker_order_id})
-        return parse_broker_order_lookup_response(result)
+        return parse_broker_order_lookup_response(result, book_id=book_id, broker_order_id=broker_order_id)
 
     def cancel_external_order(self, book_id: str, client_order_id: str, account_fingerprint: str) -> dict:
         result = self._request(
