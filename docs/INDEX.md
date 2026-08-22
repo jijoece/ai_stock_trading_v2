@@ -86,7 +86,7 @@ Use runbooks for operator procedures; use code and tests for exact behavior.
 | Duplicate audit notes | [`pitfalls_and_improvements.md`](pitfalls_and_improvements.md) | Exact duplicate; do not read |
 | Library-first migration status (current authority, dependencies, decisions) | [`library-migration/STATUS.md`](library-migration/STATUS.md) | Canonical; see also `MASTER_PLAN.md`, `COMPONENT_MATRIX.md`, `DECISIONS.md` in the same directory |
 | Backtest-engine removal decision (custom engine kept; LumiBot adapter is a non-replacing cross-check) | [`library-migration/pr8/DECISION.md`](library-migration/pr8/DECISION.md) | Canonical for why `backtesting/engine.py` is preserved; its evidence input is `library-migration/pr7/PARITY_REPORT.md` |
-| Migration continuation helper (read-only status and fresh-session prompt) | [`library-migration/AUTOMATION.md`](library-migration/AUTOMATION.md) | Describes `scripts/migration_helper.py` only; it is subordinate to `MASTER_PLAN.md` and `STATUS.md`, which decide what each phase contains |
+| Migration continuation helper (status/prompt are read-only; `run-claude` is the one explicit, gated command that may invoke Claude) | [`library-migration/AUTOMATION.md`](library-migration/AUTOMATION.md) | Describes `scripts/migration_helper.py` only; it is subordinate to `MASTER_PLAN.md` and `STATUS.md`, which decide what each phase contains |
 | Library-migration execution-prompt archive | [`milestones/rebuild/README.md`](milestones/rebuild/README.md) | Historical/instructional prompts, not current behavior |
 
 ## Milestone history
