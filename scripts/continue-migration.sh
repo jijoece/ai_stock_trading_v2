@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
 # Print the current migration position and a prompt for a fresh Claude session.
 # Read-only: this never invokes Claude and never mutates the repository.
+#
+# To fix recorded review findings or start the next documented phase for
+# real, run `python scripts/migration_helper.py run-claude` explicitly
+# (add --dry-run to preview it first). That command is intentionally not
+# wired into this script.
 set -euo pipefail
 
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"

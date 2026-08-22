@@ -424,8 +424,8 @@ def test_every_github_invocation_is_a_read_only_subcommand() -> None:
         assert not forbidden.intersection(words), words
 
 
-def test_subprocess_is_only_ever_used_through_the_audited_gh_wrapper() -> None:
-    """One choke point keeps the read-only audit above meaningful."""
+def test_subprocess_is_only_ever_used_through_one_audited_low_level_wrapper() -> None:
+    """One choke point (`_run_subprocess`) keeps the `gh`/`git`/`claude` audits meaningful."""
     runs = [
         node
         for node in ast.walk(_helper_ast())
@@ -436,6 +436,54 @@ def test_subprocess_is_only_ever_used_through_the_audited_gh_wrapper() -> None:
         and node.func.value.id == "subprocess"
     ]
     assert len(runs) == 1
+
+
+def test_every_git_invocation_is_a_read_only_verification_subcommand() -> None:
+    """`_run_git` only ever verifies what Claude already did -- never commits, pushes,
+    resets, or checks out anything itself."""
+    allowed = {"rev-parse", "status", "ls-remote", "merge-base"}
+    forbidden = {
+        "commit", "push", "reset", "checkout", "clean", "branch",
+        "rebase", "merge", "cherry-pick", "-D", "--force", "--hard",
+    }
+
+    calls: list[list[str]] = []
+    for node in ast.walk(_helper_ast()):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        name = func.id if isinstance(func, ast.Name) else getattr(func, "attr", "")
+        if name != "_run_git" or not node.args:
+            continue
+        argument = node.args[0]
+        assert isinstance(argument, ast.List), "git arguments must be a visible literal list"
+        words = [
+            element.value
+            for element in argument.elts
+            if isinstance(element, ast.Constant) and isinstance(element.value, str)
+        ]
+        calls.append(words)
+
+    assert calls, "expected at least one git invocation to audit"
+    for words in calls:
+        assert words[0] in allowed, words
+        assert not forbidden.intersection(words), words
+
+
+def test_claude_is_only_invoked_through_the_audited_wrapper_without_bypassing_permissions() -> None:
+    """The only command that may mutate anything must never skip permission checks."""
+    source = HELPER_SOURCE.read_text(encoding="utf-8")
+    assert "--dangerously-skip-permissions" not in source
+
+    claude_argv_literals = [
+        node
+        for node in ast.walk(_helper_ast())
+        if isinstance(node, ast.List)
+        and node.elts
+        and isinstance(node.elts[0], ast.Name)
+        and node.elts[0].id == "CLAUDE_BINARY"
+    ]
+    assert len(claude_argv_literals) == 1, "expected exactly one literal argv naming the claude binary"
 
 
 def test_the_helper_never_writes_to_disk() -> None:
@@ -614,3 +662,364 @@ def test_the_prompt_requires_a_branch_name_the_helper_can_find(tmp_path: Path) -
     prompt = helper.format_continue_prompt(situation)
     assert "migration/10-" in prompt
     assert "required" in prompt
+
+
+# --------------------------------------------------------------------------
+# `run-claude` -- the one command that may invoke Claude for real
+# --------------------------------------------------------------------------
+
+
+def _open_pr_situation(tmp_path: Path, *, phase: str = "9") -> helper.Situation:
+    documents = helper.read_migration_documents(write_docs(tmp_path))
+    pr = pull_request(22, phase, ci_state=helper.CI_PASSING)
+    return helper.build_situation(documents, (pr,))
+
+
+def _write_findings(
+    tmp_path: Path,
+    *,
+    reviewed_head: str,
+    status: str,
+    finding_count: int,
+    fix_commit: str | None = None,
+) -> Path:
+    lines = [
+        f"Reviewed HEAD: {reviewed_head}",
+        f"Review status: {status}",
+        f"Finding count: {finding_count}",
+    ]
+    if fix_commit is not None:
+        lines.append(f"Fix commit: {fix_commit}")
+    path = tmp_path / "REVIEW_FINDINGS.md"
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return path
+
+
+def _fail_if_called(*_args: object, **_kwargs: object) -> None:
+    raise AssertionError("must not be called in this scenario")
+
+
+def test_run_claude_with_a_clean_findings_file_waits_for_human_merge(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A clean open migration PR waits for merge; no Claude session is started."""
+    situation = _open_pr_situation(tmp_path)
+    monkeypatch.setattr(helper, "discover", lambda root, offline=False: situation)
+    _write_findings(
+        tmp_path,
+        reviewed_head=situation.pull_request.head_sha,
+        status=helper.REVIEW_STATUS_CLEAN,
+        finding_count=0,
+    )
+    monkeypatch.setattr(helper, "_run_claude", _fail_if_called)
+
+    assert helper.run_claude(tmp_path) == helper.EXIT_OK
+
+
+def test_run_claude_with_unresolved_findings_invokes_a_fix_session(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    situation = _open_pr_situation(tmp_path)
+    pr = situation.pull_request
+    monkeypatch.setattr(helper, "discover", lambda root, offline=False: situation)
+    findings_path = _write_findings(
+        tmp_path, reviewed_head=pr.head_sha, status="NEEDS_FIXES", finding_count=2
+    )
+    monkeypatch.setattr(helper, "_git_current_branch", lambda root: pr.branch)
+    head_values = iter([pr.head_sha, pr.head_sha, "b" * 40])
+    monkeypatch.setattr(helper, "_git_head_sha", lambda root: next(head_values))
+    monkeypatch.setattr(helper, "_git_tracked_worktree_is_clean", lambda root: True)
+    monkeypatch.setattr(helper, "_git_remote_branch_sha", lambda branch, root: "b" * 40)
+    monkeypatch.setattr(helper, "_git_is_ancestor", lambda candidate, of, root: True)
+
+    invoked: list[list[str]] = []
+
+    def fake_run_claude(argv: list[str], root: Path, *, timeout: int) -> helper.ClaudeResult:
+        invoked.append(argv)
+        findings_path.write_text(
+            f"Reviewed HEAD: {pr.head_sha}\n"
+            f"Review status: {helper.REVIEW_STATUS_FIXES_APPLIED}\n"
+            "Finding count: 0\n"
+            f"Fix commit: {'b' * 40}\n",
+            encoding="utf-8",
+        )
+        return helper.ClaudeResult(returncode=0, stdout="{}", stderr="")
+
+    monkeypatch.setattr(helper, "_run_claude", fake_run_claude)
+
+    assert helper.run_claude(tmp_path) == helper.EXIT_OK
+    assert invoked, "expected exactly one Claude attempt"
+    assert helper.CLAUDE_BINARY in invoked[0][0]
+
+
+def test_run_claude_fix_session_uses_the_existing_pr_branch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Fails closed if the local checkout is not already on the PR's branch."""
+    situation = _open_pr_situation(tmp_path)
+    pr = situation.pull_request
+    monkeypatch.setattr(helper, "discover", lambda root, offline=False: situation)
+    _write_findings(tmp_path, reviewed_head=pr.head_sha, status="NEEDS_FIXES", finding_count=1)
+    monkeypatch.setattr(helper, "_git_current_branch", lambda root: "some-other-branch")
+    monkeypatch.setattr(helper, "_run_claude", _fail_if_called)
+
+    assert helper.run_claude(tmp_path) == helper.EXIT_ERROR
+
+
+def test_run_claude_dry_run_invokes_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    situation = _open_pr_situation(tmp_path)
+    pr = situation.pull_request
+    monkeypatch.setattr(helper, "discover", lambda root, offline=False: situation)
+    _write_findings(tmp_path, reviewed_head=pr.head_sha, status="NEEDS_FIXES", finding_count=1)
+    monkeypatch.setattr(helper, "_git_current_branch", lambda root: pr.branch)
+    monkeypatch.setattr(helper, "_git_head_sha", lambda root: pr.head_sha)
+    monkeypatch.setattr(helper, "_run_claude", _fail_if_called)
+    monkeypatch.setattr(helper.subprocess, "run", _fail_if_called)
+
+    assert helper.run_claude(tmp_path, dry_run=True) == helper.EXIT_OK
+    out = capsys.readouterr().out
+    assert "DRY RUN" in out
+    assert helper.CLAUDE_BINARY in out
+    assert "Prompt:" in out
+
+
+def test_run_claude_reports_a_failed_claude_session(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    situation = _open_pr_situation(tmp_path)
+    pr = situation.pull_request
+    monkeypatch.setattr(helper, "discover", lambda root, offline=False: situation)
+    _write_findings(tmp_path, reviewed_head=pr.head_sha, status="NEEDS_FIXES", finding_count=1)
+    monkeypatch.setattr(helper, "_git_current_branch", lambda root: pr.branch)
+    head_values = iter([pr.head_sha, pr.head_sha])
+    monkeypatch.setattr(helper, "_git_head_sha", lambda root: next(head_values))
+    monkeypatch.setattr(
+        helper,
+        "_run_claude",
+        lambda argv, root, *, timeout: helper.ClaudeResult(
+            returncode=1, stdout="", stderr="something went wrong"
+        ),
+    )
+
+    assert helper.run_claude(tmp_path) == helper.EXIT_ERROR
+
+
+def test_run_claude_detects_quota_exhaustion_as_resumable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    situation = _open_pr_situation(tmp_path)
+    pr = situation.pull_request
+    monkeypatch.setattr(helper, "discover", lambda root, offline=False: situation)
+    _write_findings(tmp_path, reviewed_head=pr.head_sha, status="NEEDS_FIXES", finding_count=1)
+    monkeypatch.setattr(helper, "_git_current_branch", lambda root: pr.branch)
+    head_values = iter([pr.head_sha, pr.head_sha])
+    monkeypatch.setattr(helper, "_git_head_sha", lambda root: next(head_values))
+    monkeypatch.setattr(
+        helper,
+        "_run_claude",
+        lambda argv, root, *, timeout: helper.ClaudeResult(
+            returncode=1, stdout="", stderr="Claude AI usage limit reached. Try again later."
+        ),
+    )
+
+    assert helper.run_claude(tmp_path) == helper.EXIT_CLAUDE_QUOTA
+
+
+def test_run_claude_fails_closed_when_findings_are_not_resolved_after_claude_exits(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    situation = _open_pr_situation(tmp_path)
+    pr = situation.pull_request
+    monkeypatch.setattr(helper, "discover", lambda root, offline=False: situation)
+    _write_findings(tmp_path, reviewed_head=pr.head_sha, status="NEEDS_FIXES", finding_count=1)
+    monkeypatch.setattr(helper, "_git_current_branch", lambda root: pr.branch)
+    head_values = iter([pr.head_sha, pr.head_sha, "b" * 40])
+    monkeypatch.setattr(helper, "_git_head_sha", lambda root: next(head_values))
+    monkeypatch.setattr(helper, "_git_tracked_worktree_is_clean", lambda root: True)
+    # Claude committed and pushed, but never updated REVIEW_FINDINGS.md.
+    monkeypatch.setattr(
+        helper,
+        "_run_claude",
+        lambda argv, root, *, timeout: helper.ClaudeResult(returncode=0, stdout="{}", stderr=""),
+    )
+
+    assert helper.run_claude(tmp_path) == helper.EXIT_ERROR
+
+
+def test_run_claude_fails_closed_when_fixes_are_committed_but_not_pushed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    situation = _open_pr_situation(tmp_path)
+    pr = situation.pull_request
+    monkeypatch.setattr(helper, "discover", lambda root, offline=False: situation)
+    findings_path = _write_findings(
+        tmp_path, reviewed_head=pr.head_sha, status="NEEDS_FIXES", finding_count=1
+    )
+    monkeypatch.setattr(helper, "_git_current_branch", lambda root: pr.branch)
+    head_values = iter([pr.head_sha, pr.head_sha, "b" * 40])
+    monkeypatch.setattr(helper, "_git_head_sha", lambda root: next(head_values))
+    monkeypatch.setattr(helper, "_git_tracked_worktree_is_clean", lambda root: True)
+    monkeypatch.setattr(helper, "_git_is_ancestor", lambda candidate, of, root: True)
+    # Remote is still at the old SHA -- local commits exist but were never pushed.
+    monkeypatch.setattr(helper, "_git_remote_branch_sha", lambda branch, root: pr.head_sha)
+
+    def fake_run_claude(argv: list[str], root: Path, *, timeout: int) -> helper.ClaudeResult:
+        findings_path.write_text(
+            f"Reviewed HEAD: {pr.head_sha}\n"
+            f"Review status: {helper.REVIEW_STATUS_FIXES_APPLIED}\n"
+            "Finding count: 0\n"
+            f"Fix commit: {'b' * 40}\n",
+            encoding="utf-8",
+        )
+        return helper.ClaudeResult(returncode=0, stdout="{}", stderr="")
+
+    monkeypatch.setattr(helper, "_run_claude", fake_run_claude)
+
+    assert helper.run_claude(tmp_path) == helper.EXIT_ERROR
+
+
+def test_run_claude_fails_closed_on_a_malformed_findings_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    situation = _open_pr_situation(tmp_path)
+    monkeypatch.setattr(helper, "discover", lambda root, offline=False: situation)
+    (tmp_path / "REVIEW_FINDINGS.md").write_text(
+        f"Reviewed HEAD: {situation.pull_request.head_sha}\nReview status: CLEAN\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(helper, "_run_claude", _fail_if_called)
+
+    assert helper.run_claude(tmp_path) == helper.EXIT_ERROR
+
+
+def test_run_claude_fails_closed_on_a_stale_findings_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    situation = _open_pr_situation(tmp_path)
+    monkeypatch.setattr(helper, "discover", lambda root, offline=False: situation)
+    _write_findings(
+        tmp_path, reviewed_head="c" * 40, status="NEEDS_FIXES", finding_count=1
+    )  # not the PR's actual HEAD ("a" * 40)
+    monkeypatch.setattr(helper, "_run_claude", _fail_if_called)
+
+    assert helper.run_claude(tmp_path) == helper.EXIT_ERROR
+
+
+def test_run_claude_fails_closed_on_an_internally_inconsistent_findings_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    situation = _open_pr_situation(tmp_path)
+    monkeypatch.setattr(helper, "discover", lambda root, offline=False: situation)
+    _write_findings(
+        tmp_path,
+        reviewed_head=situation.pull_request.head_sha,
+        status=helper.REVIEW_STATUS_CLEAN,
+        finding_count=3,
+    )
+    monkeypatch.setattr(helper, "_run_claude", _fail_if_called)
+
+    assert helper.run_claude(tmp_path) == helper.EXIT_ERROR
+
+
+def test_run_claude_advances_to_the_documented_next_phase_after_a_merge(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A merged prerequisite advances run-claude to the documented next phase."""
+    documents = helper.read_migration_documents(write_docs(tmp_path))
+    merged = pull_request(22, "9", is_open=False, is_merged=True)
+    situation = helper.build_situation(documents, (merged,))
+    assert situation.state == helper.NEXT_PHASE_READY
+    assert situation.active_phase_id == "10"
+
+    monkeypatch.setattr(helper, "discover", lambda root, offline=False: situation)
+    monkeypatch.setattr(helper, "list_migration_pull_requests", lambda root: (merged,))
+    monkeypatch.setattr(helper, "_run_claude", _fail_if_called)
+
+    assert helper.run_claude(tmp_path, dry_run=True) == helper.EXIT_OK
+    out = capsys.readouterr().out
+    assert "PR 10" in out
+    assert "row 10" in out
+
+
+def test_run_claude_never_selects_row_8a_by_sorting(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """8a is only ever prepared when STATUS.md's documented edge names it next."""
+    write_docs(tmp_path, current="8", following="8a")
+    documents = helper.read_migration_documents(tmp_path)
+    merged = pull_request(20, "8", is_open=False, is_merged=True)
+    situation = helper.build_situation(documents, (merged,))
+    assert situation.active_phase_id == "8a"
+
+    monkeypatch.setattr(helper, "discover", lambda root, offline=False: situation)
+    monkeypatch.setattr(helper, "list_migration_pull_requests", lambda root: (merged,))
+    monkeypatch.setattr(helper, "_run_claude", _fail_if_called)
+
+    assert helper.run_claude(tmp_path, dry_run=True) == helper.EXIT_OK
+    assert "PR 8a" in capsys.readouterr().out
+
+
+def test_run_claude_refuses_a_second_active_phase_when_another_pr_is_open(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No duplicate PR or second active migration phase: a stray open PR on a
+    different phase must block starting a new one, not be silently ignored."""
+    documents = helper.read_migration_documents(write_docs(tmp_path))
+    merged = pull_request(22, "9", is_open=False, is_merged=True)
+    situation = helper.build_situation(documents, (merged,))
+    assert situation.state == helper.NEXT_PHASE_READY
+
+    stray_open = pull_request(30, "8a")
+    monkeypatch.setattr(helper, "discover", lambda root, offline=False: situation)
+    monkeypatch.setattr(
+        helper, "list_migration_pull_requests", lambda root: (merged, stray_open)
+    )
+    monkeypatch.setattr(helper, "_run_claude", _fail_if_called)
+
+    assert helper.run_claude(tmp_path, dry_run=True) == helper.EXIT_HUMAN_ATTENTION
+
+
+def test_run_claude_needing_human_attention_never_invokes_claude(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    documents = helper.read_migration_documents(write_docs(tmp_path))
+    situation = helper.build_situation(
+        documents, (pull_request(22, "9"), pull_request(25, "9"))
+    )
+    assert situation.needs_human
+
+    monkeypatch.setattr(helper, "discover", lambda root, offline=False: situation)
+    monkeypatch.setattr(helper, "_run_claude", _fail_if_called)
+
+    assert helper.run_claude(tmp_path) == helper.EXIT_HUMAN_ATTENTION
+
+
+def test_run_claude_never_shells_out_directly_bypassing_the_audited_wrappers(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No real Claude, GitHub mutation, broker, or provider call happens in tests:
+    even with `discover` left real, nothing reaches the raw subprocess boundary
+    once `_run_gh`/`_run_git`/`_run_claude` are replaced."""
+    write_docs(tmp_path)
+    monkeypatch.setattr(helper.subprocess, "run", _fail_if_called)
+    monkeypatch.setattr(
+        helper, "list_migration_pull_requests", lambda root: (pull_request(22, "9"),)
+    )
+    monkeypatch.setattr(
+        helper,
+        "describe_pull_request",
+        lambda number, root: {
+            "headRefOid": "a" * 40,
+            "isDraft": False,
+            "statusCheckRollup": [{"name": "ci", "status": "COMPLETED", "conclusion": "SUCCESS"}],
+        },
+    )
+    _write_findings(tmp_path, reviewed_head="a" * 40, status=helper.REVIEW_STATUS_CLEAN, finding_count=0)
+
+    assert helper.run_claude(tmp_path) == helper.EXIT_OK
+
+
+def test_run_claude_rejects_offline(tmp_path: Path) -> None:
+    assert helper.main(["run-claude", "--repo-root", str(tmp_path), "--offline"]) == helper.EXIT_ERROR
