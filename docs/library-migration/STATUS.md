@@ -1,9 +1,15 @@
 # Migration Status
 
-**Current phase: PR 9 — the LumiBot runtime normalization contract —
-IMPLEMENTED, NOT MERGED** (branch `migration/09-lumibot-normalization-contract`,
-based on `b57f891`; `MASTER_PLAN.md` row 9, `DECISIONS.md` D8). See
-"Completed work (PR 9)" below.
+**Current phase: PR 10 — broker-to-`paper_books` reconciliation parity
+tests — IMPLEMENTED** (branch
+`migration/10-broker-paper-books-reconciliation-parity`; `MASTER_PLAN.md`
+row 10, `DECISIONS.md` D1). See "Completed work (PR 10)" below.
+
+PR 9 — the LumiBot runtime normalization contract — is **merged** (PR #22,
+`22f2cdc`, branch `migration/09-lumibot-normalization-contract`;
+`MASTER_PLAN.md` row 9, `DECISIONS.md` D8). This file's "Current phase"
+line above previously still read "IMPLEMENTED, NOT MERGED" after the merge
+landed — corrected here rather than left to contradict `git log`.
 
 PR 8 — the backtest removal-decision gate — is **merged** (PR #20). Its
 outcome stands: the custom backtest engine is **not** approved for removal,
@@ -15,10 +21,11 @@ PR 8 created row **8a**, the tracked follow-up for the three legacy-side
 items it decided must now be fixed rather than tolerated: run identity
 ignores the bar dataset (PR 7 D17), the `backtest_orders` table is created
 and never written, and bar availability is enforced once per run rather than
-per session. Row 8a is **not started**.
+per session. Row 8a is **not started** and remains independent of the
+numbered migration sequence — it can run at any point.
 
-**Next phase: PR 10 — broker-to-`paper_books` reconciliation parity tests**
-(`MASTER_PLAN.md` row 10), which depends on PR 9.
+**Next phase: PR 11 — QuantStats/analytics migration** (`MASTER_PLAN.md`
+row 11), which depends only on PR 1 (already merged).
 
 PR 6 is **merged** (`bbd7a1f`, PR #18) and delivered everything ADR 0009
 Decision 4 requires:
@@ -2352,3 +2359,107 @@ arrangement; PR 9 did not change it.
 code, external-broker state machine, or scheduling behavior was modified; no
 broker, provider, model, or market-data service was called; no credentials
 were read; no order of any kind was submitted.
+
+## Completed work (PR 10)
+
+**Scope:** one new test file,
+`tests/unit/test_external_broker_runtime_client_parity.py`; plus this file,
+`MASTER_PLAN.md`, and `DECISIONS.md` (D1 resolution note). No file under
+`src/`, `scripts/`, `paper_runtime/src/`, or `config/` was modified — this
+PR adds test coverage for reconciliation logic that already exists; per
+D1 and the bounded prompt, the book ledger is not removed, and no
+production behavior changed.
+
+**The gap this PR closes:** every existing `paper_books/external_broker.py`
+reconciliation test (`tests/unit/test_external_paper_broker.py`, 2700+
+lines) drives the `ExternalPaperRuntime` protocol through `FakeRuntime`, a
+hand-rolled test double that returns raw dicts directly. It never goes
+through `RuntimeClient` (`runtime/client/process_client.py`), so it never
+exercises the PR 9 normalization contract
+(`ExternalOrderSnapshot`/`ExternalFillSnapshot`/`ExternalPositionsSnapshot`/
+`ExternalAccountSnapshot`, `parse_client_order_lookup_response`) that sits
+between the wire and `external_broker.py` in production. `RuntimeClient` is
+the only production type that structurally satisfies `ExternalPaperRuntime`
+(confirmed by inspecting both — all nine protocol methods match by name and
+signature) — `services/reconcile_paper.py` and every Milestone 11
+external-order call site pass a real `RuntimeClient` as `runtime=`. So
+nothing previously proved that a *normalized* broker observation —
+validated exactly as production validates it — reconciles correctly into
+`paper_books`' real SQLite-backed cash ledger and positions tables. This is
+precisely D1's requirement for PR 10: "the application reconciles those
+observations into `paper_books`; LumiBot never mutates book state
+directly," proven end to end rather than only at the reconciliation-logic
+layer in isolation (which was already covered).
+
+Two other reconciliation paths in this repository were inventoried and
+found not to be `paper_books`-scoped, confirming the gap is real rather
+than already covered elsewhere: `execution/account_reconciliation.py`
+(exercised by `tests/unit/test_account_reconciliation.py`) reconciles
+against plain `Decimal` cash/quantity values, not a real book ledger; and
+`services/reconcile_paper.py::reconcile_paper_account_and_positions`
+(exercised by `tests/unit/test_reconcile_paper.py`, which already uses a
+real `RuntimeClient` + `FakeTransport`) reconciles against
+`trading_research.paper.ledger.PaperLedger` — a separate, older,
+book-agnostic ledger from the Milestone 4 era, not `paper_books`.
+
+**Five new tests**, each driving `activate_external_reconciliation_
+baseline`, `preview_external_paper_order`, `submit_external_paper_order`,
+and/or `reconcile_external_paper_order` with a real `RuntimeClient` wired to
+a scripted `FakeTransport` (`tests/support/runtime_client_fixtures.py`, the
+same double `test_reconcile_paper.py`/`test_runtime_client.py` use),
+asserting against the real `paper_books` ledger (`cash_ledger`,
+`positions`) in a real SQLite connection:
+
+1. `test_matched_submission_reconciles_through_real_normalized_runtime_client`
+   — a full baseline-activation/preview/submit flow with a normalized
+   `FILLED` order and one matching fill reconciles to `MATCHED`; the local
+   order moves to `STATE_FILLED`; `cash_ledger.settled_cash` and
+   `positions` reflect the exact fill.
+2. `test_cash_mismatch_detected_through_real_normalized_runtime_client` — a
+   normalized account snapshot reporting the pre-trade cash figure (the
+   broker never deducted the trade) is detected as `CASH_MISMATCH`; the
+   local ledger is never silently repaired to agree with the broker.
+3. `test_position_mismatch_detected_through_real_normalized_runtime_client`
+   — a normalized positions snapshot reporting one fewer share than the
+   normalized fill applied is detected as `POSITION_MISMATCH`; local
+   positions are never silently repaired.
+4. `test_expired_order_round_trips_through_real_normalized_runtime_client`
+   — the PR 9 motivating defect, reproduced through the real client: an
+   order the broker later reports as `EXPIRED` (previously outside
+   `execution/broker_snapshots.py::SUBMISSION_STATES`, producing a
+   permanently unreadable submission row) reconciles cleanly through
+   `RuntimeClient`'s normalization, reaches the terminal `STATE_EXPIRED` in
+   the local event chain, and leaves `paper_books` exactly as it was before
+   submission — no shares, no cash movement.
+5. `test_malformed_order_lookup_fails_closed_without_corrupting_book` — a
+   malformed `GET_ORDER_BY_CLIENT_ID` envelope (a non-boolean `found`)
+   raises `ProtocolViolationError` at the `RuntimeClient` boundary;
+   `_run_reconciliation` downgrades this to a non-authoritative `UNKNOWN`
+   outcome and returns before calling `GET_POSITIONS`/
+   `GET_ACCOUNT_SNAPSHOT`, proving a malformed broker response cannot
+   silently repair or corrupt `paper_books` state.
+
+**Tests run:**
+- `pytest tests/unit/test_external_broker_runtime_client_parity.py -q
+  --tb=short` — **5 passed**.
+- `pytest tests/unit/test_external_broker_runtime_client_parity.py
+  tests/unit/test_external_paper_broker.py tests/unit/test_reconcile_paper.py
+  tests/unit/test_account_reconciliation.py
+  tests/unit/test_paper_books_execution_and_reconciliation.py
+  tests/unit/test_runtime_client.py
+  tests/unit/test_runtime_normalization_contract.py -q --tb=short` — **256
+  passed** (the full reconciliation/normalization-adjacent surface, to
+  confirm no existing test's fixtures or assumptions were disturbed).
+- `nox -s ci` — **all four blocking sessions passed**: `tests` (3116
+  passed, 105 skipped), `paper_tests` (160 passed), `safety_typecheck`
+  (pyright, 0 errors — the new test file is outside `pyright-safety.json`'s
+  scope), `migration_smoke` (OK).
+- `scripts/check_links.sh` — 186 links checked, 0 errors.
+
+**Safety:** no trading limit, authorization rule, `paper_books` accounting
+code, external-broker state machine, or scheduling behavior was modified;
+no broker, provider, model, or market-data service was called; no
+credentials were read or referenced; no order of any kind was submitted;
+the scheduler was not enabled. All broker interaction in the new tests is
+through `FakeTransport`, a fully scripted, offline, in-process double — no
+subprocess is spawned and no network call is made.
