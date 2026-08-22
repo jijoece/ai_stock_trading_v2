@@ -70,6 +70,18 @@ book-scoped lot accounting, cash/share reservations, book valuation, or
 external reconciliation state unless a future *approved* ADR demonstrates
 exact replacement semantics.
 
+**PR 10 resolution (2026-08-22):** implemented on
+`migration/10-broker-paper-books-reconciliation-parity` (`STATUS.md`
+"Completed work (PR 10)"). `paper_books/external_broker.py`'s reconciliation
+functions already existed (Milestone 11); the gap PR 10 closed was test
+coverage — every prior reconciliation test used a hand-rolled double that
+bypassed PR 9's normalization contract, so nothing proved a *normalized*
+broker observation (via the only production type that satisfies
+`ExternalPaperRuntime`, `RuntimeClient`) reconciles correctly into the real
+`paper_books` ledger. `paper_books/cash_ledger.py`, `positions.py`, and the
+reconciliation functions themselves are unchanged — the book ledger was not
+removed, matching this decision's requirement.
+
 ---
 
 ## D2 — ADR 0001 (frozen dataclasses): Pydantic narrowed to trust boundaries
