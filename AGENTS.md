@@ -50,3 +50,22 @@ When compacting, preserve the current goal, decisions, changed files and
 symbols, test failures and passes, unresolved risks, and remaining work.
 Discard raw search results, successful command output, historical-document
 excerpts, repeated explanations, and superseded hypotheses.
+
+## Code Review Rules
+
+Focus on consequential defects, not style.
+
+Prioritize:
+- correctness and regressions
+- trading safety boundaries
+- broker side-effect ambiguity
+- retry/idempotency defects
+- accounting/data-integrity issues
+- point-in-time / look-ahead bias
+- persistence correctness
+- unsafe defaults or fail-open behavior
+- concurrency/race conditions
+- ADR and migration-plan violations
+- missing regression tests
+
+Do not report formatting, naming, or lint issues already covered by CI.
