@@ -20,6 +20,7 @@ from ..execution.broker_snapshots import (
     AccountReconciliationResult,
     BrokerOrderSubmission,
     PositionReconciliationResult,
+    TERMINAL_SUBMISSION_STATES,
 )
 from ..execution.models import (
     PaperExecutionEvent,
@@ -353,10 +354,18 @@ def update_submission_status(
 
 def list_unresolved_submissions(conn: sqlite3.Connection) -> list[BrokerOrderSubmission]:
     """Every submission not yet in a terminal state — the polling loop's
-    work queue (docs/milestone-4.md Step 9)."""
+    work queue (docs/milestone-4.md Step 9).
+
+    PR 9: the terminal set is bound from `TERMINAL_SUBMISSION_STATES` rather
+    than repeated as a SQL literal. The literal had drifted — it omitted
+    `EXPIRED`, so an expired broker order would have stayed in this work
+    queue forever.
+    """
+    placeholders = ", ".join("?" for _ in TERMINAL_SUBMISSION_STATES)
     rows = conn.execute(
-        "SELECT * FROM paper_broker_submissions WHERE submission_status NOT IN "
-        "('FILLED', 'CANCELLED', 'REJECTED', 'ERROR') ORDER BY created_at"
+        f"SELECT * FROM paper_broker_submissions WHERE submission_status NOT IN ({placeholders}) "
+        "ORDER BY created_at",
+        tuple(TERMINAL_SUBMISSION_STATES),
     ).fetchall()
     return [_row_to_submission(r) for r in rows]
 

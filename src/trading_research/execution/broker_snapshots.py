@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
 
+from ..runtime.normalization import NORMALIZED_ORDER_STATUSES, TERMINAL_ORDER_STATUSES
 from .models import _require_tz_aware
 
 # Submission/order lifecycle across the process boundary (docs/milestone-
@@ -22,19 +23,21 @@ from .models import _require_tz_aware
 # outcome) — a real broker submission is asynchronous, so this state
 # machine tracks the interval between "we asked the broker" and "we know
 # what happened."
-SUBMISSION_STATES = (
-    "PENDING_SUBMISSION",
-    "SUBMISSION_UNKNOWN",
-    "SUBMITTED",
-    "ACCEPTED",
-    "PARTIALLY_FILLED",
-    "FILLED",
-    "CANCELLED",
-    "REJECTED",
-    "ERROR",
-)
+#
+# PR 9: these are no longer independent literals. They are the runtime
+# normalization contract (`runtime/normalization.py`), which the isolated
+# `trading_paper_runtime` distribution declares identically.
+#
+# The pre-PR-9 literals omitted `CANCEL_REQUESTED` and `EXPIRED`, both of
+# which `lumibot_gateway._ALPACA_STATUS_MAP` can emit (Alpaca
+# `pending_cancel` and `expired`). Because `update_submission_status` writes
+# the status unvalidated while `_row_to_submission` reads it back through
+# this dataclass, one expired or cancel-pending broker order wrote a row
+# that `get_submission`/`list_unresolved_submissions` could never read
+# again. `EXPIRED` is terminal; `CANCEL_REQUESTED` is not.
+SUBMISSION_STATES = NORMALIZED_ORDER_STATUSES
 
-TERMINAL_SUBMISSION_STATES = ("FILLED", "CANCELLED", "REJECTED", "ERROR")
+TERMINAL_SUBMISSION_STATES = TERMINAL_ORDER_STATUSES
 
 ACCOUNT_RECONCILIATION_STATUSES = ("MATCHED", "CASH_MISMATCH", "MISSING_BROKER_ACCOUNT", "UNKNOWN")
 POSITION_RECONCILIATION_STATUSES = (

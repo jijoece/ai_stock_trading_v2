@@ -13,24 +13,28 @@ from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 
 from .errors import ErrorCode, RuntimeOperationError
+from .normalization import (
+    NORMALIZED_ORDER_STATUSES,
+    normalize_broker_reportable_status,
+    normalize_decimal_string,
+    normalize_exact_int,
+    normalize_optional_decimal_string,
+    normalize_positive_decimal_string,
+    normalize_side,
+    normalize_time_in_force,
+    normalize_timestamp_string,
+)
 
 ORDER_TYPES = ("LIMIT",)
 SIDES = ("BUY", "SELL")
 ASSET_TYPES = ("equity",)
 
 # Runtime-side submission/order states (docs/milestone-4.md Step 8).
-SUBMISSION_STATES = (
-    "PENDING_SUBMISSION",
-    "SUBMISSION_UNKNOWN",
-    "SUBMITTED",
-    "ACCEPTED",
-    "PARTIALLY_FILLED",
-    "FILLED",
-    "CANCEL_REQUESTED",
-    "CANCELLED",
-    "REJECTED",
-    "ERROR",
-)
+# PR 9: this is no longer an independent literal — it is the normalization
+# contract's closed vocabulary (`normalization.py`), which the main side
+# declares identically. The pre-PR-9 literal omitted `EXPIRED` even though
+# `lumibot_gateway._ALPACA_STATUS_MAP` could emit it.
+SUBMISSION_STATES = NORMALIZED_ORDER_STATUSES
 
 
 def _require(condition: bool, message: str) -> None:
@@ -152,6 +156,49 @@ class OrderSnapshotPayload:
     time_in_force: str = "DAY"
     account_fingerprint: str | None = None
 
+    def __post_init__(self) -> None:
+        """Normalize *and* validate every field at construction (PR 9).
+
+        Doing this here rather than at each call site means both gateways —
+        the credentialed `LumiBotAlpacaPaperGateway` and the deterministic
+        double — are held to the same contract, and `dataclasses.replace`
+        re-checks it. Fields are canonicalized in place (frozen dataclass, so
+        via `object.__setattr__`); anything that cannot be canonicalized
+        fails closed rather than being stringified or defaulted.
+        """
+        set_ = object.__setattr__
+        set_(self, "status", normalize_broker_reportable_status(self.status, "order status"))
+        set_(self, "quantity", normalize_exact_int(self.quantity, "order quantity"))
+        set_(self, "filled_quantity", normalize_exact_int(self.filled_quantity, "order filled_quantity"))
+        set_(
+            self,
+            "average_fill_price",
+            normalize_optional_decimal_string(self.average_fill_price, "order average_fill_price"),
+        )
+        set_(self, "limit_price", normalize_optional_decimal_string(self.limit_price, "order limit_price"))
+        set_(self, "submitted_at", normalize_timestamp_string(self.submitted_at, "order submitted_at"))
+        set_(self, "updated_at", normalize_timestamp_string(self.updated_at, "order updated_at"))
+        set_(self, "time_in_force", normalize_time_in_force(self.time_in_force, "order time_in_force"))
+        if self.side is not None:
+            set_(self, "side", normalize_side(self.side, "order side"))
+
+        _require(bool(self.intent_id), "order intent_id is required")
+        _require(bool(self.client_order_id), "order client_order_id is required")
+        _require(self.quantity > 0, f"order quantity must be positive, got {self.quantity}")
+        _require(
+            0 <= self.filled_quantity <= self.quantity,
+            f"order filled_quantity {self.filled_quantity} is out of range for quantity {self.quantity}",
+        )
+        # A reported fill always carries a price. Without this, a broker
+        # response missing `filled_avg_price` would reconcile as shares
+        # acquired at an unknown cost.
+        if self.filled_quantity > 0:
+            _require(
+                self.average_fill_price is not None,
+                "an order with filled_quantity > 0 requires an average_fill_price",
+            )
+            normalize_positive_decimal_string(self.average_fill_price, "order average_fill_price")
+
     def to_dict(self) -> dict:
         return {
             "intent_id": self.intent_id, "client_order_id": self.client_order_id,
@@ -178,6 +225,24 @@ class FillPayload:
     filled_at: str
     account_fingerprint: str
 
+    def __post_init__(self) -> None:
+        """PR 9: a fill is the single most consequential observation this
+        boundary carries — it is what `paper_books` turns into shares and
+        cash. Before PR 9 a broker activity missing `qty`/`price` was
+        stringified to `"0"`, fabricating a zero-price fill. Nothing is
+        defaulted here."""
+        set_ = object.__setattr__
+        set_(self, "side", normalize_side(self.side, "fill side"))
+        set_(self, "quantity", normalize_positive_decimal_string(self.quantity, "fill quantity"))
+        set_(self, "price", normalize_positive_decimal_string(self.price, "fill price"))
+        set_(self, "filled_at", normalize_timestamp_string(self.filled_at, "fill filled_at"))
+
+        _require(bool(self.fill_id), "fill fill_id is required")
+        _require(bool(self.broker_order_id), "fill broker_order_id is required")
+        _require(bool(self.client_order_id), "fill client_order_id is required")
+        _require(bool(self.symbol), "fill symbol is required")
+        _require(bool(self.account_fingerprint), "fill account_fingerprint is required")
+
     def to_dict(self) -> dict:
         return {
             "fill_id": self.fill_id, "broker_order_id": self.broker_order_id,
@@ -196,6 +261,22 @@ class AccountSnapshotPayload:
     currency: str
     as_of: str
 
+    def __post_init__(self) -> None:
+        """PR 9: `cash`/`equity` were previously raw `str(...)` of whatever
+        the broker returned, so a `None` became the literal `"None"` and
+        crashed the main process's `Decimal(...)` parse with an untyped
+        `InvalidOperation` instead of a structured protocol error."""
+        set_ = object.__setattr__
+        set_(self, "cash", normalize_decimal_string(self.cash, "account cash"))
+        set_(self, "equity", normalize_decimal_string(self.equity, "account equity"))
+        set_(
+            self,
+            "buying_power",
+            normalize_optional_decimal_string(self.buying_power, "account buying_power"),
+        )
+        set_(self, "as_of", normalize_timestamp_string(self.as_of, "account as_of"))
+        _require(bool(self.currency), "account currency is required")
+
     def to_dict(self) -> dict:
         return {
             "cash": self.cash, "equity": self.equity, "buying_power": self.buying_power,
@@ -210,6 +291,25 @@ class PositionSnapshotPayload:
     average_entry_price: str
     market_value: str | None
     as_of: str
+
+    def __post_init__(self) -> None:
+        """PR 9: position quantity and cost basis are reconciled against the
+        `paper_books` ledger, so an unparseable or non-finite broker value
+        must fail closed here rather than reach the comparison."""
+        set_ = object.__setattr__
+        set_(self, "quantity", normalize_decimal_string(self.quantity, "position quantity"))
+        set_(
+            self,
+            "average_entry_price",
+            normalize_positive_decimal_string(self.average_entry_price, "position average_entry_price"),
+        )
+        set_(
+            self,
+            "market_value",
+            normalize_optional_decimal_string(self.market_value, "position market_value"),
+        )
+        set_(self, "as_of", normalize_timestamp_string(self.as_of, "position as_of"))
+        _require(bool(self.symbol), "position symbol is required")
 
     def to_dict(self) -> dict:
         return {

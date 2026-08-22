@@ -1,0 +1,75 @@
+{
+  "_purpose": "PR 9 item 3: one declarative accept/reject corpus, executed independently by tests/unit/test_normalization_corpus.py (against trading_research.runtime.normalization) and paper_runtime/tests/test_normalization_corpus.py (against trading_paper_runtime.normalization). Constant/helper-name equality (test_runtime_normalization_contract.py) proves the two files declare the same vocabulary; this corpus additionally proves the same *decisions* -- both sides must accept or reject every case here identically and, for accepted cases, produce the same canonical output. This file is plain JSON data, not a Python import, so reading it from both test suites does not create a shared installable package between the two ADR 0002 distributions.",
+  "cases": [
+    {"function": "normalize_status", "args": ["ACCEPTED", "field"], "accept": true, "canonical": "ACCEPTED"},
+    {"function": "normalize_status", "args": [" filled ", "field"], "accept": true, "canonical": "FILLED"},
+    {"function": "normalize_status", "args": ["pending_submission", "field"], "accept": true, "canonical": "PENDING_SUBMISSION"},
+    {"function": "normalize_status", "args": ["expired", "field"], "accept": true, "canonical": "EXPIRED"},
+    {"function": "normalize_status", "args": ["cancel_requested", "field"], "accept": true, "canonical": "CANCEL_REQUESTED"},
+    {"function": "normalize_status", "args": ["bogus", "field"], "accept": false},
+    {"function": "normalize_status", "args": [null, "field"], "accept": false},
+    {"function": "normalize_status", "args": ["", "field"], "accept": false},
+    {"function": "normalize_status", "args": ["None", "field"], "accept": false},
+
+    {"function": "normalize_broker_reportable_status", "args": ["ACCEPTED", "field"], "accept": true, "canonical": "ACCEPTED"},
+    {"function": "normalize_broker_reportable_status", "args": ["expired", "field"], "accept": true, "canonical": "EXPIRED"},
+    {"function": "normalize_broker_reportable_status", "args": ["cancel_requested", "field"], "accept": true, "canonical": "CANCEL_REQUESTED"},
+    {"function": "normalize_broker_reportable_status", "args": ["PENDING_SUBMISSION", "field"], "accept": false},
+    {"function": "normalize_broker_reportable_status", "args": ["SUBMISSION_UNKNOWN", "field"], "accept": false},
+    {"function": "normalize_broker_reportable_status", "args": ["bogus", "field"], "accept": false},
+
+    {"function": "normalize_side", "args": ["buy", "field"], "accept": true, "canonical": "BUY"},
+    {"function": "normalize_side", "args": ["SELL", "field"], "accept": true, "canonical": "SELL"},
+    {"function": "normalize_side", "args": ["short", "field"], "accept": false},
+    {"function": "normalize_side", "args": [null, "field"], "accept": false},
+
+    {"function": "normalize_time_in_force", "args": ["day", "field"], "accept": true, "canonical": "DAY"},
+    {"function": "normalize_time_in_force", "args": ["GTC", "field"], "accept": true, "canonical": "GTC"},
+    {"function": "normalize_time_in_force", "args": ["forever", "field"], "accept": false},
+    {"function": "normalize_time_in_force", "args": [null, "field"], "accept": false},
+
+    {"function": "normalize_decimal_string", "args": ["101.50", "field"], "accept": true, "canonical": "101.50"},
+    {"function": "normalize_decimal_string", "args": ["1E+2", "field"], "accept": true, "canonical": "100"},
+    {"function": "normalize_decimal_string", "args": ["NaN", "field"], "accept": false},
+    {"function": "normalize_decimal_string", "args": ["Infinity", "field"], "accept": false},
+    {"function": "normalize_decimal_string", "args": ["None", "field"], "accept": false},
+    {"function": "normalize_decimal_string", "args": [null, "field"], "accept": false},
+    {"function": "normalize_decimal_string", "args": ["abc", "field"], "accept": false},
+
+    {"function": "normalize_optional_decimal_string", "args": [null, "field"], "accept": true, "canonical": null},
+    {"function": "normalize_optional_decimal_string", "args": ["", "field"], "accept": true, "canonical": null},
+    {"function": "normalize_optional_decimal_string", "args": ["  ", "field"], "accept": true, "canonical": null},
+    {"function": "normalize_optional_decimal_string", "args": ["10.5", "field"], "accept": true, "canonical": "10.5"},
+    {"function": "normalize_optional_decimal_string", "args": ["None", "field"], "accept": false},
+    {"function": "normalize_optional_decimal_string", "args": ["NaN", "field"], "accept": false},
+
+    {"function": "normalize_positive_decimal_string", "args": ["5", "field"], "accept": true, "canonical": "5"},
+    {"function": "normalize_positive_decimal_string", "args": ["0", "field"], "accept": false},
+    {"function": "normalize_positive_decimal_string", "args": ["-1", "field"], "accept": false},
+    {"function": "normalize_positive_decimal_string", "args": ["NaN", "field"], "accept": false},
+
+    {"function": "parse_decimal", "args": ["10", "field"], "accept": true, "canonical": "10"},
+    {"function": "parse_decimal", "args": ["1E+2", "field"], "accept": true, "canonical": "100"},
+    {"function": "parse_decimal", "args": [null, "field"], "accept": false},
+    {"function": "parse_decimal", "args": ["None", "field"], "accept": false},
+    {"function": "parse_decimal", "args": ["NaN", "field"], "accept": false},
+    {"function": "parse_decimal", "args": ["Infinity", "field"], "accept": false},
+    {"function": "parse_decimal", "args": ["-Infinity", "field"], "accept": false},
+    {"function": "parse_decimal", "args": [true, "field"], "accept": false},
+    {"function": "parse_decimal", "args": ["abc", "field"], "accept": false},
+
+    {"function": "normalize_exact_int", "args": [10, "field"], "accept": true, "canonical": 10},
+    {"function": "normalize_exact_int", "args": ["10", "field"], "accept": true, "canonical": 10},
+    {"function": "normalize_exact_int", "args": [4.0, "field"], "accept": true, "canonical": 4},
+    {"function": "normalize_exact_int", "args": ["0.5", "field"], "accept": false},
+    {"function": "normalize_exact_int", "args": [null, "field"], "accept": false},
+    {"function": "normalize_exact_int", "args": [true, "field"], "accept": false},
+    {"function": "normalize_exact_int", "args": ["NaN", "field"], "accept": false},
+
+    {"function": "normalize_timestamp_string", "args": ["2026-08-02T15:00:00+00:00", "field"], "accept": true, "canonical": "2026-08-02T15:00:00+00:00"},
+    {"function": "normalize_timestamp_string", "args": ["2026-08-02 15:00:00", "field"], "accept": true, "canonical": "2026-08-02T15:00:00+00:00"},
+    {"function": "normalize_timestamp_string", "args": [null, "field"], "accept": false},
+    {"function": "normalize_timestamp_string", "args": ["not-a-timestamp", "field"], "accept": false},
+    {"function": "normalize_timestamp_string", "args": ["", "field"], "accept": false}
+  ]
+}

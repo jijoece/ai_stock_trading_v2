@@ -788,3 +788,291 @@ point-in-time availability axis that is actually enforced on the runtime side
 accounting-boundary decision for float equity series; or a LumiBot capability
 change that makes those cheap. A superseding ADR is required only if the
 proposal is removal.
+
+## D8 — PR 9: one normalization contract, mirrored, with `ERROR` left deliberately unmapped
+
+**Context.** PR 9 (`MASTER_PLAN.md` row 9) set out to "strengthen the LumiBot
+runtime normalization contract." Reading the chain end to end found that no
+single contract existed: the normalized order-status vocabulary was declared
+independently in three places, and they disagreed.
+
+**Ruling 1 — the contract is declared twice, on purpose, and drift-tested.**
+ADR 0002 (reaffirmed by ADR 0009) forbids the main package and the isolated
+`trading_paper_runtime` distribution from importing each other, so a shared
+module is not available. The contract therefore lives in
+`src/trading_research/runtime/normalization.py` and
+`paper_runtime/src/trading_paper_runtime/normalization.py`, declaring
+identical constants and identically-named helpers, and
+`tests/unit/test_runtime_normalization_contract.py` AST-parses both files and
+compares them literally. The two sides share a vocabulary and a set of rules;
+they still share no Python type, and each raises its own error class. This is
+the same technique the repository already uses for the LumiBot import
+boundary — source inspection, not a cross-distribution import.
+
+**Ruling 2 — `EXPIRED` and `CANCEL_REQUESTED` join the main-side vocabulary.**
+`lumibot_gateway._ALPACA_STATUS_MAP` could emit both (Alpaca `expired` and
+`pending_cancel`), and neither existed in
+`execution/broker_snapshots.py::SUBMISSION_STATES`. Because
+`update_submission_status` writes the status unvalidated while
+`_row_to_submission` reads it back through a validating dataclass, a single
+expired or cancel-pending broker order wrote a row that `get_submission` and
+`list_unresolved_submissions` could never read again. `EXPIRED` is terminal;
+`CANCEL_REQUESTED` is not. `list_unresolved_submissions`' hardcoded SQL
+terminal list — a fourth copy, which also omitted `EXPIRED` — is now bound
+from `TERMINAL_SUBMISSION_STATES`.
+
+**Ruling 3 — two conformance levels, not two vocabularies.** The in-process
+ADR 0001 adapter emits `execution/models.py::EVENT_TYPES`, a strict subset of
+the contract: a `PaperExecutionEvent` has no `EXPIRED` or `CANCEL_REQUESTED`
+because `adapter.submit()` is synchronous and always returns a resolved
+outcome. That is why LumiBot's `expired` maps to `CANCELLED` there while the
+runtime gateway maps Alpaca's `expired` to `EXPIRED`. The difference was
+already correct; what was missing was anything asserting it stayed
+deliberate. Both subset relationships are now enforced at import time.
+
+**Ruling 4 — `ERROR` stays unmapped in `external_broker._state_from_order`,
+and that is a decision, not an oversight.** An order the broker reports as
+`stopped` or `suspended` normalizes to `ERROR`, for which
+`_state_from_order` raises `UNKNOWN_BROKER_STATUS`. There is no safe
+automatic ledger state for such an order, so failing closed and leaving it
+for manual reconciliation is the correct posture, consistent with D3's hard
+safety layer. PR 9 does **not** change that state machine; it pins the
+coverage in a test, so the set of statuses `external_broker` refuses can
+never widen or narrow without a deliberate edit to an assertion that names
+the trade-off. Changing this stance is a separate, reviewed decision.
+
+**Ruling 5 — normalization fails closed and never repairs.** No helper
+defaults, coerces, or truncates. Concretely closed in this PR: a `None` limit
+price no longer becomes the string `"None"` (which crashed the consumer's
+`Decimal(...)` parse); a broker FILL activity missing `qty`/`price` no longer
+becomes `"0"` (which would have booked free shares); a non-enum
+`time_in_force` no longer silently becomes `DAY`; a float `NaN` fill price no
+longer survives as `Decimal('NaN')` past a `<= 0` guard; and a fractional
+broker quantity fails rather than truncating. This extends the posture
+already established for TA-Lib in PR 4 and for the vectorized adapter in
+PR 5 to the broker boundary.
+
+**Ruling 6 — the broker-status polling path now actually reaches
+`CANCEL_REQUESTED` and `EXPIRED`, not just the submission row.**
+`services/sync_paper_orders.py::_sync_one` validated the polled status
+against `execution/models.py::EVENT_TYPES` — the narrower, synchronous-
+adapter-compatible vocabulary from Ruling 3 — not against
+`BROKER_REPORTABLE_STATUSES`. Since `EVENT_TYPES` has no `CANCEL_REQUESTED`
+or `EXPIRED`, the very first poll that observed either status raised
+`UNKNOWN_BROKER_STATUS` and crashed the polling loop, before Ruling 2's fix
+to the submission row could ever matter in practice. `_sync_one` now
+validates against `BROKER_REPORTABLE_STATUSES`. `CANCEL_REQUESTED` needed no
+further change: it is nonterminal, so the existing `delta > 0 or status in
+TERMINAL_SUBMISSION_STATES` guard already skips building an event/result for
+it, and the submission row update (which was never restricted to
+`EVENT_TYPES`) leaves it on the unresolved-submissions queue for the next
+poll — Ruling 3's "two conformance levels" holds exactly as designed once the
+crash is removed. `EXPIRED` is terminal and has no `RESULT_STATUSES`
+counterpart; rather than widen the domain vocabulary shared with the
+synchronous ADR 0001 adapter (which can never emit `EXPIRED` at all — see
+Ruling 3), `sync_paper_orders._DOMAIN_STATUS_PROJECTION` projects it to
+`CANCELLED` for the `PaperExecutionEvent`/`PaperExecutionResult` the ledger
+sees, while `paper_broker_submissions.submission_status` and the event's
+`raw_status` both keep the true `EXPIRED` value — nothing is lost, only the
+ledger-facing status is coarsened, exactly as an operator cancellation
+already is. Covered by `tests/unit/test_sync_paper_orders.py`'s
+`CANCEL_REQUESTED`/`EXPIRED`-before-fill/`EXPIRED`-after-partial-fill tests.
+
+**Ruling 7 — `RuntimeClient` re-validates every response, not just the two
+new typed dataclasses that sat unused beside it.** PR 9 originally added
+`RuntimeOrderSnapshot`/`RuntimeAccountSnapshot`/`RuntimePositionSnapshot`
+under `runtime/client/models.py` but never wired them into
+`runtime/client/process_client.py::RuntimeClient` — every one of its typed
+operations (`submit_order`, `get_order`, `cancel_paper_order`,
+`list_open_orders`, `list_recent_orders`, `get_account`, `list_positions`)
+still returned the runtime's raw dict untouched. The parsers now sit on the
+request path itself: each method parses the raw response through the
+matching `from_payload`, then serializes back through a new `to_dict()` to
+the same wire-compatible shape callers already expected, so
+`submit_credentialed_paper_order`/`sync_paper_orders`/`reconcile_paper`
+needed no shape changes — only every value they read is now guaranteed to
+have passed the boundary check instead of merely being available to a caller
+that remembered to invoke it. `tests/unit/test_runtime_client.py` adds
+fake-transport tests proving a malformed status, a non-finite fill price, a
+fractional quantity, and a missing required field are all rejected with
+`ProtocolViolationError` before reaching a service.
+
+**Ruling 8 — constant/name equality is not decision equality; a shared
+corpus closes that gap.** `test_runtime_normalization_contract.py` proves
+both `normalization.py` files declare the same constants and the same
+function names by AST comparison. It does not prove the two implementations
+make the same accept/reject decision for a given input, or produce the same
+canonical output — two independently maintained fail-closed rule sets can
+still drift on an edge case (e.g. one side accepting `"1E+2"` and the other
+rejecting it) without either drift test noticing. `tests/fixtures/
+normalization_corpus.json` is one declarative list of (function, args,
+accept/reject, canonical-output) cases, read as plain JSON — not a Python
+import — by both `tests/unit/test_normalization_corpus.py` (against
+`trading_research.runtime.normalization`) and `paper_runtime/tests/
+test_normalization_corpus.py` (against `trading_paper_runtime.
+normalization`). Each side catches its own `NormalizationError` subclass, as
+Ruling 1 already permits; only the accept/reject verdict and the canonical
+output are required to match.
+
+**Ruling 9 — the remaining silent repairs in `lumibot_gateway.py` are
+closed, and the two that survive as intentional defaults are now documented
+contract rules with regression tests, not unstated coercions.** Reviewed
+against Ruling 5's "no helper defaults, coerces, or truncates" claim, three
+more repairs existed in `_order_to_snapshot`/`get_account`: `order.filled_qty
+or 0` turned a genuinely missing `filled_qty` into the same value as a
+broker reporting zero shares filled; a missing `submitted_at`/`updated_at`
+was replaced with `datetime.now(timezone.utc)` at translation time,
+fabricating a broker timestamp this process never observed; and a missing
+account `currency` was defaulted to `"USD"`. All three now fail closed
+(`normalize_exact_int`/`normalize_timestamp_string` on the raw attribute,
+and `AccountSnapshotPayload.__post_init__`'s existing `currency` check with
+no default upstream of it). Two defaults remain, deliberately, each now
+documented in-line and pinned by a regression test rather than left as an
+unstated coercion: an *absent* `time_in_force` still normalizes to `DAY`,
+because this runtime only ever submits DAY LIMIT orders (its own capability
+advertisement enforces that), so an order with no `time_in_force` attribute
+at all can only be one this runtime itself created; and a naive
+(tzinfo-less) broker timestamp is still treated as UTC by
+`normalize_timestamp_string`, because Alpaca's paper API reports UTC — this
+is the contract's stated timestamp rule, not an unstated guess, and applies
+identically on both sides of the process boundary. **The `time_in_force`
+default described here was narrowed by Ruling 10, then removed entirely by
+Ruling 13 — see those rulings for the current behavior.** The timestamp
+rule is unaffected and remains current.
+
+**Ruling 10 (Milestone 11 follow-up 2; narrowed further by Ruling 13 below
+— retained for the decision history) — the `time_in_force` default from
+Ruling 9 was narrower than claimed; it now applies only to orders this
+runtime can prove it created.** Ruling 9's "this runtime only ever submits
+DAY LIMIT orders" justification is true for `submit_order`/`get_order`, but
+`list_open_orders`/`list_recent_orders`/`get_order_by_broker_id` are
+account-wide broker reads that can return an order placed manually, or by
+another application, against the same paper account — for such an order the
+DAY assumption does not hold. `_order_to_snapshot` now defaults an absent
+`time_in_force` to `DAY` only when the order's own `client_order_id` is
+inside this project's own id namespace (`"intent-"` for in-process ADR 0001
+orders, `"epb-"` for external paper-book orders —
+`_is_runtime_owned_client_order_id` in `lumibot_gateway.py`); for any other
+`client_order_id`, an absent `time_in_force` now fails closed like every
+other malformed field. A present-but-unrecognized value still fails closed
+regardless of ownership, unchanged from Ruling 9.
+
+**Ruling 11 (Milestone 11 follow-up) — `RuntimeOrderSnapshot` now matches
+`OrderSnapshotPayload`'s behavior instead of a narrower subset of it.**
+Before this follow-up, `RuntimeOrderSnapshot` (the main-process parser for
+the synchronous `submit_order`/`get_order`/`list_open_orders`/
+`list_recent_orders` responses) accepted a non-positive `quantity`, treated
+`submitted_at`/`updated_at` as opaque required strings instead of validating
+them as timestamps, and silently dropped `book_id`/`symbol`/`side`/
+`limit_price`/`time_in_force`/`account_fingerprint` from its `to_dict()` even
+though the runtime always sends them (`OrderSnapshotPayload.to_dict()`
+includes all of them). It now rejects `quantity <= 0`, canonicalizes both
+timestamps through `normalize_timestamp_string`, and preserves the six
+previously-dropped fields (validated: `side` through `normalize_side` when
+present, `limit_price` through the client's positive-decimal check,
+`time_in_force` through `normalize_time_in_force` — required, since the
+runtime always sets it — and `book_id`/`symbol`/`account_fingerprint` as
+optional strings).
+
+**Ruling 12 (Milestone 11 follow-up) — the enriched external-order wire ops
+are now re-validated at the `RuntimeClient` boundary, not left as raw dicts
+until `external_broker.py`'s own checks run.** `get_order_by_client_order_id`,
+`get_order_by_broker_order_id`, `cancel_external_order`, and
+`list_recent_external_orders` all return the same enriched shape
+(`dispatcher._external_order_dict`: `RuntimeOrderSnapshot`'s fields plus
+`provider`/`environment`/`rejection_code` scoping) and now parse it through a
+new `ExternalOrderSnapshot`; `list_order_fills` parses each entry through a
+new `ExternalFillSnapshot`; `get_external_positions` and
+`get_external_account_snapshot` parse their book/account-scoped envelopes
+through new `ExternalPositionsSnapshot`/`ExternalAccountSnapshot` wrappers
+(the latter reusing `RuntimeAccountSnapshot` for its shared fields). As with
+`RuntimeOrderSnapshot`, these parsers validate structure and type (status
+vocabulary, side/time-in-force vocabulary, finite/positive decimals, exact
+integers, canonical timestamps) and leave `external_broker.py`'s own
+business-rule checks (matching the approved intent, paper-endpoint scoping)
+in place downstream — a malformed nested field now fails with
+`ProtocolViolationError` before it can reach `paper_books` at all, rather
+than surfacing later as an ad hoc `MALFORMED_RUNTIME_RESPONSE`.
+
+**Ruling 13 (Milestone 11 follow-up 3) — a `client_order_id` namespace
+prefix is not proof of ownership; the `time_in_force` default is removed
+entirely, not narrowed further.** Ruling 10's `_is_runtime_owned_client_order_id`
+treated an `"intent-"`/`"epb-"`-prefixed `client_order_id` as evidence this
+runtime created the order. But `client_order_id` is broker-echoed data on
+an account-wide read (`list_open_orders`/`list_recent_orders`) — nothing
+stops a manually placed order, or one from an unrelated application against
+the same paper account, from coincidentally or deliberately using an id in
+the same shape. A namespace prefix is a pattern match, not a trust
+boundary: it carries no cryptographic or transactional binding to "this
+runtime submitted this exact order." `_order_to_snapshot` no longer
+defaults an absent `time_in_force` under any condition — `submit_order`
+and `get_order` do not need the default in practice (this runtime always
+requests `TimeInForce.DAY` explicitly, so Alpaca's response echoes it back
+for any order this runtime actually just submitted), and
+`list_open_orders`/`list_recent_orders`/`get_order_by_broker_id` have no
+trusted submission context to fall back on at all. `_is_runtime_owned_client_order_id`
+and `_time_in_force_with_ownership_default` are removed;
+`normalize_time_in_force` is called directly on the raw broker attribute
+and fails closed on `None` like every other field.
+
+**Ruling 14 (Milestone 11 follow-up 3) — the Milestone 11 external-order
+submission and lookup wire ops are now fully validated at the
+`RuntimeClient` boundary.** Two gaps remained after Ruling 12: (1)
+`submit_limit_order` returned `SUBMIT_LIMIT_ORDER`'s raw response
+unparsed — it now goes through the same `ExternalOrderSnapshot` used for
+`cancel_external_order`/`list_recent_external_orders`, with no change to
+its no-retry behavior (`SUBMIT_LIMIT_ORDER` was already absent from
+`_RETRYABLE_ON_TIMEOUT`). (2) `get_order_by_client_order_id`/
+`get_order_by_broker_order_id` trusted the `{"found": ...}` envelope itself
+— a missing or non-boolean `found`, a not-found response that failed to
+echo the requested `book_id`/`client_order_id`, or a contradictory
+`found`/`order` combination would previously fall through `if not
+result.get("found"): return None` and be read as an authoritative broker
+NOT_FOUND. That distinction matters beyond the immediate call:
+`external_broker.py::_run_reconciliation` treats an *exception* from this
+lookup as ambiguous (`authoritative=0`, cannot unlock a retry) but a
+*return value of `None`* as genuine, authoritative evidence
+(`authoritative=1`) that `retry_external_paper_order` accepts as
+sufficient to allow a second submission of the same order — so a
+runtime that could produce a malformed envelope could otherwise have
+forged retry-authorizing evidence. New `parse_client_order_lookup_response`/
+`parse_broker_order_lookup_response` validate each documented envelope
+shape exactly and raise `ProtocolViolationError` on anything else,
+which `_run_reconciliation`'s existing `except Exception` handling already
+downgrades to non-authoritative — closing the gap with no change needed on
+the `paper_books` side. `tests/unit/test_external_paper_broker.py::
+test_malformed_lookup_response_cannot_create_authoritative_not_found_or_unlock_retry`
+is the end-to-end regression.
+
+**Ruling 15 (review fix on commit `3193b0b`) — a structurally valid *found*
+lookup response was not bound to the identifiers that were requested, and
+the repeat-submission path never validated it against the approved
+intent.** Ruling 14's envelope parsers validated that a `found: true`
+response parsed as a well-typed `ExternalOrderSnapshot`, but not that the
+enclosed order actually *was* the order asked for: `parse_client_order_
+lookup_response`/`parse_broker_order_lookup_response` accepted an order
+with a different `book_id`/`client_order_id` (or `book_id`/
+`broker_order_id`), or one claiming `environment: "live"` / an unrelated
+`provider`. Separately, `submit_external_paper_order`'s duplicate-submit
+branch (`current["new_state"] not in (STATE_PREVIEWED,)`) returned a found
+order straight to its caller without ever calling `_validate_order_
+response` — every other broker-response path in this module runs that
+check, but this one, added by Milestone 11.2, did not. Combined, a runtime
+bug or a compromised runtime process could report an unrelated book's
+order, a foreign account's order, or a live (non-paper) order as this
+book's successful existing submission. Fixed on both sides: the two lookup
+parsers now reject a *found* response whose `book_id`/`client_order_id`
+(or `book_id`/`broker_order_id`) does not match the request, or whose
+`provider`/`environment` is not paper-scoped, before returning it; and the
+duplicate-submit branch now calls `_validate_order_response(order, intent,
+client_order_id, fingerprint, now)` — the same check reconciliation and
+cancellation already run — before returning, closing the
+account-fingerprint/quantity/price/side/time-in-force gap the parser layer
+cannot close on its own (it has no access to the expected account
+fingerprint or the approved intent). New tests: 9 `RuntimeClient` cases
+covering mismatched `book_id`/`client_order_id`/`broker_order_id` and a
+claimed live environment/unrelated provider for both lookup methods (plus
+two "correctly matched" happy-path cases); 3 `external_broker.py`
+regressions proving the duplicate-submit path now rejects a foreign
+account fingerprint, a live environment, and a mismatched quantity instead
+of reporting success.
