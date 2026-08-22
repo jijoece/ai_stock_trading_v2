@@ -51,6 +51,9 @@ CURRENT_PR_READY_FOR_REVIEW = "CURRENT_PR_READY_FOR_REVIEW"
 CURRENT_PR_MERGED = "CURRENT_PR_MERGED"
 NEXT_PHASE_READY = "NEXT_PHASE_READY"
 HUMAN_ATTENTION_REQUIRED = "HUMAN_ATTENTION_REQUIRED"
+# Not an anomaly: `--offline` was asked for, so PR state was never looked up.
+# Distinct from "no PR exists", which is a verified answer.
+PR_STATE_UNVERIFIED = "PR_STATE_UNVERIFIED"
 
 CI_PASSING = "PASSING"
 CI_FAILING = "FAILING"
@@ -204,6 +207,19 @@ class PullRequest:
     head_sha: str | None = None
     ci_state: str = CI_UNKNOWN
     failing_checks: tuple[str, ...] = ()
+
+
+def expected_branch_prefix(phase_id: str) -> str:
+    """The branch prefix `phase_id_for_branch` will recognise for this phase.
+
+    Discovery finds a phase's PR by its branch name, so a prompt that says only
+    "create a branch" invites a name this helper cannot see -- and an invisible
+    PR is one the next run would offer to duplicate.
+    """
+    match = re.fullmatch(r"([0-9]+)([a-z]*)", phase_id)
+    if match is None:  # pragma: no cover - phase ids come from the two regexes
+        return f"{BRANCH_PREFIX}{phase_id}-"
+    return f"{BRANCH_PREFIX}{match.group(1).zfill(2)}{match.group(2)}-"
 
 
 def phase_id_for_branch(branch: str) -> str | None:
@@ -394,11 +410,25 @@ def _resolve_active_phase(
         reasons.append(f"STATUS.md names PR {current}, which has no MASTER_PLAN.md row")
         return None, True
 
-    merged = [pr for pr in grouped.get(current or "", []) if pr.is_merged]
+    for_current = grouped.get(current or "", [])
+    merged = [pr for pr in for_current if pr.is_merged]
     if not merged:
         return current, False
 
     numbers = ", ".join(f"#{pr.number}" for pr in merged)
+
+    # A merged PR does not finish the phase if another PR for it is still open
+    # -- a follow-up fix, or a duplicate. Advancing would start PR N+1 while
+    # PR N is still being worked, breaking the one-phase-at-a-time rule.
+    still_open = [pr for pr in for_current if pr.is_open]
+    if still_open:
+        open_numbers = ", ".join(f"#{pr.number}" for pr in still_open)
+        reasons.append(
+            f"PR {current} is merged ({numbers}) but also still has an open PR "
+            f"({open_numbers}); resolve that before the next phase starts"
+        )
+        return None, True
+
     following = documents.successor_of(current)
     if following is None:
         if documents.rows[-1].phase_id == current:
@@ -406,6 +436,13 @@ def _resolve_active_phase(
             return None, False
         reasons.append(
             f"PR {current} is merged ({numbers}) but STATUS.md documents no next phase"
+        )
+        return None, True
+
+    if documents.row(following) is None:
+        reasons.append(
+            f"PR {current} is merged ({numbers}), but STATUS.md names PR {following} "
+            "next and MASTER_PLAN.md has no such row"
         )
         return None, True
 
@@ -506,14 +543,20 @@ def discover(repo_root: Path, *, offline: bool = False) -> Situation:
     """Read the documents and GitHub, then classify. Mutates nothing."""
     documents = read_migration_documents(repo_root)
     if offline:
+        # `pull_request=None` here means "not looked up", never "none exists".
+        # PR_STATE_UNVERIFIED keeps the two apart, so no caller can read this
+        # as a confirmed absence and go start a phase that is already merged.
         return Situation(
             documents=documents,
             active_phase_id=documents.current_phase_id,
             active_row=documents.row(documents.current_phase_id),
             next_phase_id=documents.next_phase_id,
             pull_request=None,
-            state=CURRENT_PR_IN_PROGRESS,
-            reasons=("offline: GitHub was not consulted, so merge and CI state are unknown",),
+            state=PR_STATE_UNVERIFIED,
+            reasons=(
+                "offline: GitHub was not consulted, so whether this phase is "
+                "merged or already has a PR is unknown",
+            ),
         )
 
     pull_requests = list_migration_pull_requests(repo_root)
@@ -579,6 +622,8 @@ def format_status(situation: Situation) -> str:
         ]
         if pull_request.failing_checks:
             lines.append(f"Failing checks:   {', '.join(pull_request.failing_checks)}")
+    elif situation.state == PR_STATE_UNVERIFIED:
+        lines.append("Pull request:     not checked (--offline)")
     else:
         lines.append("Pull request:     none")
     lines.append(f"Next phase:       {_next_phase_text(situation)}")
@@ -599,6 +644,17 @@ Do not begin another migration phase in this session."""
 
 def format_continue_prompt(situation: Situation) -> str:
     """The prompt to paste into a fresh Claude Code session."""
+    if situation.state == PR_STATE_UNVERIFIED:
+        row = situation.active_row
+        documented = f"PR {row.phase_id} — {row.title}" if row else "unknown"
+        return (
+            "No continuation prompt: GitHub was not consulted, so it is unknown "
+            "whether this phase is already merged or already has an open PR.\n\n"
+            f"STATUS.md documents the current phase as {documented}, but that "
+            "wording goes stale once the phase merges.\n\n"
+            "Re-run without --offline to get an actionable prompt."
+        )
+
     if situation.needs_human:
         return (
             "The migration position is ambiguous and needs a human decision "
@@ -659,7 +715,10 @@ def format_continue_prompt(situation: Situation) -> str:
             "",
             f"No PR exists for PR {row.phase_id}, so prepare exactly that phase:",
             "",
-            f"- create a fresh branch for MASTER_PLAN.md row {row.phase_id} only",
+            f"- create a fresh branch named `{expected_branch_prefix(row.phase_id)}"
+            "<short-description>` for MASTER_PLAN.md row "
+            f"{row.phase_id} only; this prefix is required, because the migration"
+            " helper finds a phase's PR by its branch name",
             f"  (this phase depends on: {row.dependency})",
             "- verify the issue still exists before editing anything",
             f"- implement only PR {row.phase_id}",

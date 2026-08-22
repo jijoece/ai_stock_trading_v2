@@ -64,13 +64,18 @@ Exit codes: `0` reported normally, `1` the position could not be determined,
 | What does `STATUS.md` say comes next? | `STATUS.md` |
 | What should a fresh Claude session do? | the generated prompt |
 
-## Two rules that matter
+## Three rules that matter
 
 **Phase order is read, never sorted.** `MASTER_PLAN.md` lists row `8a` between
 rows `8` and `9`, but the phase after PR 9 is PR 10. Only the documented
 `Current phase:` → `Next phase:` edge in `STATUS.md` is trusted; the successor
 of any other phase is reported as unknown rather than guessed. Row `8a` is
 therefore selected only when `STATUS.md` explicitly makes it next.
+
+**Branch names are the discovery key.** A phase's PR is found by its branch,
+so the generated prompt requires the recognised `migration/<NN>-` prefix. A
+branch outside that convention produces a PR this helper cannot see, and an
+invisible PR is one the next run would offer to duplicate.
 
 **GitHub is authoritative for merge status.** `STATUS.md` describes the current
 phase as "NOT MERGED" because that sentence is written inside that phase's own
@@ -93,16 +98,25 @@ cannot act on any of them.
 | `CURRENT_PR_READY_FOR_REVIEW` | CI is green; the PR is ready for review or merge |
 | `CURRENT_PR_MERGED` | The final documented phase is merged |
 | `NEXT_PHASE_READY` | No PR exists for the active phase yet |
+| `PR_STATE_UNVERIFIED` | `--offline` was used, so PR state was never looked up |
 | `HUMAN_ATTENTION_REQUIRED` | The position is ambiguous — see below |
 
 CI aggregation is pessimistic: anything unrecognised counts as pending, never
 as passing, so an unfamiliar check can never be reported as a green CI.
 
 A human is asked to intervene when more than one open PR targets the same
-phase, when this phase's only PR was closed without merging, when `STATUS.md`
-is more than one phase behind GitHub, or when `STATUS.md` names a phase that
-`MASTER_PLAN.md` has no row for. The helper never silently picks one of two
-candidate PRs.
+phase; when a phase has both a merged PR and a still-open one, since a
+follow-up fix means the phase is not finished and the next phase must not
+start; when this phase's only PR was closed without merging; when `STATUS.md`
+is more than one phase behind GitHub; or when either the current phase or the
+successor it names has no `MASTER_PLAN.md` row. The helper never silently
+picks one of two candidate PRs.
+
+`PR_STATE_UNVERIFIED` is not an anomaly — it is what `--offline` reports.
+Because `STATUS.md`'s wording goes stale the moment a phase merges, the
+documents alone cannot say whether a phase is already done, so offline mode
+deliberately produces no actionable continuation prompt. "Not looked up" is
+never rendered as "no PR exists".
 
 ## GitHub access
 

@@ -358,7 +358,7 @@ def test_with_no_pr_the_prompt_prepares_exactly_the_documented_next_phase(
         documents, (pull_request(22, "9", is_open=False, is_merged=True),)
     )
     prompt = helper.format_continue_prompt(situation)
-    assert "create a fresh branch for MASTER_PLAN.md row 10 only" in prompt
+    assert "MASTER_PLAN.md row 10 only" in prompt
     assert "implement only PR 10" in prompt
     assert "row 8a" in prompt  # still warned about, never selected
 
@@ -538,3 +538,79 @@ def test_only_reporting_commands_are_accepted(tmp_path: Path) -> None:
     for command in ("implement", "merge", "resume", "advance"):
         with pytest.raises(SystemExit):
             helper.main([command, "--repo-root", str(tmp_path)])
+
+
+# --------------------------------------------------------------------------
+# Review follow-ups
+# --------------------------------------------------------------------------
+
+
+def test_offline_never_reports_a_pr_as_absent(tmp_path: Path) -> None:
+    """`--offline` means "not looked up", which is not "none exists".
+
+    Conflating the two told the operator to rebuild an already-merged phase.
+    """
+    write_docs(tmp_path)
+    situation = helper.discover(tmp_path, offline=True)
+    assert situation.state == helper.PR_STATE_UNVERIFIED
+    assert "not checked" in helper.format_status(situation)
+
+
+def test_offline_produces_no_actionable_continuation_prompt(tmp_path: Path) -> None:
+    write_docs(tmp_path)
+    prompt = helper.format_continue_prompt(helper.discover(tmp_path, offline=True))
+    assert "Re-run without --offline" in prompt
+    assert "create a fresh branch" not in prompt
+    assert "No PR exists" not in prompt
+
+
+def test_a_merged_phase_with_a_still_open_pr_does_not_advance(tmp_path: Path) -> None:
+    """A merged PR plus an open follow-up means the phase is not finished."""
+    documents = helper.read_migration_documents(write_docs(tmp_path))
+    situation = helper.build_situation(
+        documents,
+        (
+            pull_request(22, "9", is_open=False, is_merged=True),
+            pull_request(26, "9"),
+        ),
+    )
+    assert situation.state == helper.HUMAN_ATTENTION_REQUIRED
+    assert situation.active_phase_id != "10"
+    assert any("#26" in reason for reason in situation.reasons)
+
+
+def test_a_documented_successor_with_no_plan_row_needs_a_human(tmp_path: Path) -> None:
+    """Advancing to a phase MASTER_PLAN.md never defined is not an advance."""
+    write_docs(tmp_path, current="9", following="99")
+    documents = helper.read_migration_documents(tmp_path)
+    situation = helper.build_situation(
+        documents, (pull_request(22, "9", is_open=False, is_merged=True),)
+    )
+    assert situation.state == helper.HUMAN_ATTENTION_REQUIRED
+    assert "no such row" in " ".join(situation.reasons)
+    # And it must not be mistaken for a finished migration.
+    assert "every documented migration phase is merged" not in (
+        helper.format_continue_prompt(situation).lower()
+    )
+
+
+@pytest.mark.parametrize(
+    ("phase_id", "expected"),
+    [("9", "migration/09-"), ("10", "migration/10-"), ("8a", "migration/08a-")],
+)
+def test_the_expected_branch_prefix_is_one_discovery_recognises(
+    phase_id: str, expected: str
+) -> None:
+    assert helper.expected_branch_prefix(phase_id) == expected
+    assert helper.phase_id_for_branch(f"{expected}some-description") == phase_id
+
+
+def test_the_prompt_requires_a_branch_name_the_helper_can_find(tmp_path: Path) -> None:
+    """A branch like `feature/10-x` would hide the PR from the next run."""
+    documents = helper.read_migration_documents(write_docs(tmp_path))
+    situation = helper.build_situation(
+        documents, (pull_request(22, "9", is_open=False, is_merged=True),)
+    )
+    prompt = helper.format_continue_prompt(situation)
+    assert "migration/10-" in prompt
+    assert "required" in prompt
