@@ -4,47 +4,41 @@
 
 - Repository: `/Users/jijopaul/workspace/ai_stock_trading_v2`
 - Branch: `automation/phase-b-claude-runner`
-- Reviewed HEAD: `635e5ce606f2c33521927a32d4917dcceaa68f09`
-- Subject: Add run-claude: a bounded, gated command to fix review findings and advance phases
-- Claude commits reviewed: 635e5ce606f2c33521927a32d4917dcceaa68f09
+- Reviewed HEAD: `b93a1df6363eba036f99baca0f30fa510967ec92`
+- Subject: Record the review findings as fixed and pending re-review
+- Claude commits reviewed: fc11795770636e318de71aee7360bdbae154c523,b93a1df6363eba036f99baca0f30fa510967ec92
 - Trigger: local Git `post-commit`
 - Review status: FIXES_APPLIED_PENDING_REVIEW
-- Highest priority: P1
+- Highest priority: P2
 - Finding count: 0
-- Fix commit: `fc11795770636e318de71aee7360bdbae154c523`
+- Fix commit: `e59a737e274664fc5120f9628c1c40da8556eb3f`
 
 ## Findings
 
-### [P1] Preserve the pending-review gate after fixes
+### [P2] Recognize the pending-review state before rejecting its historical reviewed HEAD
 
-Commit: `635e5ce606f2c33521927a32d4917dcceaa68f09`
+Commit: `fc11795770636e318de71aee7360bdbae154c523`
 
-Location: `/Users/jijopaul/workspace/ai_stock_trading_v2/scripts/migration_helper.py:1103-1108`
+Location: `/Users/jijopaul/workspace/ai_stock_trading_v2/scripts/migration_helper.py:1310-1312` and `/Users/jijopaul/workspace/ai_stock_trading_v2/scripts/migration_helper.py:1323-1325`
 
-Problem: `_run_fix_session` treats every non-actionable findings state as externally clean and tells the operator the PR is waiting to merge. This includes `FIXES_APPLIED_PENDING_REVIEW`, which explicitly means the fixes have not received their required follow-up review.
+Problem: Both fix-session entry points run the stale-review check before `_run_prepared_fix_session` can handle `FIXES_APPLIED_PENDING_REVIEW`. The workflow deliberately preserves the pre-fix `Reviewed HEAD`, so this state is necessarily stale relative to the post-fix PR HEAD and the new pending-review branch is unreachable during real use.
 
-Evidence: `parse_review_findings` accepts both `CLEAN/0` and `FIXES_APPLIED_PENDING_REVIEW/0`. Both make `is_actionable` false, and this branch does not inspect `findings.status`. The canonical runbook at `/Users/jijopaul/workspace/ai_stock_trading_v2/docs/library-migration/AUTOMATION.md:223-228` distinguishes these states and says the latter is awaiting the next external review. No test exercises rerunning `run-claude` with that state.
+Evidence: At reviewed HEAD, `REVIEW_FINDINGS.md` records:
 
-Impact: After Claude pushes fixes, rerunning the command produces an affirmative “waiting for a human to merge” message even though the revised HEAD has not been reviewed. This can bypass the intended review gate and allow consequential migration or trading-safety regressions to merge unchecked.
+- `Reviewed HEAD: 635e5ce...`
+- `Review status: FIXES_APPLIED_PENDING_REVIEW`
+- `Fix commit: fc117957...`
 
-Required fix: Branch explicitly on normalized status. Only `CLEAN/0` should report merge readiness. `FIXES_APPLIED_PENDING_REVIEW/0` must report that another external review of the current PR HEAD is required and must not describe the PR as clean.
+The PR HEAD is `b93a1df...`. Passing those values through the current implementation raises:
 
-Validation: Add a regression test with `Review status: FIXES_APPLIED_PENDING_REVIEW`, `Finding count: 0`, and a fix SHA, asserting that Claude is not invoked and the output requires re-review rather than merge.
+`HelperError: REVIEW_FINDINGS.md is stale: it reviewed 635e5ce..., but the PR's current HEAD is b93a1df...`
 
-### [P2] Block a concurrently created PR for the active phase
+This happens before lines 1259–1265 can report that external review is still required. The added regression test avoids the defect by constructing a PR whose current head still equals the historical reviewed head, which cannot represent the documented two-commit fix workflow.
 
-Commit: `635e5ce606f2c33521927a32d4917dcceaa68f09`
+Impact: After every successful fix session, rerunning either normal migration mode or `--fix-current-pr-only` reports the artifact as erroneous instead of recognizing the intentional pending-review gate. This breaks the documented review handoff and leaves the local review-hook workflow unable to distinguish expected pending review from genuinely stale actionable findings.
 
-Location: `/Users/jijopaul/workspace/ai_stock_trading_v2/scripts/migration_helper.py:1154-1167`
+Required fix: Apply the current-HEAD equality requirement to actionable findings and `CLEAN`, but handle `FIXES_APPLIED_PENDING_REVIEW` under its own invariant. Validate that its `Fix commit` is a post-review ancestor of the current PR HEAD, then report that external review of the current HEAD is required.
 
-Problem: The second GitHub listing before starting a phase blocks only open PRs whose `phase_id` differs from the selected active phase. If another operator or session creates the active phase’s PR between initial discovery and this listing, `other_open` remains empty and this invocation still launches Claude with the stale “No PR exists” prompt.
+Validation: Add an end-to-end regression test using distinct SHAs for the originally reviewed commit, fix commit, metadata commit/current PR HEAD, and assert both runner modes reach the pending-review message without invoking Claude. Retain stale actionable-findings coverage.
 
-Evidence: `run_claude` discovers `NEXT_PHASE_READY` at lines 1208-1229, lists PRs again, and passes them here. The filter expressly excludes `pr.phase_id == situation.active_phase_id`; the prompt at line 1166 is still built from the earlier no-PR `Situation`. The existing concurrency test covers only a different-phase PR, not a newly appearing same-phase PR.
-
-Impact: Two sessions can independently implement the same phase, create competing branches or PRs, and split migration state. This defeats the stated one-phase/one-PR boundary and can lead to duplicated or conflicting changes.
-
-Required fix: Before launching a new-phase session, refuse to proceed if the refreshed listing contains any open migration PR. If it is for the selected phase, rebuild discovery or direct the operator to the existing PR; if it is for another phase, retain the human-attention outcome.
-
-Validation: Add a regression test where initial discovery returns `NEXT_PHASE_READY` but the refreshed listing contains an open PR for that same phase, asserting `_run_claude` is never called and the command exits nonzero or requests human attention.
-
-Tests or diagnostics run: Inspected the complete commit diff and relevant current implementation, unit tests, `AUTOMATION.md`, `STATUS.md`, and `MASTER_PLAN.md`. `nox -s tests -- tests/unit/test_migration_helper.py` could not run because `nox` is unavailable. Direct pytest startup also failed because the read-only environment provides no writable temporary directory. No files were modified.
+Tests or diagnostics run: Inspected both complete commit diffs and the necessary current implementation, unit tests, `AUTOMATION.md`, and review artifact. Reproduced the stale-state exception directly with `python3` against the reviewed HEAD artifact. `git diff --check` passed. Nox/pytest were not run because they are unavailable in this read-only environment. No files were modified.
