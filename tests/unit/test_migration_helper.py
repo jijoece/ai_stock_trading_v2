@@ -8,6 +8,7 @@ cover both what it reports and what it must never do.
 from __future__ import annotations
 
 import ast
+import dataclasses
 import json
 from pathlib import Path
 
@@ -716,28 +717,142 @@ def test_run_claude_with_a_clean_findings_file_waits_for_human_merge(
     assert helper.run_claude(tmp_path) == helper.EXIT_OK
 
 
+def _pending_review_shas() -> tuple[str, str, str]:
+    """The three distinct SHAs the documented two-commit fix workflow produces.
+
+    The review ran at `reviewed`; the fix session committed `fix` and then the
+    `REVIEW_FINDINGS.md` update as `head`. `Reviewed HEAD:` is deliberately
+    kept at `reviewed`, so it can never equal the PR's current HEAD.
+    """
+    return "1" * 40, "2" * 40, "3" * 40
+
+
+def _stub_linear_ancestry(monkeypatch: pytest.MonkeyPatch, order: tuple[str, ...]) -> None:
+    """Stub `_git_is_ancestor` with a real linear history over `order`."""
+    position = {sha: index for index, sha in enumerate(order)}
+
+    def is_ancestor(candidate: str, of: str, root: Path) -> bool:
+        if candidate not in position or of not in position:
+            return False
+        return position[candidate] <= position[of]
+
+    monkeypatch.setattr(helper, "_git_is_ancestor", is_ancestor)
+
+
 def test_run_claude_with_applied_fixes_requires_external_review(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """Applied fixes are not equivalent to an externally clean current HEAD."""
-    situation = _open_pr_situation(tmp_path)
+    """Applied fixes are not equivalent to an externally clean current HEAD.
+
+    Regression test: the pending-review state must be reachable when the PR
+    HEAD has already advanced past the preserved `Reviewed HEAD`, which is
+    what the documented two-commit fix workflow always produces.
+    """
+    reviewed, fix, head = _pending_review_shas()
+    documents = helper.read_migration_documents(write_docs(tmp_path))
+    pr = dataclasses.replace(pull_request(22, "9"), head_sha=head)
+    situation = helper.build_situation(documents, (pr,))
     monkeypatch.setattr(helper, "discover", lambda root, offline=False: situation)
     _write_findings(
         tmp_path,
-        reviewed_head=situation.pull_request.head_sha,
+        reviewed_head=reviewed,
         status=helper.REVIEW_STATUS_FIXES_APPLIED,
         finding_count=0,
-        fix_commit="b" * 40,
+        fix_commit=fix,
     )
+    _stub_linear_ancestry(monkeypatch, (reviewed, fix, head))
     monkeypatch.setattr(helper, "_run_claude", _fail_if_called)
 
     assert helper.run_claude(tmp_path) == helper.EXIT_OK
     output = capsys.readouterr().out
     assert "external review" in output
     assert "still required before merge" in output
-    assert "b" * 40 in output
+    assert fix in output
     assert "is clean" not in output
     assert "waiting for a human to merge" not in output
+    assert "is stale" not in output
+
+
+def test_run_claude_fix_current_pr_only_reaches_the_pending_review_gate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The current-PR-only mode must reach the same gate, not report staleness."""
+    reviewed, fix, head = _pending_review_shas()
+    request = helper.PullRequest(
+        number=24,
+        phase_id="current",
+        branch="automation/phase-b-claude-runner",
+        is_open=True,
+        is_merged=False,
+        head_sha=head,
+    )
+    _write_findings(
+        tmp_path,
+        reviewed_head=reviewed,
+        status=helper.REVIEW_STATUS_FIXES_APPLIED,
+        finding_count=0,
+        fix_commit=fix,
+    )
+    monkeypatch.setattr(helper, "current_pull_request", lambda root: request)
+    monkeypatch.setattr(helper, "discover", _fail_if_called)
+    _stub_linear_ancestry(monkeypatch, (reviewed, fix, head))
+    monkeypatch.setattr(helper, "_run_claude", _fail_if_called)
+
+    exit_code = helper.run_claude(tmp_path, fix_current_pr_only=True)
+
+    assert exit_code == helper.EXIT_OK
+    captured = capsys.readouterr()
+    assert "external review" in captured.out
+    assert "PR #24" in captured.out
+    assert "is stale" not in captured.err
+
+
+def test_run_claude_rejects_applied_fixes_that_are_not_on_the_pr(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A `Fix commit` outside the PR's history is not evidence of applied fixes."""
+    reviewed, fix, head = _pending_review_shas()
+    documents = helper.read_migration_documents(write_docs(tmp_path))
+    pr = dataclasses.replace(pull_request(22, "9"), head_sha=head)
+    situation = helper.build_situation(documents, (pr,))
+    monkeypatch.setattr(helper, "discover", lambda root, offline=False: situation)
+    _write_findings(
+        tmp_path,
+        reviewed_head=reviewed,
+        status=helper.REVIEW_STATUS_FIXES_APPLIED,
+        finding_count=0,
+        fix_commit=fix,
+    )
+    # The fix commit landed somewhere else: it is not in the PR HEAD's history.
+    _stub_linear_ancestry(monkeypatch, (reviewed, fix))
+    monkeypatch.setattr(helper, "_run_claude", _fail_if_called)
+
+    assert helper.run_claude(tmp_path) == helper.EXIT_ERROR
+    assert "not in the history" in capsys.readouterr().err
+
+
+def test_run_claude_rejects_a_fix_commit_that_predates_the_review(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A `Fix commit` that is not post-review cannot have fixed that review."""
+    reviewed, fix, head = _pending_review_shas()
+    documents = helper.read_migration_documents(write_docs(tmp_path))
+    pr = dataclasses.replace(pull_request(22, "9"), head_sha=head)
+    situation = helper.build_situation(documents, (pr,))
+    monkeypatch.setattr(helper, "discover", lambda root, offline=False: situation)
+    _write_findings(
+        tmp_path,
+        reviewed_head=reviewed,
+        status=helper.REVIEW_STATUS_FIXES_APPLIED,
+        finding_count=0,
+        fix_commit=fix,
+    )
+    # `fix` is an ancestor of `reviewed`, so it cannot be a post-review fix.
+    _stub_linear_ancestry(monkeypatch, (fix, reviewed, head))
+    monkeypatch.setattr(helper, "_run_claude", _fail_if_called)
+
+    assert helper.run_claude(tmp_path) == helper.EXIT_ERROR
+    assert "does not descend from the reviewed commit" in capsys.readouterr().err
 
 
 def test_run_claude_refuses_to_judge_an_unrecognized_zero_finding_status(

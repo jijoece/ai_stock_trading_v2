@@ -1069,6 +1069,63 @@ def check_review_findings_not_stale(findings: ReviewFindings, expected_head: str
         )
 
 
+def check_pending_review_fix_landed(
+    findings: ReviewFindings, expected_head: str, repo_root: Path
+) -> None:
+    """Fail closed unless the recorded fixes really landed on the PR's current HEAD.
+
+    `FIXES_APPLIED_PENDING_REVIEW` deliberately keeps the pre-fix
+    `Reviewed HEAD` as the historical record of what was reviewed, so this
+    state is *expected* to lag the PR's current HEAD -- the staleness rule
+    cannot apply to it. The invariant that must hold instead is that the
+    recorded `Fix commit` is a genuine post-review commit in the history the
+    PR currently points at.
+    """
+    if not expected_head:
+        raise HelperError(
+            "REVIEW_FINDINGS.md records applied fixes, but the PR's current HEAD is "
+            "unknown; refusing to judge whether those fixes are the ones on the PR."
+        )
+    fix_commit = findings.fix_commit
+    if not fix_commit:
+        raise HelperError(
+            f"REVIEW_FINDINGS.md declares `Review status: {REVIEW_STATUS_FIXES_APPLIED}` "
+            "but no `Fix commit:`"
+        )
+    if _sha_equal(fix_commit, findings.reviewed_head):
+        raise HelperError(
+            f"REVIEW_FINDINGS.md's `Fix commit: {fix_commit}` is the reviewed commit "
+            f"({findings.reviewed_head}) itself, so no fix was committed after the review."
+        )
+    if not _git_is_ancestor(findings.reviewed_head, fix_commit, repo_root):
+        raise HelperError(
+            f"REVIEW_FINDINGS.md's `Fix commit: {fix_commit}` does not descend from the "
+            f"reviewed commit {findings.reviewed_head}; the recorded fix does not belong "
+            "to that review."
+        )
+    if not _git_is_ancestor(fix_commit, expected_head, repo_root):
+        raise HelperError(
+            f"REVIEW_FINDINGS.md's `Fix commit: {fix_commit}` is not in the history of "
+            f"the PR's current HEAD ({expected_head}); the recorded fixes are not the "
+            "ones this PR carries."
+        )
+
+
+def check_review_findings_apply_to_head(
+    findings: ReviewFindings, expected_head: str, repo_root: Path
+) -> None:
+    """Hold the artifact to the invariant its own recorded status implies.
+
+    Actionable findings and `CLEAN` describe the current HEAD, so they must
+    have been produced at it. Pending review describes a HEAD that has since
+    moved on by construction, so it is checked by ancestry instead.
+    """
+    if findings.status.upper() == REVIEW_STATUS_FIXES_APPLIED:
+        check_pending_review_fix_landed(findings, expected_head, repo_root)
+        return
+    check_review_findings_not_stale(findings, expected_head)
+
+
 # --------------------------------------------------------------------------
 # `run-claude` -- the one command that may invoke Claude for real
 # --------------------------------------------------------------------------
@@ -1308,7 +1365,7 @@ def _run_fix_session(repo_root: Path, situation: Situation, *, dry_run: bool) ->
     assert pull_request is not None
 
     findings = read_review_findings(repo_root)
-    check_review_findings_not_stale(findings, pull_request.head_sha or "")
+    check_review_findings_apply_to_head(findings, pull_request.head_sha or "", repo_root)
     return _run_prepared_fix_session(
         repo_root,
         pull_request,
@@ -1321,7 +1378,7 @@ def _run_fix_session(repo_root: Path, situation: Situation, *, dry_run: bool) ->
 def _run_current_pr_fix_session(repo_root: Path, *, dry_run: bool) -> int:
     pull_request = current_pull_request(repo_root)
     findings = read_review_findings(repo_root)
-    check_review_findings_not_stale(findings, pull_request.head_sha or "")
+    check_review_findings_apply_to_head(findings, pull_request.head_sha or "", repo_root)
     return _run_prepared_fix_session(
         repo_root,
         pull_request,

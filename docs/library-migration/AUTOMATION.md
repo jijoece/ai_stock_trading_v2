@@ -231,6 +231,17 @@ the file is stale -- if `Reviewed HEAD:` does not match the PR's actual
 current `HEAD` on GitHub, the recorded review does not cover what is on the
 branch now, and `run-claude` refuses to act on it.
 
+That staleness rule applies to actionable findings and to `CLEAN`, because
+both describe the current `HEAD` and so must have been produced at it. It
+cannot apply to `FIXES_APPLIED_PENDING_REVIEW`: the fix session deliberately
+preserves the pre-fix `Reviewed HEAD:` as the historical record of what was
+reviewed, and then adds two commits, so that state is *always* behind the PR's
+current `HEAD` by construction. Pending review is checked by ancestry instead:
+the recorded `Fix commit:` must be a real commit that descends from
+`Reviewed HEAD:` and is contained in the history of the PR's current `HEAD`.
+If it is not, `run-claude` still fails closed -- the recorded fixes are not
+the ones the PR carries.
+
 Three states are distinguished:
 
 | `Review status:` | `Finding count:` | Meaning |
