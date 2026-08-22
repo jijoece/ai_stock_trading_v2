@@ -2214,18 +2214,79 @@ behavior. Recorded as `DECISIONS.md` D8 rulings 10-12:
    test that previously asserted `None -> DAY` unconditionally now asserts
    that behavior only for a runtime-owned `client_order_id`, plus a new
    test asserting the fail-closed path for a foreign one.
+   **Superseded by follow-up 4 below:** a namespace prefix turned out not to
+   be proof of ownership either — see D8 Ruling 13.
+
+### Follow-up 4: submission/lookup wire-op validation, and a prefix is not proof of ownership
+
+A fourth pass closed the last two unvalidated Milestone 11 wire calls and
+removed the `time_in_force` default entirely, rather than narrowing it
+further. Recorded as `DECISIONS.md` D8 rulings 13-14:
+
+1. **`submit_limit_order` returned `SUBMIT_LIMIT_ORDER`'s response
+   unparsed.** It now goes through `ExternalOrderSnapshot`, the same parser
+   `cancel_external_order`/`list_recent_external_orders` use, with no
+   change to its no-retry behavior (`SUBMIT_LIMIT_ORDER` remains absent
+   from `_RETRYABLE_ON_TIMEOUT`). New tests reject an unknown status, a
+   zero quantity, a malformed timestamp, a missing `broker_order_id`, and a
+   non-finite price.
+2. **`get_order_by_client_order_id`/`get_order_by_broker_order_id` trusted
+   the `{"found": ...}` envelope itself.** `if not result.get("found"):
+   return None` treated a missing/non-boolean `found`, a not-found response
+   that failed to echo the requested `book_id`/`client_order_id`, or a
+   contradictory `found`/`order` combination as an ordinary, authoritative
+   NOT_FOUND — indistinguishable from a genuine one. That distinction is
+   load-bearing: `external_broker.py::_run_reconciliation` treats an
+   *exception* from this lookup as non-authoritative (cannot unlock a
+   retry) but a *return value of `None`* as authoritative evidence
+   `retry_external_paper_order` accepts as sufficient to allow a second
+   submission. New `parse_client_order_lookup_response`/
+   `parse_broker_order_lookup_response` validate each envelope's exact
+   documented shape and raise `ProtocolViolationError` on anything else —
+   which `_run_reconciliation`'s existing `except Exception` handling
+   already downgrades to non-authoritative, closing the gap with no change
+   needed in `paper_books`. New tests cover a missing `found`, `found=0`,
+   `found=None`, a mismatched echoed `book_id`/`client_order_id`, a
+   contradictory `found`/`order` combination, and an unexpected extra
+   field, for both wire ops. A new end-to-end regression,
+   `test_malformed_lookup_response_cannot_create_authoritative_not_found_or_unlock_retry`,
+   proves a lookup that raises `ProtocolViolationError` (simulating what
+   the fix above now does for a corrupted envelope) produces a
+   non-authoritative `NOT_FOUND` lookup row and that
+   `retry_external_paper_order` still refuses to unlock a retry from it.
+3. **A `client_order_id` namespace prefix is not proof of ordering
+   ownership.** Follow-up 3's `_is_runtime_owned_client_order_id` treated an
+   `"intent-"`/`"epb-"`-prefixed `client_order_id` as evidence this runtime
+   created the order, to gate the `time_in_force` DAY default. But
+   `client_order_id` is broker-echoed data on an account-wide read — a
+   manually placed order, or one from an unrelated application, could carry
+   an id in the same shape by coincidence or by deliberate forgery; a
+   namespace prefix is a pattern match, not a trust boundary. The default is
+   now removed entirely rather than narrowed further:
+   `_order_to_snapshot` calls `normalize_time_in_force` directly on the raw
+   broker attribute and fails closed on `None` regardless of
+   `client_order_id`. In practice this does not affect `submit_order`/
+   `get_order` — this runtime always requests `TimeInForce.DAY` explicitly,
+   so Alpaca's response echoes it back for any order this runtime actually
+   just submitted. `_is_runtime_owned_client_order_id` and
+   `_time_in_force_with_ownership_default` are removed.
+   `test_gateway_rejects_an_absent_time_in_force_regardless_of_client_order_id`
+   replaces the two follow-up-3 tests, and a new
+   `test_gateway_rejects_an_absent_time_in_force_from_an_account_wide_listing`
+   uses a forged `"intent-"`-prefixed `client_order_id` to prove the
+   namespace match alone no longer grants a default.
 
 ### Tests run
 
-- `nox -s ci` — **all four blocking sessions passed** (re-run after both
-  follow-ups above): `tests` (2997 passed, 105 skipped), `paper_tests`
+- `nox -s ci` — **all four blocking sessions passed** (re-run after all
+  three follow-ups above): `tests` (3016 passed, 105 skipped), `paper_tests`
   (160 passed), `safety_typecheck` (pyright, 0 errors), `migration_smoke`
   (OK).
 - Local `.venv` (which has LumiBot installed, unlike the `tests` nox
-  session): `pytest tests/unit -q` — **2951 passed, 41 skipped, 0 failed**.
+  session): `pytest tests/unit -q` — **2970 passed, 41 skipped, 0 failed**.
 - New in the original PR: `tests/unit/test_runtime_normalization_contract.py`
   (42 tests), `tests/unit/test_runtime_client_normalization.py` (31),
-  `paper_runtime/tests/test_normalization.py` (34, now 40 after both
+  `paper_runtime/tests/test_normalization.py` (34, now 40 after all three
   follow-ups). Added 11 tests to `tests/unit/test_lumibot_adapter.py`, 1 to
   `tests/unit/test_lumibot_event_mapper.py`.
 - New in follow-up 1: 3 lifecycle tests in `tests/unit/test_sync_paper_orders.py`
@@ -2247,7 +2308,22 @@ behavior. Recorded as `DECISIONS.md` D8 rulings 10-12:
   test_runtime_client_normalization.py` to add the six now-required/
   preserved order fields; 2 new gateway tests in `paper_runtime/tests/
   test_normalization.py` (`DAY` default applies for a runtime-owned
-  `client_order_id`, fails closed for a foreign one).
+  `client_order_id`, fails closed for a foreign one) — **both replaced in
+  follow-up 4** (see below), since the ownership check they pinned was
+  itself removed.
+- New in follow-up 4: 18 new tests in `tests/unit/test_runtime_client.py`
+  (7 for `submit_limit_order`'s canonicalization/no-retry/malformed-response
+  cases; 11 for the `GET_ORDER_BY_CLIENT_ID`/`GET_ORDER` envelope validation
+  — missing/zero/`None` `found`, mismatched echoed `book_id`/
+  `client_order_id`, contradictory `found`/`order`, unexpected fields); 1
+  new end-to-end reconciliation regression in `tests/unit/
+  test_external_paper_broker.py`
+  (`test_malformed_lookup_response_cannot_create_authoritative_not_found_or_unlock_retry`);
+  2 gateway tests in `paper_runtime/tests/test_normalization.py` replacing
+  follow-up 2's ownership-gated pair
+  (`test_gateway_rejects_an_absent_time_in_force_regardless_of_client_order_id`,
+  `test_gateway_rejects_an_absent_time_in_force_from_an_account_wide_listing`
+  — the latter using a forged `"intent-"`-prefixed `client_order_id`).
 - `nox -s typecheck` is not part of `nox -s ci` and carries a large
   pre-existing baseline (2530 errors). This PR takes it to 2535: all five are
   the *same* pre-existing `ScriptedGateway`-does-not-satisfy-`PaperBrokerGateway`

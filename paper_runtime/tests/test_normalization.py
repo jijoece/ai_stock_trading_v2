@@ -241,23 +241,32 @@ def test_gateway_does_not_silently_default_a_plain_string_time_in_force(gateway)
         gateway._order_to_snapshot(_raw_order(time_in_force="forever"))
 
 
-def test_gateway_defaults_an_absent_time_in_force_to_day_only_for_a_runtime_owned_order(gateway):
-    """`client_order_id="intent-1"` (the fixture default) is inside this
-    project's own id namespace, so a DAY default is a documented contract
-    rule for it -- see D8 Ruling 9 / Milestone 11 follow-up."""
-    assert gateway._order_to_snapshot(_raw_order(time_in_force=None)).time_in_force == "DAY"
-    assert gateway._order_to_snapshot(
-        _raw_order(client_order_id="epb-baseline-abc123", time_in_force=None)
-    ).time_in_force == "DAY"
-
-
-def test_gateway_rejects_an_absent_time_in_force_for_an_order_outside_its_namespace(gateway):
-    """`list_open_orders`/`list_recent_orders` are account-wide broker
-    reads and can surface an order this runtime never submitted -- a
-    missing time_in_force on such an order must fail closed rather than be
-    assumed DAY."""
+def test_gateway_rejects_an_absent_time_in_force_regardless_of_client_order_id(gateway):
+    """Milestone 11 follow-up 3: a namespace-prefixed `client_order_id`
+    (`"intent-"`/`"epb-"`) is broker-echoed data, not proof of ownership --
+    a manually placed order, or one from an unrelated application against
+    the same paper account, could carry an id in the same shape by
+    coincidence or by deliberate forgery. `list_open_orders`/
+    `list_recent_orders` are account-wide broker reads with no trusted
+    submission context to fall back on, so an absent time_in_force now
+    always fails closed -- there is no longer a DAY default for any
+    client_order_id, including forged `intent-`/`epb-` ones."""
+    with pytest.raises(NormalizationError):
+        gateway._order_to_snapshot(_raw_order(time_in_force=None))  # default client_order_id="intent-1"
+    with pytest.raises(NormalizationError):
+        gateway._order_to_snapshot(_raw_order(client_order_id="epb-baseline-abc123", time_in_force=None))
     with pytest.raises(NormalizationError):
         gateway._order_to_snapshot(_raw_order(client_order_id="manually-placed-order-1", time_in_force=None))
+
+
+def test_gateway_rejects_an_absent_time_in_force_from_an_account_wide_listing(gateway):
+    """A forged `intent-`/`epb-`-prefixed client_order_id appearing in an
+    account-wide `list_open_orders`/`list_recent_orders` result must not be
+    trusted as this runtime's own order just because the id matches its
+    namespace convention."""
+    forged = _raw_order(client_order_id="intent-" + "f" * 32, time_in_force=None)
+    with pytest.raises(NormalizationError):
+        gateway._order_to_snapshot(forged)
 
 
 def test_gateway_canonicalizes_alpaca_timestamps(gateway):

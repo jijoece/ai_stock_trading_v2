@@ -686,3 +686,177 @@ def test_get_order_rejects_a_missing_time_in_force():
     fake.queue_success(order_payload(time_in_force=None))
     with pytest.raises(ProtocolViolationError):
         client.get_order("i1")
+
+
+def test_submit_limit_order_returns_the_canonical_shape():
+    fake = FakeTransport()
+    client = _client(fake)
+    start_ready_client(client, fake)
+    fake.queue_success(external_order_payload())
+    result = client.submit_limit_order({"book_id": "BASELINE"})
+    assert result["status"] == "ACCEPTED"
+    assert result["limit_price"] == "101.50"
+
+
+def test_submit_limit_order_is_never_retried_on_timeout():
+    fake = FakeTransport()
+    client = _client(fake)
+    start_ready_client(client, fake)
+    fake.queue_timeout()
+    with pytest.raises(RuntimeRequestTimeoutError) as exc:
+        client.submit_limit_order({"book_id": "BASELINE"})
+    assert exc.value.retryable is False
+
+
+def test_submit_limit_order_rejects_an_unknown_status():
+    fake = FakeTransport()
+    client = _client(fake)
+    start_ready_client(client, fake)
+    fake.queue_success(external_order_payload(status="PROBABLY_FINE"))
+    with pytest.raises(ProtocolViolationError):
+        client.submit_limit_order({"book_id": "BASELINE"})
+
+
+def test_submit_limit_order_rejects_a_zero_quantity():
+    fake = FakeTransport()
+    client = _client(fake)
+    start_ready_client(client, fake)
+    fake.queue_success(external_order_payload(quantity=0))
+    with pytest.raises(ProtocolViolationError):
+        client.submit_limit_order({"book_id": "BASELINE"})
+
+
+def test_submit_limit_order_rejects_a_malformed_timestamp():
+    fake = FakeTransport()
+    client = _client(fake)
+    start_ready_client(client, fake)
+    fake.queue_success(external_order_payload(submitted_at="not-a-timestamp"))
+    with pytest.raises(ProtocolViolationError):
+        client.submit_limit_order({"book_id": "BASELINE"})
+
+
+def test_submit_limit_order_rejects_a_missing_broker_order_id():
+    fake = FakeTransport()
+    client = _client(fake)
+    start_ready_client(client, fake)
+    fake.queue_success(external_order_payload(broker_order_id=None))
+    with pytest.raises(ProtocolViolationError):
+        client.submit_limit_order({"book_id": "BASELINE"})
+
+
+def test_submit_limit_order_rejects_a_non_finite_price():
+    fake = FakeTransport()
+    client = _client(fake)
+    start_ready_client(client, fake)
+    fake.queue_success(
+        external_order_payload(status="FILLED", filled_quantity=10, average_fill_price="Infinity")
+    )
+    with pytest.raises(ProtocolViolationError):
+        client.submit_limit_order({"book_id": "BASELINE"})
+
+
+# -- GET_ORDER_BY_CLIENT_ID / GET_ORDER envelope validation ------------------
+
+
+def test_get_order_by_client_order_id_rejects_a_missing_found_field():
+    fake = FakeTransport()
+    client = _client(fake)
+    start_ready_client(client, fake)
+    fake.queue_success({"book_id": "BASELINE", "client_order_id": "epb-baseline-abc123"})
+    with pytest.raises(ProtocolViolationError):
+        client.get_order_by_client_order_id("BASELINE", "epb-baseline-abc123")
+
+
+def test_get_order_by_client_order_id_rejects_a_zero_for_found():
+    fake = FakeTransport()
+    client = _client(fake)
+    start_ready_client(client, fake)
+    fake.queue_success({"found": 0, "book_id": "BASELINE", "client_order_id": "epb-baseline-abc123"})
+    with pytest.raises(ProtocolViolationError):
+        client.get_order_by_client_order_id("BASELINE", "epb-baseline-abc123")
+
+
+def test_get_order_by_client_order_id_rejects_a_none_for_found():
+    fake = FakeTransport()
+    client = _client(fake)
+    start_ready_client(client, fake)
+    fake.queue_success({"found": None, "book_id": "BASELINE", "client_order_id": "epb-baseline-abc123"})
+    with pytest.raises(ProtocolViolationError):
+        client.get_order_by_client_order_id("BASELINE", "epb-baseline-abc123")
+
+
+def test_get_order_by_client_order_id_rejects_a_mismatched_echoed_book_id():
+    fake = FakeTransport()
+    client = _client(fake)
+    start_ready_client(client, fake)
+    fake.queue_success({"found": False, "book_id": "ENHANCED", "client_order_id": "epb-baseline-abc123"})
+    with pytest.raises(ProtocolViolationError):
+        client.get_order_by_client_order_id("BASELINE", "epb-baseline-abc123")
+
+
+def test_get_order_by_client_order_id_rejects_a_mismatched_echoed_client_order_id():
+    fake = FakeTransport()
+    client = _client(fake)
+    start_ready_client(client, fake)
+    fake.queue_success({"found": False, "book_id": "BASELINE", "client_order_id": "epb-baseline-other"})
+    with pytest.raises(ProtocolViolationError):
+        client.get_order_by_client_order_id("BASELINE", "epb-baseline-abc123")
+
+
+def test_get_order_by_client_order_id_rejects_a_contradictory_found_true_with_notfound_shape():
+    fake = FakeTransport()
+    client = _client(fake)
+    start_ready_client(client, fake)
+    fake.queue_success({"found": True, "book_id": "BASELINE", "client_order_id": "epb-baseline-abc123"})
+    with pytest.raises(ProtocolViolationError):
+        client.get_order_by_client_order_id("BASELINE", "epb-baseline-abc123")
+
+
+def test_get_order_by_client_order_id_rejects_an_unexpected_extra_field():
+    fake = FakeTransport()
+    client = _client(fake)
+    start_ready_client(client, fake)
+    fake.queue_success(
+        {
+            "found": False, "book_id": "BASELINE", "client_order_id": "epb-baseline-abc123",
+            "unexpected": "field",
+        }
+    )
+    with pytest.raises(ProtocolViolationError):
+        client.get_order_by_client_order_id("BASELINE", "epb-baseline-abc123")
+
+
+def test_get_order_by_broker_order_id_rejects_a_missing_found_field():
+    fake = FakeTransport()
+    client = _client(fake)
+    start_ready_client(client, fake)
+    fake.queue_success({"order": None})
+    with pytest.raises(ProtocolViolationError):
+        client.get_order_by_broker_order_id("BASELINE", "b-1")
+
+
+def test_get_order_by_broker_order_id_rejects_a_none_for_found():
+    fake = FakeTransport()
+    client = _client(fake)
+    start_ready_client(client, fake)
+    fake.queue_success({"found": None, "order": None})
+    with pytest.raises(ProtocolViolationError):
+        client.get_order_by_broker_order_id("BASELINE", "b-1")
+
+
+def test_get_order_by_broker_order_id_rejects_a_contradictory_found_false_with_an_order():
+    fake = FakeTransport()
+    client = _client(fake)
+    start_ready_client(client, fake)
+    fake.queue_success({"found": False, "order": external_order_payload()})
+    with pytest.raises(ProtocolViolationError):
+        client.get_order_by_broker_order_id("BASELINE", "b-1")
+
+
+def test_get_order_by_broker_order_id_rejects_an_unexpected_extra_field():
+    fake = FakeTransport()
+    client = _client(fake)
+    start_ready_client(client, fake)
+    fake.queue_success({"found": False, "order": None, "unexpected": "field"})
+    with pytest.raises(ProtocolViolationError):
+        client.get_order_by_broker_order_id("BASELINE", "b-1")

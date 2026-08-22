@@ -935,9 +935,13 @@ at all can only be one this runtime itself created; and a naive
 (tzinfo-less) broker timestamp is still treated as UTC by
 `normalize_timestamp_string`, because Alpaca's paper API reports UTC — this
 is the contract's stated timestamp rule, not an unstated guess, and applies
-identically on both sides of the process boundary.
+identically on both sides of the process boundary. **The `time_in_force`
+default described here was narrowed by Ruling 10, then removed entirely by
+Ruling 13 — see those rulings for the current behavior.** The timestamp
+rule is unaffected and remains current.
 
-**Ruling 10 (Milestone 11 follow-up) — the `time_in_force` default from
+**Ruling 10 (Milestone 11 follow-up 2; narrowed further by Ruling 13 below
+— retained for the decision history) — the `time_in_force` default from
 Ruling 9 was narrower than claimed; it now applies only to orders this
 runtime can prove it created.** Ruling 9's "this runtime only ever submits
 DAY LIMIT orders" justification is true for `submit_order`/`get_order`, but
@@ -989,3 +993,53 @@ business-rule checks (matching the approved intent, paper-endpoint scoping)
 in place downstream — a malformed nested field now fails with
 `ProtocolViolationError` before it can reach `paper_books` at all, rather
 than surfacing later as an ad hoc `MALFORMED_RUNTIME_RESPONSE`.
+
+**Ruling 13 (Milestone 11 follow-up 3) — a `client_order_id` namespace
+prefix is not proof of ownership; the `time_in_force` default is removed
+entirely, not narrowed further.** Ruling 10's `_is_runtime_owned_client_order_id`
+treated an `"intent-"`/`"epb-"`-prefixed `client_order_id` as evidence this
+runtime created the order. But `client_order_id` is broker-echoed data on
+an account-wide read (`list_open_orders`/`list_recent_orders`) — nothing
+stops a manually placed order, or one from an unrelated application against
+the same paper account, from coincidentally or deliberately using an id in
+the same shape. A namespace prefix is a pattern match, not a trust
+boundary: it carries no cryptographic or transactional binding to "this
+runtime submitted this exact order." `_order_to_snapshot` no longer
+defaults an absent `time_in_force` under any condition — `submit_order`
+and `get_order` do not need the default in practice (this runtime always
+requests `TimeInForce.DAY` explicitly, so Alpaca's response echoes it back
+for any order this runtime actually just submitted), and
+`list_open_orders`/`list_recent_orders`/`get_order_by_broker_id` have no
+trusted submission context to fall back on at all. `_is_runtime_owned_client_order_id`
+and `_time_in_force_with_ownership_default` are removed;
+`normalize_time_in_force` is called directly on the raw broker attribute
+and fails closed on `None` like every other field.
+
+**Ruling 14 (Milestone 11 follow-up 3) — the Milestone 11 external-order
+submission and lookup wire ops are now fully validated at the
+`RuntimeClient` boundary.** Two gaps remained after Ruling 12: (1)
+`submit_limit_order` returned `SUBMIT_LIMIT_ORDER`'s raw response
+unparsed — it now goes through the same `ExternalOrderSnapshot` used for
+`cancel_external_order`/`list_recent_external_orders`, with no change to
+its no-retry behavior (`SUBMIT_LIMIT_ORDER` was already absent from
+`_RETRYABLE_ON_TIMEOUT`). (2) `get_order_by_client_order_id`/
+`get_order_by_broker_order_id` trusted the `{"found": ...}` envelope itself
+— a missing or non-boolean `found`, a not-found response that failed to
+echo the requested `book_id`/`client_order_id`, or a contradictory
+`found`/`order` combination would previously fall through `if not
+result.get("found"): return None` and be read as an authoritative broker
+NOT_FOUND. That distinction matters beyond the immediate call:
+`external_broker.py::_run_reconciliation` treats an *exception* from this
+lookup as ambiguous (`authoritative=0`, cannot unlock a retry) but a
+*return value of `None`* as genuine, authoritative evidence
+(`authoritative=1`) that `retry_external_paper_order` accepts as
+sufficient to allow a second submission of the same order — so a
+runtime that could produce a malformed envelope could otherwise have
+forged retry-authorizing evidence. New `parse_client_order_lookup_response`/
+`parse_broker_order_lookup_response` validate each documented envelope
+shape exactly and raise `ProtocolViolationError` on anything else,
+which `_run_reconciliation`'s existing `except Exception` handling already
+downgrades to non-authoritative — closing the gap with no change needed on
+the `paper_books` side. `tests/unit/test_external_paper_broker.py::
+test_malformed_lookup_response_cannot_create_authoritative_not_found_or_unlock_retry`
+is the end-to-end regression.

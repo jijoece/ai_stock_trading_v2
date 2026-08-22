@@ -19,6 +19,7 @@ from trading_research.paper_books.external_broker import (
     reconcile_external_paper_order, retry_external_paper_order, submit_external_paper_order,
 )
 from trading_research.paper_books.models import PaperBookOrderIntent, PaperRiskDecision, RISK_APPROVED
+from trading_research.runtime.client.errors import ProtocolViolationError
 from trading_research.storage import paper_books_repositories as repo
 from trading_research.storage.database import connect
 from trading_research.storage.paper_books_schema import derive_external_attempt_reservation_id
@@ -397,6 +398,48 @@ def test_authoritative_not_found_allows_one_explicit_retry():
             conn, book_id="BASELINE", paper_order_intent_id="intent-1", operator="alice",
             reason="second retry blocked", runtime=runtime, config=cfg, clock=lambda: NOW,
         )
+
+
+class _MalformedLookupRuntime(FakeRuntime):
+    """Simulates what a real `RuntimeClient` now does when the isolated
+    runtime returns a corrupted `GET_ORDER_BY_CLIENT_ID` envelope (e.g. a
+    missing/non-boolean `found`, or a not-found response that fails to echo
+    the requested book_id/client_order_id) -- it raises instead of silently
+    returning `None`, per Milestone 11 follow-up 3 item 2."""
+
+    def get_order_by_client_order_id(self, book_id, client_order_id):
+        raise ProtocolViolationError("runtime GET_ORDER_BY_CLIENT_ID response field 'found' must be a boolean")
+
+
+def test_malformed_lookup_response_cannot_create_authoritative_not_found_or_unlock_retry():
+    """A malformed lookup envelope must never be indistinguishable from a
+    genuine broker NOT_FOUND -- if it were, a corrupted or buggy runtime
+    response could forge the exact evidence `retry_external_paper_order`
+    requires before allowing a second submission of the same order."""
+    conn = connect(":memory:")
+    _seed(conn)
+    cfg, runtime = _config(), _MalformedLookupRuntime()
+    runtime.raise_submit = True
+    preview = _preview(conn, runtime, cfg)
+    result = submit_external_paper_order(
+        conn, book_id="BASELINE", paper_order_intent_id="intent-1", preview_id=preview["preview_id"],
+        operator="alice", reason="paper test", runtime=runtime, config=cfg, clock=lambda: NOW,
+    )
+    assert result["status"] == STATE_UNKNOWN
+    reconciled = reconcile_external_paper_order(
+        conn, book_id="BASELINE", runtime=runtime, config=cfg,
+        client_order_id=preview["client_order_id"], clock=lambda: NOW,
+    )
+    assert reconciled["status"] == "UNKNOWN"  # not ORDER_MISSING_AT_BROKER
+    lookup = repo.load_latest_external_lookup(conn, "BASELINE", preview["client_order_id"])
+    assert lookup["result"] == "NOT_FOUND"
+    assert lookup["authoritative"] == 0  # must not be usable to authorize a retry
+    with pytest.raises(ExternalPaperError) as exc:
+        retry_external_paper_order(
+            conn, book_id="BASELINE", paper_order_intent_id="intent-1", operator="alice",
+            reason="retry blocked by malformed lookup", runtime=runtime, config=cfg, clock=lambda: NOW,
+        )
+    assert exc.value.code == "NOT_FOUND_NOT_CONFIRMED"
 
 
 def test_refresh_retry_preview_unblocks_retry_after_original_preview_expires():

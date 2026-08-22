@@ -451,3 +451,58 @@ class ExternalAccountSnapshot:
             "buying_power": format(self.buying_power, "f") if self.buying_power is not None else None,
             "currency": self.currency, "as_of": self.as_of,
         }
+
+
+def parse_client_order_lookup_response(payload: dict, *, book_id: str, client_order_id: str) -> dict | None:
+    """Validates the `GET_ORDER_BY_CLIENT_ID` envelope
+    (`dispatcher._op_GET_ORDER_BY_CLIENT_ID`) before any `found`/`order`
+    value is trusted (Milestone 11 follow-up 3 item 2).
+
+    A malformed envelope must never be interpreted as an authoritative
+    "not found" — `external_broker.py::_run_reconciliation` treats an
+    exception from this call as an *ambiguous* outcome (non-authoritative),
+    but a return value of `None` as a genuine, authoritative broker
+    NOT_FOUND that can later unlock an explicit retry
+    (`retry_external_paper_order`). So every shape this function does not
+    recognize as one of the two documented envelopes — missing/non-boolean
+    `found`, an echoed book_id/client_order_id that does not match the
+    request, a contradictory `found`/`order` combination, or any
+    unexpected field — must raise rather than fall through to `None`."""
+    if not isinstance(payload, dict):
+        raise ProtocolViolationError("runtime GET_ORDER_BY_CLIENT_ID response must be a mapping")
+    found = payload.get("found")
+    if "found" not in payload or not isinstance(found, bool):
+        raise ProtocolViolationError("runtime GET_ORDER_BY_CLIENT_ID response field 'found' must be a boolean")
+    if found is False:
+        if set(payload) != {"found", "book_id", "client_order_id"}:
+            raise ProtocolViolationError(
+                "runtime GET_ORDER_BY_CLIENT_ID not-found response has an unexpected shape"
+            )
+        if payload.get("book_id") != book_id or payload.get("client_order_id") != client_order_id:
+            raise ProtocolViolationError(
+                "runtime GET_ORDER_BY_CLIENT_ID not-found response does not echo the requested "
+                "book_id/client_order_id"
+            )
+        return None
+    if set(payload) != {"found", "order"}:
+        raise ProtocolViolationError("runtime GET_ORDER_BY_CLIENT_ID found response has an unexpected shape")
+    return ExternalOrderSnapshot.from_payload(payload.get("order")).to_dict()
+
+
+def parse_broker_order_lookup_response(payload: dict) -> dict | None:
+    """Validates the `GET_ORDER` envelope (`dispatcher._op_GET_ORDER`)
+    before any `found`/`order` value is trusted — see
+    `parse_client_order_lookup_response` above for why a malformed envelope
+    must raise rather than silently resolve to `None`."""
+    if not isinstance(payload, dict):
+        raise ProtocolViolationError("runtime GET_ORDER response must be a mapping")
+    found = payload.get("found")
+    if "found" not in payload or not isinstance(found, bool):
+        raise ProtocolViolationError("runtime GET_ORDER response field 'found' must be a boolean")
+    if set(payload) != {"found", "order"}:
+        raise ProtocolViolationError("runtime GET_ORDER response has an unexpected shape")
+    if found is False:
+        if payload.get("order") is not None:
+            raise ProtocolViolationError("runtime GET_ORDER not-found response must have order=null")
+        return None
+    return ExternalOrderSnapshot.from_payload(payload.get("order")).to_dict()

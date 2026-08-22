@@ -31,6 +31,8 @@ from .models import (
     RuntimeAccountSnapshot,
     RuntimeOrderSnapshot,
     RuntimePositionSnapshot,
+    parse_broker_order_lookup_response,
+    parse_client_order_lookup_response,
 )
 from .protocol import build_request_line, parse_response_line
 
@@ -384,8 +386,18 @@ class RuntimeClient:
         return self._request("PREVIEW_LIMIT_ORDER", payload)
 
     def submit_limit_order(self, payload: dict) -> dict:
-        """Mutation is never retried by this client."""
-        return self._request("SUBMIT_LIMIT_ORDER", payload)
+        """Mutation is never retried by this client (`SUBMIT_LIMIT_ORDER` is
+        absent from `_RETRYABLE_ON_TIMEOUT` above — unchanged by this
+        validation).
+
+        Milestone 11 follow-up 3: the response — the same enriched shape
+        `cancel_external_order`/`list_recent_external_orders` return
+        (`dispatcher._external_order_dict`) — is now re-validated through
+        `ExternalOrderSnapshot` before it reaches `external_broker.py`, so a
+        malformed submission response (unknown status, non-positive
+        quantity, malformed timestamp, missing broker_order_id, non-finite
+        price) fails with `ProtocolViolationError` at this boundary."""
+        return ExternalOrderSnapshot.from_payload(self._request("SUBMIT_LIMIT_ORDER", payload)).to_dict()
 
     def get_order_by_client_order_id(self, book_id: str, client_order_id: str) -> dict | None:
         """Milestone 11 follow-up: the enriched external-order response is
@@ -393,19 +405,22 @@ class RuntimeClient:
         `paper_books` — a malformed nested field (bad status, non-finite
         price, wrong-typed timestamp, …) now fails with
         `ProtocolViolationError` at this boundary instead of surfacing much
-        later as an ad hoc `MALFORMED_RUNTIME_RESPONSE`."""
+        later as an ad hoc `MALFORMED_RUNTIME_RESPONSE`.
+
+        Milestone 11 follow-up 3: the `found`/`order` envelope itself is now
+        validated too (`parse_client_order_lookup_response`) — a malformed
+        envelope (missing/non-boolean `found`, a wrong echoed
+        book_id/client_order_id, an unexpected field) raises instead of
+        being read as an authoritative "not found", which
+        `external_broker.py` can otherwise use to unlock a retry."""
         result = self._request(
             "GET_ORDER_BY_CLIENT_ID", {"book_id": book_id, "client_order_id": client_order_id},
         )
-        if not result.get("found"):
-            return None
-        return ExternalOrderSnapshot.from_payload(result.get("order")).to_dict()
+        return parse_client_order_lookup_response(result, book_id=book_id, client_order_id=client_order_id)
 
     def get_order_by_broker_order_id(self, book_id: str, broker_order_id: str) -> dict | None:
         result = self._request("GET_ORDER", {"book_id": book_id, "broker_order_id": broker_order_id})
-        if not result.get("found"):
-            return None
-        return ExternalOrderSnapshot.from_payload(result.get("order")).to_dict()
+        return parse_broker_order_lookup_response(result)
 
     def cancel_external_order(self, book_id: str, client_order_id: str, account_fingerprint: str) -> dict:
         result = self._request(
