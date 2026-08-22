@@ -124,6 +124,44 @@ jobs:
       - name: Run indicator-focused tests
         run: pytest tests/unit/test_indicators.py -q --tb=short
 
+  analytics-tests:
+    name: analytics-tests (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    # Blocking job proving empyrical-reloaded/quantstats-lumi fixture parity
+    # for real (library-migration PR 11): main-tests above only installs
+    # `.[dev]`, so tests/unit/test_analytics_parity.py skips there (its
+    # module-level `pytest.importorskip("empyrical")`/`("quantstats_lumi")`)
+    # rather than exercising either library. This job installs the
+    # `analytics` extra and asserts it resolves cleanly, then runs the same
+    # file with both libraries actually present, so a real regression in
+    # evaluation/analytics_parity.py cannot be masked by the skip in
+    # main-tests. Matrixed over the declared `requires-python = ">=3.10"`
+    # floor and CI's historical 3.11 choice, matching `indicators-tests`
+    # above -- neither empyrical-reloaded (`>=3.9`) nor quantstats-lumi
+    # (`>=3.6`) narrows this project's floor.
+    #
+    # `evaluation/analytics_parity.py` is not authoritative -- see its
+    # module docstring and `docs/library-migration/REMOVAL_MANIFEST.md` --
+    # so this job proves the parity claim only; it does not run the full
+    # offline suite, since no other module imports either library
+    # (`tests/unit/test_analytics_parity_import_boundary.py` enforces
+    # that unconditionally, without either library installed).
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install dependencies + analytics extra
+        run: pip install -e ".[dev,analytics]"
+      - name: pip check
+        run: pip check
+      - name: Run analytics-parity-focused tests
+        run: pytest tests/unit/test_analytics_parity.py tests/unit/test_analytics_parity_import_boundary.py -q --tb=short
+
   research-tests:
     name: research-tests
     runs-on: ubuntu-latest
