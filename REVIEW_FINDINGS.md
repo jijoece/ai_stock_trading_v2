@@ -19,16 +19,16 @@
 
 Commit: `5b2ea86e808691d5153bb7529763cb57f0b1c345`
 
-Location: [analytics_parity.py](/Users/jijopaul/workspace/ai_stock_trading_v2/src/trading_research/evaluation/analytics_parity.py:90) and [analytics_parity.py](/Users/jijopaul/workspace/ai_stock_trading_v2/src/trading_research/evaluation/analytics_parity.py:142)
+Location: [analytics_parity.py](./src/trading_research/evaluation/analytics_parity.py) (lines 90, 142) and [test_analytics_parity.py](./tests/unit/test_analytics_parity.py) (line 84)
 
-Problem: `cumulative_return_parity()` and `max_drawdown_parity()` do not preserve the authoritative functions’ behavior for empty input when `min_sample_size=0`, despite the commit marking fixture parity complete.
+Problem: `cumulative_return_parity()` and `max_drawdown_parity()` do not preserve the authoritative functions' behavior for empty input when `min_sample_size=0`, despite the commit marking fixture parity.
 
-Evidence: The existing public functions accept `min_sample_size=0`. For empty input, `metrics.cumulative_return([], min_sample_size=0)` returns `OK` with `Decimal("0")`, and `metrics.max_drawdown([], min_sample_size=0)` returns `OK` with `Decimal("0")`. The candidates instead invoke Empyrical with an empty `Series`; Empyrical’s empty-input result is `NaN`, which is converted into an `OK` `MetricsResult` containing non-finite data. The empty fixture at [test_analytics_parity.py](/Users/jijopaul/workspace/ai_stock_trading_v2/tests/unit/test_analytics_parity.py:84) only exercises the default positive minimum, so both sides exit as `INSUFFICIENT_DATA` before reaching this boundary.
+Evidence: The existing public functions accept `min_sample_size=0`. For empty input, `metrics.cumulative_return([], min_sample_size=0)` returns `OK` with `Decimal("0")`, and `metrics.max_drawdown([], min_sample_size=0)` also returns `OK` with `Decimal("0")`.
 
-Impact: PR 17 could rely on the recorded parity decision and replace the authoritative implementation, changing a valid public parameter combination from deterministic zero to `NaN`. That can contaminate reported or persisted performance analytics while still carrying status `OK`.
+Impact: PR 17 could rely on the recorded parity decision and replace the authoritative implementation, changing a valid public parameter combination from deterministic zero to `NaN`. That can contaminate downstream analytics and reports.
 
-Required fix: Either explicitly handle empty returns in both candidate functions so they reproduce the current zero result, or validate and reject non-positive `min_sample_size` consistently in both authoritative and candidate implementations before recording parity as complete.
+Required fix: Either explicitly handle empty returns in both candidate functions so they reproduce the current zero result, or validate and reject non-positive `min_sample_size` consistently in both old and new implementations.
 
-Validation: Add parity tests for both functions using empty evaluations with `min_sample_size=0`, asserting matching status, sample size, and finite zero value. Also test any chosen rejection contract for negative minimums.
+Validation: Add parity tests for both functions using empty evaluations with `min_sample_size=0`, asserting matching status, sample size, and finite zero value. Also test any chosen rejection contract.
 
-Tests or diagnostics run: Inspected the full commit diff and relevant metrics, model, test, dependency, migration, and CI contracts. `git diff --check` passed. Could not execute the canonical Nox test session because `nox` is not installed; the optional `empyrical` and `quantstats_lumi` packages are also absent. No credentialed or external operations were performed.
+Tests or diagnostics run: Inspected the full commit diff and relevant metrics, model, test, dependency, migration, and CI contracts. `git diff --check` passed. Could not execute the canonical Nox suite locally.
