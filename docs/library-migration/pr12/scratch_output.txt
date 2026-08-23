@@ -1,0 +1,42 @@
+Raw output of `python docs/library-migration/pr12/scratch_smoke_test.py`, run inside
+the scratch virtualenv described in `EVALUATION.md` Section 2
+(`riskfolio-lib==7.3.0`, macOS arm64, Python 3.14.5rc1). Captured verbatim,
+including riskfolio-lib's own internal deprecation warnings (see
+`EVALUATION.md` Section 4).
+
+/private/tmp/riskfolio_scratch_venv/lib/python3.14/site-packages/cvxpy/expressions/expression.py:830: UserWarning:
+This use of ``*`` has resulted in matrix multiplication.
+Using ``*`` for matrix multiplication has been deprecated since CVXPY 1.1.
+    Use ``*`` for matrix-scalar and vector-scalar multiplication.
+    Use ``@`` for matrix-matrix and matrix-vector multiplication.
+    Use ``multiply`` for elementwise multiplication.
+This code path has been hit 1 times so far.
+
+  warnings.warn(msg, UserWarning)
+/private/tmp/riskfolio_scratch_venv/lib/python3.14/site-packages/cvxpy/expressions/expression.py:830: UserWarning:
+This use of ``*`` has resulted in matrix multiplication.
+Using ``*`` for matrix multiplication has been deprecated since CVXPY 1.1.
+    Use ``*`` for matrix-scalar and vector-scalar multiplication.
+    Use ``@`` for matrix-matrix and matrix-vector multiplication.
+    Use ``multiply`` for elementwise multiplication.
+This code path has been hit 2 times so far.
+
+  warnings.warn(msg, UserWarning)
+output type: <class 'pandas.DataFrame'>
+output columns: ['weights']
+output index: ['AAPL', 'MSFT', 'GOOG', 'AMZN']
+           weights
+AAPL  2.907968e-02
+MSFT  1.044852e-01
+GOOG  8.664352e-01
+AMZN  1.654788e-09
+
+weights sum to 1.0: True
+no negative weights (long-only default): True
+
+has any order/share/authorize-shaped attribute:
+  submit_order: False
+  shares: False
+  quantity: False
+  order_type: False
+  side: False

@@ -38,7 +38,7 @@ invariants a library does not provide).
 | Ambiguous-order retry/recovery | `paper_books/external_broker.py::recover_stranded_submission` | **Domain-specific** | None | Preserve | N/A | No |
 | Structured logging | `logging_config.py` | Commodity | Structlog | Adopt (PR 15) | Custom redaction ported to a structlog processor | Yes, after redaction parity |
 | Tracing/metrics (spans) | None (domain telemetry only, not spans) | New capability | OpenTelemetry | Adopt (PR 16), additive | N/A | No — domain telemetry (`cycle_telemetry.py`) stays |
-| Portfolio optimization | None | New capability | Riskfolio-Lib | Evaluate (PR 12), advisory-only | Must pass existing hard safety gateway | No — new advisory code only |
+| Portfolio optimization | None | New capability | Riskfolio-Lib | **Deferred (PR 12, evaluated 2026-08-23)** — OSI-approved, conflict-free with the adopted `vectorbt==1.1.0`, but no existing consumer justifies the 82-package closure (`docs/library-migration/pr12/EVALUATION.md`); advisory-only remains the binding constraint for any future re-evaluation | Must pass existing hard safety gateway | No — new advisory code only, not added |
 | Hard safety limits/gateway | `paper_books/config.py`, `paper_books/external_broker.py` | **Domain-specific** | None | Preserve | N/A | No |
 | Account fingerprinting | `paper_books/external_broker.py` | **Domain-specific (ADR 0007)** | None | Preserve | N/A | No |
 | AI research/evidence provenance | `research/*` | **Domain-specific (ADR 0003/0004)** | None | Preserve | N/A | No |

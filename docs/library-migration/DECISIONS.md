@@ -1177,3 +1177,63 @@ rows the manifest explicitly marked as an exception to its own default.
 `sharpe_ratio`, `sortino_ratio`, `max_drawdown`, `calmar_ratio`,
 `cumulative_return`) — PR 11 leaves them untouched in both
 `evaluation/metrics.py` and `analytics_parity.py`.
+
+## D10 — PR 12: Riskfolio-Lib evaluated, deferred (not adopted)
+
+**Context.** `MASTER_PLAN.md` row 12 scoped PR 12 as evaluation only, bound
+to the same "advisory only, never authoritative" pattern ADR 0003 established
+for Claude's research overlay (also required of PR 2's Pydantic evaluation).
+Two questions were open going in, per `DEPENDENCY_MATRIX.md` Section 6's PR 1
+correction record: whether Riskfolio-Lib's license resolves OSI-compatibly,
+and whether its dependency weight (and hard `vectorbt>=0.28.0` dependency) is
+justified. Full detail in `docs/library-migration/pr12/EVALUATION.md`.
+
+**License.** Re-verified live against the PyPI JSON API: `riskfolio-lib`
+7.3.0 is BSD-3-Clause, `License :: OSI Approved :: BSD License` — unlike
+VectorBT (D4), this needed no owner exception.
+
+**Dependency weight and the VectorBT hard-dependency.** A wheel-only install
+into a clean scratch virtualenv resolved 82 packages, `pip check` clean, no
+source compilation. Its `vectorbt>=0.28.0` floor resolved to
+**`vectorbt==1.1.0`** — the exact version already pinned by the `research`
+extra's `vectorbt>=1.1.0,<1.2` (PR 5) — confirming no conflict with the
+already-adopted dependency, live rather than by reading declared metadata
+alone. The closure includes several packages with no other purpose in this
+repository: Jupyter widget support (`ipywidgets`, `anywidget`,
+`jupyterlab_widgets`, `widgetsnbextension`), a second charting library
+(`plotly`, alongside the existing `streamlit`), multiple QP/conic solver
+backends (`clarabel`, `SCS`, `osqp`, `highspy`, `qdldl`), and `astropy`.
+
+**Functional check.** A scratch smoke test
+(`pr12/scratch_smoke_test.py`/`scratch_output.txt`) confirmed
+`rp.Portfolio(...).optimization(...)` returns a plain `pandas.DataFrame` of
+per-asset weights with no `submit_order`/`shares`/`quantity`/`order_type`/
+`side` surface — structurally compatible with an advisory-only boundary, the
+same shape VectorBT's `Portfolio` object required bounding in PR 5's
+review-fix round (D4). Also surfaced: Riskfolio-Lib 7.3.0's own internal code
+triggers a `cvxpy` 1.9.2 deprecation warning (its use of the now-deprecated
+`*` matrix-multiplication operator) — not a functional blocker on the
+version pair verified here, but worth re-checking before any future
+adoption, since it originates inside Riskfolio-Lib's own code.
+
+**Need.** `COMPONENT_MATRIX.md`'s "Portfolio optimization" row lists no
+existing implementation — this would be a green-field capability, not a
+migration off deprecated/abandoned code (unlike TA-Lib/empyrical-reloaded/
+`exchange_calendars`), and no module under `src/trading_research/`
+constructs a multi-position target allocation today.
+
+**Ruling: defer, do not adopt.** Applying the same bar `DECISIONS.md` used
+for Pandera/PyArrow ("no concrete current need exists" → Defer) rather than
+Pydantic's bar (no existing code to compare against here) or VectorBT's
+(an owner-approved exception consumed immediately by a scoped adapter):
+Riskfolio-Lib is legally and technically unblocked but not justified by any
+current consumer, and even an adopted Riskfolio-Lib could not become
+authoritative over sizing or risk decisions per the binding advisory-only
+constraint. **`riskfolio-lib` is not added to any dependency declaration.**
+No ADR is required — per the single-ADR rule already established in D2, an
+ADR is needed only if adoption is recommended, and none is here. Re-evaluate
+once a concrete portfolio-construction consumer is scoped; at that point,
+also re-verify whether the `cvxpy` deprecation warning noted above has been
+resolved upstream, and design the advisory-boundary adapter (analogous to
+`vector_research/`'s import-boundary/`metric_source`-labeling pattern)
+before any dependency is added.
