@@ -34,6 +34,17 @@ Do not add `paper_books/*`, `backtesting/engine.py`, `external_broker.py`,
 `paper_books/config.py`, or `storage/*` to this manifest — see
 `PRESERVATION_MANIFEST.md` and `DECISIONS.md` D1/D3 for why.
 
+**PR 11 update:** the custom analytics formulas row's fixture-parity
+condition is now met — see `STATUS.md`'s "Completed work (PR 11)" and
+`DECISIONS.md` D9. Consistent with this file's own default rule (and
+unlike the PR 3/PR 4 rows above, which were explicitly closed early), PR 11
+does **not** close this row: `evaluation/metrics.py`'s `sharpe_ratio`,
+`sortino_ratio`, `max_drawdown`, `calmar_ratio`, and `cumulative_return`
+remain the current, authoritative implementation, and the row's "Removal
+PR" column (`PR 17`) is unchanged. `evaluation/analytics_parity.py` is new,
+additive, and has zero production callers
+(`tests/unit/test_analytics_parity_import_boundary.py`).
+
 **PR 8 update (2026-08-02):** `backtesting/engine.py` appeared in the
 "conditionally eligible" section below while this paragraph said not to add it
 — a real contradiction, since PR 0 opened a removal gate on a file this

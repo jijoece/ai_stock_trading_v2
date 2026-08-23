@@ -24,7 +24,7 @@ invariants a library does not provide).
 | Position/lot accounting | `paper_books/positions.py` | **Domain-specific (ADR 0006)** | None | Preserve | N/A | No |
 | Portfolio valuation | `paper_books/valuation.py` | **Domain-specific (ADR 0006)** | None | Preserve | N/A | No |
 | Legacy global ledger | `paper/ledger.py` (quarantined) | Domain-specific, dead-end | None | Preserve as-is | N/A | No — not migrated either direction |
-| Performance analytics | `evaluation/metrics.py` | Commodity | quantstats-lumi, empyrical-reloaded | Adopt (PR 11) | `Decimal`→float boundary explicit | Yes, formulas only, after parity |
+| Performance analytics | `evaluation/metrics.py` (still sole authority — new `evaluation/analytics_parity.py` proves parity only, zero production callers, `DECISIONS.md` D9) | Commodity | quantstats-lumi (presentation only), empyrical-reloaded (primitives) | Parity proven (PR 11); adoption/removal deferred to PR 17 | `Decimal`→float boundary explicit — `metrics.py` untouched (`Decimal`), `analytics_parity.py` float-only | Not yet — parity proven for `sharpe_ratio`/`sortino_ratio`/`max_drawdown`/`calmar_ratio`/`cumulative_return`; removal is PR 17's job (`REMOVAL_MANIFEST.md`) |
 | Book-level metrics | `paper_books/metrics.py`, `strategies/strategy_metrics.py` | Domain-specific | None | Preserve | N/A | No |
 | Benchmark/experiment comparison | `evaluation/research_comparison.py`, `paper_books/comparison.py` | Domain-specific | None | Preserve | N/A | No |
 | Configuration (internal domain models) | `config.py`, per-domain config dataclasses | **Domain-specific (ADR 0001)** | None | Preserve | N/A | No |

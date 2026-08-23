@@ -71,10 +71,14 @@ timezone mismatch, not only a raw value mismatch.
 `total_return`/`sharpe_ratio`/`max_drawdown` are VectorBT's own vectorized
 statistics -- fast, useful for coarse relative ranking across a parameter
 sweep, but **not** this repository's authoritative performance-metrics
-implementation. `evaluation/metrics.py` (migrating to `empyrical-reloaded`
-in PR 11) remains authoritative for any reported, compared, or audited
-performance figure; VectorBT's Sharpe uses a `year_freq` annualization
-assumption that need not match empyrical-reloaded's convention. Every
+implementation. `evaluation/metrics.py` remains authoritative for any
+reported, compared, or audited performance figure -- PR 11 proved fixture
+parity against `empyrical-reloaded` in a new, additive
+`evaluation/analytics_parity.py` (zero production callers), but did not
+replace `metrics.py`'s formulas; removal is deferred to PR 17
+(`docs/library-migration/DECISIONS.md` D9). VectorBT's Sharpe uses a
+`year_freq` annualization assumption that need not match either
+implementation's convention. Every
 `ParameterSweepResult` carries `metric_source = "VECTORBT_EXPLORATORY"`
 plus the exact `frequency`/`year_freq` assumption used, so a caller (or a
 future automated check) can never mistake one for the other. Each metric

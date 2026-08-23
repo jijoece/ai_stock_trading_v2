@@ -1088,3 +1088,92 @@ two "correctly matched" happy-path cases); 3 `external_broker.py`
 regressions proving the duplicate-submit path now rejects a foreign
 account fingerprint, a live environment, and a mismatched quantity instead
 of reporting success.
+
+---
+
+## D9 — PR 11: proves parity, does not replace `evaluation/metrics.py`
+
+**Context.** `MASTER_PLAN.md` row 11's terse description, "Replace
+`evaluation/metrics.py` formulas with `quantstats-lumi` +
+`empyrical-reloaded`," reads the same way rows 3 and 4 did before those PRs
+ran — and PR 3/PR 4 both replaced their target formulas immediately,
+deleting the custom implementation in the same PR. Read alone, row 11
+suggests PR 11 should do the same to `sharpe_ratio`/`sortino_ratio`/
+`max_drawdown`/`calmar_ratio`/`cumulative_return`. Three other planning
+documents disagree, consistently, with each other and not just in passing:
+
+1. `REMOVAL_MANIFEST.md`'s header states the *default* rule for every row:
+   "a passing fixture-parity test in its assigned PR before deletion
+   happens in the corresponding later PR. Until then, the current custom
+   implementation remains authoritative." PR 3 and PR 4's rows carry an
+   explicit, named override ("Done in PR 3, not deferred to PR 17,"
+   "removed in PR 4 itself, not deferred to PR 17"). The analytics formulas
+   row carries no such override — it still reads the un-overridden default,
+   "PR 17 (parity proven in PR 11)."
+2. `MASTER_PLAN.md` row 17 itself says it will "execute only
+   removal-manifest entries that passed parity in PR 3/4/11/15." If PR 11
+   already executed its own removal (like PR 3/PR 4), row 17 would have
+   nothing left to execute for it — exactly as row 17 already treats PR 8's
+   contribution as "resolved — contributes nothing." Row 17 listing PR 11
+   as a source of pending removal work only makes sense if PR 11 stops at
+   parity.
+3. The logging-formatter row (PR 15) is worded identically to the analytics
+   row ("PR 17 (parity proven in PR 15)"), and PR 15's own `MASTER_PLAN.md`
+   row 15 description ("parity test for redaction behavior," not
+   "delete `logging_config.py`'s formatter") reads as parity-only too — the
+   same pattern repeated twice is a documented convention, not a one-off
+   inconsistency.
+
+**Ruling.** PR 11 proves fixture parity; it does not remove or replace
+`evaluation/metrics.py`'s formulas. `evaluation/analytics_parity.py` is a
+new, additive, non-authoritative module — `evaluation/metrics.py` is
+untouched, remains the sole implementation every existing caller
+(`research_comparison.py`, `paper_books/comparison.py`, `cli.py`) uses, and
+stays authoritative until PR 17 decides whether and how to execute the
+removal `REMOVAL_MANIFEST.md` already conditions on this PR's parity proof.
+This mirrors PR 5's `vector_research/adapter.py` pattern (new, additive,
+AST-import-boundary-enforced, zero production callers) more than it mirrors
+PR 3/PR 4's in-place replacement, precisely because PR 3/PR 4 are the two
+rows the manifest explicitly marked as an exception to its own default.
+
+**Numeric findings supporting the parity claim**
+(`docs/library-migration/pr11/comparison_output.txt`,
+`evaluation/analytics_parity.py`'s module docstring for the full detail):
+
+- `cumulative_return`, `sharpe_ratio` (both annualized and raw), and
+  `sortino_ratio` (both annualized and raw) match `empyrical-reloaded`
+  bit-for-bit or to floating-point noise, given `period="daily"` (252
+  trading days/year, matching `ANNUALIZATION_TRADING_DAYS`) or
+  `annualization=1` respectively.
+- `max_drawdown` matches to ~1e-16 floating-point noise.
+- `calmar_ratio` does **not** match `empyrical.calmar_ratio()` under any
+  annualization setting tested — it applies a CAGR-style annualized-return
+  numerator (compounding across `len(returns)` periods) rather than this
+  repository's raw cumulative-return numerator, which does not fit
+  independent per-recommendation returns the way it fits a fixed-frequency
+  daily bar series. `calmar_ratio_parity` is composed from
+  `cum_returns_final`/`max_drawdown` instead of calling
+  `empyrical.calmar_ratio()` directly — a documented adapter composition,
+  the same pattern PR 4 used for `macd`/`trix` over `talib.MACD()`/
+  `talib.TRIX()`.
+- Neither `empyrical.sharpe_ratio` nor `empyrical.sortino_ratio`
+  special-cases a zero (or floating-point-noise-near-zero) variance/
+  downside-deviation input — each returns a large finite float or `inf`
+  rather than an explicit undefined signal. `analytics_parity.py`
+  reproduces `evaluation/metrics.py`'s existing
+  `math.isclose(..., abs_tol=1e-12)` fail-closed boundary rather than
+  trusting either library's raw output for this case.
+- `quantstats_lumi.stats.calmar` was evaluated and rejected for
+  `presentation_summary()` too, for a sharper reason than a convention
+  mismatch: it requires a real `DatetimeIndex` (its `cagr()` calls
+  `.total_seconds()` on the index range) and raises `AttributeError` on the
+  plain integer-indexed `Series` this repository's returns take the shape
+  of.
+
+**Scope not touched by this decision.** `hit_rate`, `average_return`,
+`median_return`, `gain_loss_ratio`, `recommendation_to_fill_rate`, and
+`group_by` have no `empyrical`/`quantstats-lumi` equivalent and are outside
+`REMOVAL_MANIFEST.md`'s analytics-formulas row (which names exactly
+`sharpe_ratio`, `sortino_ratio`, `max_drawdown`, `calmar_ratio`,
+`cumulative_return`) — PR 11 leaves them untouched in both
+`evaluation/metrics.py` and `analytics_parity.py`.

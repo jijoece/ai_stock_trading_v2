@@ -1,7 +1,19 @@
 # Migration Status
 
-**Current phase: PR 10 — broker-to-`paper_books` reconciliation parity
-tests — IMPLEMENTED** (branch
+**Current phase: PR 11 — QuantStats/analytics migration — IMPLEMENTED**
+(branch `migration/11-quantstats-analytics-parity`; `MASTER_PLAN.md` row
+11, `DECISIONS.md` D9). New, additive `evaluation/analytics_parity.py`
+proves fixture parity for `evaluation/metrics.py`'s `cumulative_return`,
+`sharpe_ratio`, `sortino_ratio`, `max_drawdown`, and `calmar_ratio` against
+`empyrical-reloaded`, with `quantstats-lumi` exercised only for a
+non-authoritative presentation summary. **`evaluation/metrics.py` is
+unmodified and remains the sole production authority** — per
+`REMOVAL_MANIFEST.md`'s default rule and `MASTER_PLAN.md` row 17, PR 11
+proves parity only; removal is PR 17's job. See "Completed work (PR 11)"
+below.
+
+PR 10 — broker-to-`paper_books` reconciliation parity tests — is
+**IMPLEMENTED** (branch
 `migration/10-broker-paper-books-reconciliation-parity`; `MASTER_PLAN.md`
 row 10, `DECISIONS.md` D1). See "Completed work (PR 10)" below.
 
@@ -24,8 +36,10 @@ and never written, and bar availability is enforced once per run rather than
 per session. Row 8a is **not started** and remains independent of the
 numbered migration sequence — it can run at any point.
 
-**Next phase: PR 11 — QuantStats/analytics migration** (`MASTER_PLAN.md`
-row 11), which depends only on PR 1 (already merged).
+**Next phase: PR 12 — Riskfolio-Lib evaluation only** (`MASTER_PLAN.md`
+row 12), which depends only on PR 1 (already merged). PR 11 above is now
+implemented, not merged; row 12 is the next unstarted row whose dependency
+is already satisfied.
 
 PR 6 is **merged** (`bbd7a1f`, PR #18) and delivered everything ADR 0009
 Decision 4 requires:
@@ -2463,3 +2477,185 @@ credentials were read or referenced; no order of any kind was submitted;
 the scheduler was not enabled. All broker interaction in the new tests is
 through `FakeTransport`, a fully scripted, offline, in-process double — no
 subprocess is spawned and no network call is made.
+
+## Completed work (PR 11)
+
+**Scope:** one new module, `src/trading_research/evaluation/
+analytics_parity.py`; two new test files,
+`tests/unit/test_analytics_parity.py` and
+`tests/unit/test_analytics_parity_import_boundary.py`; a scratch
+comparison script and its captured output under
+`docs/library-migration/pr11/`; a new blocking `analytics-tests` CI job in
+`.github/workflows/ci.yml`; a one-paragraph docstring correction in
+`src/trading_research/vector_research/adapter.py` (no behavior change); and
+this file, `MASTER_PLAN.md`, `DECISIONS.md` (D9), `REMOVAL_MANIFEST.md`,
+and `COMPONENT_MATRIX.md`. **`evaluation/metrics.py` was not modified.** No
+other file under `src/`, `scripts/`, `paper_runtime/src/`, or `config/` was
+touched.
+
+**Scope clarification (see `DECISIONS.md` D9 for the full reasoning):**
+`MASTER_PLAN.md` row 11's terse text ("Replace `evaluation/metrics.py`
+formulas with ...") reads the same way rows 3 and 4 did, and those two PRs
+removed their target formulas immediately. `REMOVAL_MANIFEST.md` and
+`MASTER_PLAN.md` row 17 say otherwise for this row, consistently and by
+name: the manifest's default rule ("current custom implementation remains
+authoritative" until its *own* assigned removal PR) applies here because,
+unlike the PR 3/PR 4 rows, this row was never given an explicit early-close
+override — it still reads "PR 17 (parity proven in PR 11)." Row 17 itself
+lists PR 11 as a source of pending removal work to "execute," which would
+be meaningless if PR 11 had already executed it. **Conclusion: PR 11 proves
+fixture parity; it does not replace or remove `evaluation/metrics.py`'s
+formulas.** `evaluation/metrics.py`'s `sharpe_ratio`, `sortino_ratio`,
+`max_drawdown`, `calmar_ratio`, and `cumulative_return` remain unchanged and
+are still the only implementation `research_comparison.py`,
+`paper_books/comparison.py`, and `cli.py` call. PR 17 decides whether and
+how to execute the removal this PR's parity proof now conditions.
+
+**New module: `evaluation/analytics_parity.py`.** A library-backed
+candidate implementation, structurally parallel to `evaluation/metrics.py`:
+`cumulative_return_parity`, `sharpe_ratio_parity`, `sortino_ratio_parity`,
+`max_drawdown_parity`, and `calmar_ratio_parity` take the same
+`list[RecommendationEvaluation]` input and return the same `MetricsResult`
+shape (`status`/`value`/`sample_size`/`reason`), so
+`tests/unit/test_analytics_parity.py` can call both implementations on the
+same fixture and assert status equality always, value equality (via
+`math.isclose`) whenever both are `OK`. `empyrical-reloaded` is the
+primitive authority used (`import empyrical`, guarded by a `try`/`except
+ImportError` with an actionable `pip install -e ".[analytics]"` message,
+matching `scripts/indicators.py`'s TA-Lib convention); `quantstats-lumi` is
+exercised only by a separate `presentation_summary()` function, explicitly
+never compared against `evaluation/metrics.py` or the `*_parity` functions
+for parity (`DEPENDENCY_MATRIX.md` Section 6: "two independent authorities
+over the same metric is a defect, not a feature"). Out of this scope, by
+`REMOVAL_MANIFEST.md`'s own row: `hit_rate`, `average_return`,
+`median_return`, `gain_loss_ratio`, `recommendation_to_fill_rate`, and
+`group_by` have no library equivalent and are untouched.
+
+**Numeric parity findings** (captured in
+`docs/library-migration/pr11/comparison_output.txt`, reproducible via
+`docs/library-migration/pr11/boundary_comparison_scratch.py`;
+`empyrical-reloaded 0.5.12`, `quantstats-lumi 1.1.5`):
+
+* `cumulative_return`: `empyrical.cum_returns_final(returns,
+  starting_value=0)` matches the custom compounding formula bit-for-bit
+  across every fixture tested.
+* `sharpe_ratio`/`sortino_ratio`: `empyrical.sharpe_ratio`/
+  `sortino_ratio` with `annualization=ANNUALIZATION_TRADING_DAYS` (252,
+  equivalent to `period="daily"`) match the custom annualized formula
+  bit-for-bit; `annualization=1` matches the custom unannualized (`annualize
+  =False`) formula bit-for-bit. Confirms `evaluation/metrics.py`'s 252
+  -trading-day annualization convention is exactly `empyrical`'s own
+  `"daily"` period convention, not a coincidence requiring a scaling
+  correction.
+* `max_drawdown`: matches to ~1e-16 floating-point noise across every
+  fixture (e.g. `-0.020000000000000122` vs. `-0.02000000000000008`) — the
+  same class of acceptable float noise `scripts/indicators.py` documented
+  for TA-Lib's Bollinger Bands in PR 4.
+* **Zero-variance/zero-downside Sharpe and Sortino do *not* match without a
+  boundary correction.** `empyrical.sharpe_ratio`/`sortino_ratio` do not
+  special-case a zero (or floating-point-noise-near-zero) standard
+  deviation: a flat 6-value 0.05 fixture returned Sharpe `1.04e17` (a huge
+  finite float, not `NaN`/`inf`) from raw `empyrical.sharpe_ratio`, and a
+  monotonically-increasing 5-value fixture returned Sortino `inf` from raw
+  `empyrical.sortino_ratio`, where `evaluation/metrics.py`'s
+  `math.isclose(std, 0.0, abs_tol=1e-12)` check reports `UNDEFINED`.
+  `analytics_parity.py`'s `sharpe_ratio_parity`/`sortino_ratio_parity`
+  compute the same variance/downside-deviation check independently, before
+  calling either `empyrical` function, and return `UNDEFINED` without
+  calling the library function at all in that case — proven by
+  `test_sharpe_ratio_undefined_on_flat_returns_not_a_huge_finite_number`
+  and `test_sortino_ratio_undefined_with_no_downside_not_inf`.
+* **Calmar ratio does not match under any `empyrical.calmar_ratio()`
+  annualization setting.** For the 6-bar oscillating fixture: composed
+  Calmar (custom formula) is `5.108`; `empyrical.calmar_ratio(period=
+  "daily")` gives `2922.7`; `empyrical.calmar_ratio(annualization=1)` gives
+  `0.817` — neither recovers `5.108`. Root cause: `empyrical.calmar_ratio`
+  divides a CAGR-style annualized-return numerator (compounding across
+  `len(returns)` periods) by max drawdown, while `evaluation/metrics.py`
+  divides the raw (non-annualized) cumulative return by max drawdown — a
+  convention mismatch, not a units/scaling difference, and one that does not
+  fit this repository's data anyway (independent per-recommendation
+  returns, not a fixed-frequency daily bar series a CAGR annualization
+  assumes). `calmar_ratio_parity` is therefore composed from
+  `cumulative_return_parity`/`max_drawdown_parity` directly and never calls
+  `empyrical.calmar_ratio()` — the same "adapter composed from primitives,
+  not the library's single-shot function" pattern PR 4 used for `macd`/
+  `trix` over `talib.MACD()`/`talib.TRIX()`.
+  `test_calmar_ratio_parity_diverges_from_raw_empyrical_calmar_ratio`
+  documents this divergence behaviorally, not just in prose.
+  `quantstats_lumi.stats.calmar` was evaluated for `presentation_summary()`
+  and excluded for a sharper reason than a convention mismatch: it requires
+  a real `DatetimeIndex` to compute elapsed wall-clock time (its `cagr()`
+  helper calls `.total_seconds()` on the index range) and raises
+  `AttributeError` on the plain integer-indexed `Series` every other
+  function in this module receives.
+* Zero max drawdown: both `evaluation/metrics.py` and
+  `calmar_ratio_parity` report `UNDEFINED` (division by zero), never `inf`
+  — verified against the monotonically-increasing fixture, where raw
+  `empyrical.calmar_ratio` itself returns `NaN` (its own internal guard,
+  not one this module relies on for the parity claim).
+
+**Not authoritative, enforced structurally, not by convention.**
+`tests/unit/test_analytics_parity_import_boundary.py` AST-parses every file
+under `src/trading_research/` (analogous to
+`tests/unit/test_vector_research_import_boundary.py`) and asserts: (1)
+`empyrical`/`quantstats_lumi` are imported nowhere except
+`evaluation/analytics_parity.py`; (2) no other production module imports
+`analytics_parity`. Both run unconditionally — pure `ast` source parsing,
+no import of either library — so they hold even without the `analytics`
+extra installed, unlike the parity tests themselves.
+
+**Dependency behavior:** `evaluation/analytics_parity.py` does `import
+empyrical` and `import quantstats_lumi.stats` at module scope, each inside
+its own `try`/`except ImportError` that re-raises with an actionable `pip
+install -e ".[analytics]"` message — both dependencies were already
+declared in the `analytics` extra by PR 1; PR 11 adds no new dependency
+declaration.
+
+**CI:** a new blocking `analytics-tests` job
+(`.github/workflows/ci.yml`), matrixed over Python 3.10/3.11 matching
+`indicators-tests`' pattern (neither `empyrical-reloaded` `>=3.9` nor
+`quantstats-lumi` `>=3.6` narrows this project's `>=3.10` floor), installs
+`.[dev,analytics]` and runs `test_analytics_parity.py` +
+`test_analytics_parity_import_boundary.py` for real — `main-tests` alone
+(`.[dev]` only) would otherwise let the parity tests skip silently via
+their module-level `pytest.importorskip` guards, masking a real regression.
+The existing `dependency-extras-smoke` matrix already covered the bare
+`import empyrical, quantstats_lumi` check for the `analytics` extra (added
+PR 1) and needed no change.
+
+**Tests run:**
+- `pytest tests/unit/test_analytics_parity.py
+  tests/unit/test_analytics_parity_import_boundary.py -q --tb=short`
+  (analytics extra installed) — **58 passed**.
+- The same two files, in a fresh venv with only `.[dev]` (no `analytics`
+  extra) installed — the import-boundary file's 3 tests **passed** (they
+  need neither library); `test_analytics_parity.py` **skipped** as a whole
+  module (`pytest.importorskip`), never silently masking a failure as a
+  pass.
+- `pytest tests/unit/test_analytics_parity.py
+  tests/unit/test_analytics_parity_import_boundary.py tests/unit/
+  test_metrics.py tests/unit/test_vector_research_adapter.py tests/unit/
+  test_vector_research_import_boundary.py
+  tests/unit/test_research_comparison_extensions.py -q --tb=short` — **92
+  passed, 40 skipped** (`vector_research`'s VectorBT-dependent tests skip,
+  since only the `analytics` extra was installed — the "never combine
+  extras" isolation convention `DEPENDENCY_MATRIX.md` Section 3 requires).
+- `pytest tests/ -q --tb=short` (full offline suite, `analytics` extra
+  installed) — **3245 passed, 57 skipped, 0 failed** — confirms adding
+  `empyrical`/`quantstats_lumi` to the environment disturbs nothing
+  elsewhere.
+- `nox -s ci` — **all four blocking sessions passed**: `tests` (3119
+  passed, 106 skipped, `.[dev]` only — the two new parity-dependent test
+  files' module skips without the `analytics` extra), `paper_tests` (160
+  passed), `safety_typecheck` (pyright, 0 errors — `analytics_parity.py` is
+  outside `pyright-safety.json`'s scope, consistent with it not being a
+  safety-critical module), `migration_smoke` (OK).
+- `scripts/check_links.sh` — 186 links checked, 0 errors.
+
+**Safety:** no trading limit, authorization rule, `paper_books` accounting
+code, or scheduling behavior was touched; no broker, provider, model, or
+market-data service was called; no live or historical market data was
+fetched — every fixture in the new tests is a small, hand-constructed
+in-memory list of `RecommendationEvaluation` objects; the scheduler was not
+enabled; no external paper order of any kind was submitted or referenced.

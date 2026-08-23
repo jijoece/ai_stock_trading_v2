@@ -1,0 +1,32 @@
+==== oscillating6 n= 6
+sharpe annualized  custom=9.43308278599619  empyrical=9.43308278599619
+sharpe raw         custom=0.5942283606769104  empyrical=0.5942283606769104
+sortino annualized custom=28.98275349237888  empyrical=28.98275349237888
+sortino raw        custom=1.8257418583505538  empyrical=1.8257418583505538
+cum_return         custom=0.10215457352000001  empyrical(cum_returns_final, sv=0)=np.float64(0.10215457352000001)
+max_drawdown       custom=-0.020000000000000122  empyrical=-0.02000000000000008
+calmar             custom=5.10772867599997  empyrical(period=daily)=np.float64(2922.7288949157783)  empyrical(annualization=1)=np.float64(0.817163751111113)
+==== increasing5 n= 5
+sharpe annualized  custom=30.11976095522672  empyrical=30.11976095522672
+sharpe raw         custom=1.8973665961010275  empyrical=1.8973665961010275
+sortino annualized custom=None  empyrical=inf
+sortino raw        custom=None  empyrical=inf
+cum_return         custom=2.6036  empyrical(cum_returns_final, sv=0)=np.float64(2.6036)
+max_drawdown       custom=0.0  empyrical=0.0
+calmar             custom=None  empyrical(period=daily)=nan  empyrical(annualization=1)=nan
+==== drawdown5 n= 5
+sharpe annualized  custom=1.3298199324087374  empyrical=1.3298199324087374
+sharpe raw         custom=0.0837707816583391  empyrical=0.0837707816583391
+sortino annualized custom=1.7748239349298847  empyrical=1.7748239349298844
+sortino raw        custom=0.11180339887498947  empyrical=0.11180339887498947
+cum_return         custom=0.018710000000000226  empyrical(cum_returns_final, sv=0)=np.float64(0.018710000000000226)
+max_drawdown       custom=-0.19999999999999996  empyrical=-0.19999999999999998
+calmar             custom=0.09355000000000115  empyrical(period=daily)=np.float64(7.7267847849931135)  empyrical(annualization=1)=np.float64(0.018571525988727577)
+==== mixed20 n= 20
+sharpe annualized  custom=2.5044937777861285  empyrical=2.5044937777861285
+sharpe raw         custom=0.15776827847930378  empyrical=0.15776827847930378
+sortino annualized custom=4.197086368015617  empyrical=4.197086368015617
+sortino raw        custom=0.26439158954353903  empyrical=0.26439158954353903
+cum_return         custom=0.05812284125233669  empyrical(cum_returns_final, sv=0)=np.float64(0.05812284125233669)
+max_drawdown       custom=-0.02999999999999999  empyrical=-0.030000000000000027
+calmar             custom=1.937428041744557  empyrical(period=daily)=np.float64(34.592264893715466)  empyrical(annualization=1)=np.float64(0.09429384184230404)
