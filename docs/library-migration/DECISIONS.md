@@ -1303,12 +1303,16 @@ proven, self-updating mechanism — not because the ORM is unsafe.
 
 **Question (b), empirically tested — constrainable, but only with an added
 guard.** A second scratch reproduction (`pr13/scratch_alembic_linearity.py`)
-built a real, disposable Alembic environment and found Alembic already
-resists *accidental* branching better than the PR 0 record assumed: a
-second revision targeting an already-referenced head is refused by default
-(`CommandError: ... please specify --splice`), and `alembic upgrade head`
-with multiple heads present is refused rather than silently resolved
-(`CommandError: Multiple head revisions are present ...`). Neither guard is
+built a real, disposable Alembic environment and found Alembic resists a
+*sequential* accidental branch by default (`CommandError: ... please
+specify --splice`; `CommandError: Multiple head revisions are present
+...`) only when the offending state is already visible in one script
+directory when the guarded command runs. A ninth case proved the default
+does *not* resist a *concurrent*-development branch: two independent
+checkouts each create a revision off the same parent, neither sees the
+other's file, both succeed without `--splice` or any error, and the
+branch surfaces only once the two checkouts' files are combined. Neither
+guard is
 absolute: `splice=True` still creates a real branch, and `alembic merge`
 converges a branch back to one head while leaving a merge revision (a tuple
 `down_revision`, i.e. two parents) that is not a linear predecessor. A

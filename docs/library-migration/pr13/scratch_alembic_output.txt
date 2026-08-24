@@ -1,17 +1,24 @@
 alembic 1.18.5
 
 === Case 1: build a linear 3-revision chain (control) — exactly one head ===
-Generating /var/folders/sv/dszbshy136551gqb77bfqrbr0000gn/T/pr13_alembic_nz94dmdl/versions/0001_baseline.py ...  done
-Generating /var/folders/sv/dszbshy136551gqb77bfqrbr0000gn/T/pr13_alembic_nz94dmdl/versions/0002_add_column.py ...  done
-Generating /var/folders/sv/dszbshy136551gqb77bfqrbr0000gn/T/pr13_alembic_nz94dmdl/versions/0003_add_index.py ...  done
+Generating /var/folders/sv/dszbshy136551gqb77bfqrbr0000gn/T/pr13_alembic_18dccki2/versions/0001_baseline.py ...  done
+Generating /var/folders/sv/dszbshy136551gqb77bfqrbr0000gn/T/pr13_alembic_18dccki2/versions/0002_add_column.py ...  done
+Generating /var/folders/sv/dszbshy136551gqb77bfqrbr0000gn/T/pr13_alembic_18dccki2/versions/0003_add_index.py ...  done
     revisions created: 0001, 0002, 0003
     heads: ['0003']
 PASS: linear chain has exactly one head
 
+=== Case 2b: two independent checkouts each branch off the SAME parent without ever seeing the other's new revision file — does Case 2's un-spliced-branch refusal also catch this, or only a branch that is already visible within one script directory when the guarded command runs? ===
+Generating /var/folders/sv/dszbshy136551gqb77bfqrbr0000gn/T/pr13_alembic_checkout_a_wupeirqf/versions/0004concurrentA_concurrent_a.py ...  done
+Generating /var/folders/sv/dszbshy136551gqb77bfqrbr0000gn/T/pr13_alembic_checkout_b_l53q36y8/versions/0004concurrentB_concurrent_b.py ...  done
+    neither developer's local `alembic revision` call raised CommandError or needed --splice
+    heads after combining both checkouts' revision files: ['0004concurrentA', '0004concurrentB']
+PASS (demonstrates the residual risk Case 2 does not cover): combining two independently created, un-spliced revisions off the same parent still produces a real branch — Case 2's un-spliced-branch refusal only fires when the second `alembic revision` call can already see the first developer's file on disk in the same script directory; it cannot see across two developers' separate checkouts, so the common concurrent-development branch is not caught by Alembic's default at revision-creation time at all
+
 === Case 2: two revisions off the SAME parent (a real branch) ===
-Generating /var/folders/sv/dszbshy136551gqb77bfqrbr0000gn/T/pr13_alembic_nz94dmdl/versions/0004a_branch_a.py ...  done
+Generating /var/folders/sv/dszbshy136551gqb77bfqrbr0000gn/T/pr13_alembic_18dccki2/versions/0004a_branch_a.py ...  done
 PASS: Alembic's own default refuses an un-spliced branch — Revision 0003 is not a head revision; please specify --splice to create a new branch from this revision
-Generating /var/folders/sv/dszbshy136551gqb77bfqrbr0000gn/T/pr13_alembic_nz94dmdl/versions/0004b_branch_b.py ...  done
+Generating /var/folders/sv/dszbshy136551gqb77bfqrbr0000gn/T/pr13_alembic_18dccki2/versions/0004b_branch_b.py ...  done
     heads after branching off '0003' with splice=True: ['0004a', '0004b']
 PASS (demonstrates the residual risk): `--splice`/`splice=True` still lets a branch through when a developer deliberately (or mistakenly) reaches for it — the default resists an accidental branch but does not make branching impossible
 
@@ -25,7 +32,7 @@ PASS: Alembic itself refuses an ambiguous singular-head upgrade — Multiple hea
 PASS: a straightforward custom gate (assert exactly one head + no revision has more than one child + no merge revisions) reliably detects the branch — Alembic exposes everything the gate needs via ScriptDirectory
 
 === Case 5: reconciling the branch with `alembic merge` converges to one head, but the gate still (correctly) rejects it — a merge is not a linear chain ===
-Generating /var/folders/sv/dszbshy136551gqb77bfqrbr0000gn/T/pr13_alembic_nz94dmdl/versions/0005_merge_branch_a_and_b.py ...  done
+Generating /var/folders/sv/dszbshy136551gqb77bfqrbr0000gn/T/pr13_alembic_18dccki2/versions/0005_merge_branch_a_and_b.py ...  done
     merge revision: 0005, down_revision=('0004a', '0004b')
     heads after merge: ['0005']
 PASS: `alembic merge` restores a single head but the merge revision itself has a tuple down_revision — the gate still flags it correctly, confirming 'one head' alone is NOT sufficient to prove linearity; the no-merge-revision check is required too
@@ -36,14 +43,14 @@ PASS: `alembic merge` restores a single head but the merge revision itself has a
 PASS: deleting the losing branch (not merging) restores a strictly linear chain, matching how schema_version.py's ledger would be repaired (the dict has no branch to begin with)
 
 === Case 7: a revision with a single `depends_on` edge — Alembic does not count this toward get_heads() or down_revision children, so does it evade a head-count-only gate while the corrected gate still catches it? ===
-Generating /var/folders/sv/dszbshy136551gqb77bfqrbr0000gn/T/pr13_alembic_nz94dmdl/versions/0005dep_single_depends_on.py ...  done
+Generating /var/folders/sv/dszbshy136551gqb77bfqrbr0000gn/T/pr13_alembic_18dccki2/versions/0005dep_single_depends_on.py ...  done
     heads after adding a depends_on edge: ['0005dep']
     violations found: 1
     - revision '0005dep' has a depends_on dependency edge (dependencies='0002') outside down_revision — schema_version.py's ledger has no dependency concept
 PASS: get_heads() alone still reports exactly one head (depends_on adds no new head and is not a down_revision branch), but the corrected gate's dependencies check catches the extra edge that a head-count-only gate would miss
 
 === Case 8: a revision with multiple depends_on targets is also caught ===
-Generating /var/folders/sv/dszbshy136551gqb77bfqrbr0000gn/T/pr13_alembic_nz94dmdl/versions/0006dep_multi_depends_on.py ...  done
+Generating /var/folders/sv/dszbshy136551gqb77bfqrbr0000gn/T/pr13_alembic_18dccki2/versions/0006dep_multi_depends_on.py ...  done
     heads: ['0006dep']
     violations found: 1
     - revision '0006dep' has a depends_on dependency edge (dependencies=('0001', '0002')) outside down_revision — schema_version.py's ledger has no dependency concept

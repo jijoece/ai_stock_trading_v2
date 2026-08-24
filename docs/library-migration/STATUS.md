@@ -2851,10 +2851,16 @@ correctness requirement.
 (b) whether Alembic's branching revision graph can be constrained to
 linear-only history matching `storage/schema_version.py`'s existing
 monotonic ledger. A second scratch reproduction built a real, disposable
-Alembic environment and found Alembic already resists *accidental*
-branching (an un-spliced second child of an existing head is refused by
+Alembic environment and found Alembic resists a *sequential* accidental
+branch (an un-spliced second child of an existing head is refused by
 default; an ambiguous `upgrade head` with multiple heads present is
-refused), but a deliberate `splice=True` still creates a real branch, and
+refused) only when the offending state is already visible in one script
+directory when the guarded command runs — a ninth case proved it does
+*not* resist the common concurrent-development branch, where two
+independent checkouts each create a revision off the same parent, neither
+sees the other's file, both succeed without `--splice` or any error, and
+the branch surfaces only once the checkouts' files are combined. A
+deliberate `splice=True` still creates a real branch, and
 `alembic merge` converges to one head while leaving a merge revision (a
 tuple `down_revision`) that is not linear. A custom gate (one head, no
 revision with more than one child, no tuple `down_revision`, no non-empty

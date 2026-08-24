@@ -165,6 +165,41 @@ def test_alembic_scratch_output_shows_depends_on_edges_are_caught():
     assert "multiple depends_on targets are also caught" in text
 
 
+def test_alembic_scratch_output_shows_concurrent_checkout_branch_case():
+    """Regression for review finding "Test concurrent revisions before
+    claiming default resistance": Case 2 only demonstrated Alembic's
+    un-spliced-branch refusal when the second `alembic revision` call could
+    already see the first developer's file in the same script directory —
+    it never showed what happens when two developers create revisions
+    independently from separate checkouts of the same parent and combine
+    the files afterward, the common accidental-branch scenario. Pins case
+    9's result: both checkouts succeed without `--splice` or any
+    CommandError, and the combined script directory reports two heads."""
+    text = ALEMBIC_OUTPUT.read_text(encoding="utf-8")
+    assert "Case 2b:" in text
+    assert "two independent checkouts" in text
+    assert (
+        "neither developer's local `alembic revision` call raised "
+        "CommandError or needed --splice" in text
+    )
+    assert "heads after combining both checkouts' revision files: " in text
+    assert "['0004concurrentA', '0004concurrentB']" in text
+
+
+def test_evaluation_narrows_accidental_branch_resistance_claim():
+    """Regression for review finding "Test concurrent revisions before
+    claiming default resistance": EVALUATION.md, DECISIONS.md, and
+    STATUS.md each repeated the claim that Alembic "resists accidental
+    branching" without qualifying that the built-in guards only see state
+    already visible within a single script directory. Pins that all three
+    records now scope the claim to a sequential branch and separately
+    record that the concurrent-checkout branch (case 9) is not caught."""
+    for doc in (EVALUATION, DECISIONS, STATUS):
+        text = doc.read_text(encoding="utf-8")
+        assert "sequential" in text
+        assert "concurrent" in text
+
+
 def test_evaluation_states_defer_outcome():
     text = EVALUATION.read_text(encoding="utf-8")
     assert "Recommendation: defer" in text
@@ -250,7 +285,7 @@ def test_decisions_d11_exists_and_records_ruling():
     text = DECISIONS.read_text(encoding="utf-8")
     assert "## D11 — PR 13" in text
     idx = text.index("## D11 — PR 13")
-    section = text[idx : idx + 6000]
+    section = text[idx : idx + 7000]
     assert "**Ruling: defer, do not adopt.**" in section
     assert "withdrawn as unsubstantiated" in section
     assert "linear-only" in section

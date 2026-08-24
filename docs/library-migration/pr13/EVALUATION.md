@@ -207,7 +207,7 @@ enforcement mechanism, not merely asserted as a convention.
 environment (an actual `script.py.mako`, a real `versions/` directory, a
 real `alembic.config.Config`) against a throwaway SQLite database, using
 `alembic.command` and `alembic.script.ScriptDirectory` — not a description
-of documented behavior. Six cases:
+of documented behavior. Nine cases:
 
 1. **A linear 3-revision chain (control).** `ScriptDirectory.get_heads()`
    returns exactly one head, as expected.
@@ -265,25 +265,50 @@ of documented behavior. Six cases:
 8. **A revision with multiple `depends_on` targets.** Same result: the
    corrected gate flags the revision, naming every dependency target in the
    violation message.
+9. **Two independent checkouts branching off the SAME parent — the actual
+   concurrent-development scenario, not the sequential-in-one-directory
+   scenario Case 2 tests.** Case 2's un-spliced refusal only fires because
+   the second `command.revision(head=parent)` call can already see the
+   first developer's new revision file on disk in the same script
+   directory. Two developers working from separate checkouts — each
+   pulling the same parent revision, neither having seen the other's
+   not-yet-shared revision file — can each successfully create a child of
+   that parent with **no `--splice` and no `CommandError`**, because from
+   each checkout's own local view the parent is still an unreferenced
+   head. Reproduced directly: two isolated checkouts of the post-Case-1
+   script directory each call `command.revision(..., head='0003')` (both
+   succeed, neither needs `--splice`); their revision files are then
+   copied into one combined `versions/` directory, simulating a `git
+   merge`/`git pull`, and `ScriptDirectory.get_heads()` on the combined
+   directory reports 2 heads — the same accidental branch Case 2 examined,
+   produced without either developer ever needing to override a guard.
 
 **Finding: yes, Alembic's branching graph can be constrained to
 linear-only history, but only with an added, maintained guard that must
-account for `depends_on` as well as `down_revision` — this is not the
-library's default end-state, only its default resistance.** Alembic
-already resists *accidental* branching
-(Case 2's un-spliced refusal, Case 3's ambiguous-upgrade refusal) better
-than this evaluation expected going in, but a deliberate `--splice`, an
-`alembic merge`, or a `depends_on` edge (cases 7–8) all still produce a
-graph shape (`schema_version.py`'s ledger has no counterpart for) that a
-gate checking `get_heads()`, down-revision fan-out, merge revisions, *and*
-`dependencies` — exactly the corrected `linear_only_gate()` function this
-evaluation wrote and proved catches every case tested, including
-`depends_on` — would be needed to keep out permanently. That gate does not
-exist today and would need to be built, tested, and kept in CI
-indefinitely if Alembic were adopted; it is not something Alembic ships.
-A `down_revision`-only gate would have been a real defect: it silently
-accepts a `depends_on` edge that has no equivalent in the monotonic
-integer ledger it is meant to enforce equivalence with.
+account for `depends_on` as well as `down_revision` — this is not the library's default end-state,
+and its default resistance is narrower
+than Case 2 and Case 3 alone suggest.** Case 2's un-spliced-branch refusal and
+Case 3's ambiguous-upgrade refusal both require the offending state to
+already be visible within a single script directory at the moment the
+guarded command runs; neither one sees across two developers' independent
+checkouts. Case 9 shows the default does **not** resist the common
+concurrent-development branch: two developers who each create a revision
+off the same parent in their own checkout, unaware of each other, both
+succeed without `--splice` or any error, and the branch appears only once
+their changes are combined — by which point Alembic's guard has already
+been bypassed, not overridden. A deliberate `--splice`, an `alembic
+merge`, a `depends_on` edge (cases 7–8), or ordinary concurrent
+development (case 9) all still produce a graph shape (`schema_version.py`'s
+ledger has no counterpart for) that a gate checking `get_heads()`,
+down-revision fan-out, merge revisions, *and* `dependencies` — exactly the
+corrected `linear_only_gate()` function this evaluation wrote and proved
+catches every case tested, including `depends_on` — would be needed to
+keep out permanently. That gate does not exist today and would need to be
+built, tested, and kept in CI indefinitely if Alembic were adopted; it is
+not something Alembic ships. A `down_revision`-only gate would have been a
+real defect: it silently accepts a `depends_on` edge that has no
+equivalent in the monotonic integer ledger it is meant to enforce
+equivalence with.
 
 ## 4. Need assessment
 

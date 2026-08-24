@@ -120,6 +120,79 @@ def case_2_branch_creates_two_heads(cfg: Config, parent: str) -> None:
         print(f"UNEXPECTED: expected 2 heads, got {len(heads)}")
 
 
+def case_2b_concurrent_checkouts_bypass_unspliced_guard(root: Path, parent: str) -> None:
+    _log(
+        "Case 2b: two independent checkouts each branch off the SAME parent "
+        "without ever seeing the other's new revision file — does Case 2's "
+        "un-spliced-branch refusal also catch this, or only a branch that is "
+        "already visible within one script directory when the guarded "
+        "command runs?"
+    )
+    # Two independent checkouts of the script-directory state as it existed
+    # right after Case 1 (only 0001-0003 exist, 0003 has no child yet) — each
+    # stands in for a developer who has pulled the repository at that point
+    # and has not seen the other's not-yet-shared revision file, exactly as
+    # two developers working from separate git checkouts would.
+    checkout_a = Path(tempfile.mkdtemp(prefix="pr13_alembic_checkout_a_"))
+    checkout_b = Path(tempfile.mkdtemp(prefix="pr13_alembic_checkout_b_"))
+    combined = Path(tempfile.mkdtemp(prefix="pr13_alembic_combined_"))
+    try:
+        for checkout in (checkout_a, checkout_b):
+            shutil.rmtree(checkout)
+            shutil.copytree(root, checkout)
+
+        def _cfg_for(checkout: Path) -> Config:
+            cfg = Config()
+            cfg.set_main_option("script_location", str(checkout))
+            cfg.set_main_option("sqlalchemy.url", f"sqlite:///{checkout / 'scratch.db'}")
+            cfg.set_main_option("version_locations", str(checkout / "versions"))
+            return cfg
+
+        # Developer A creates a revision off `parent` in checkout A — no
+        # --splice needed: checkout A's own versions/ directory has no child
+        # of `parent` yet.
+        command.revision(_cfg_for(checkout_a), message="concurrent A", rev_id="0004concurrentA", head=parent)
+        # Developer B, independently and without having pulled A's new file,
+        # does the same in checkout B — also succeeds without --splice, for
+        # the same reason: from checkout B's own view, `parent` is still an
+        # unreferenced head.
+        command.revision(_cfg_for(checkout_b), message="concurrent B", rev_id="0004concurrentB", head=parent)
+        print(
+            "    neither developer's local `alembic revision` call raised "
+            "CommandError or needed --splice"
+        )
+
+        # Simulate combining both checkouts' file changes (e.g. a `git
+        # merge`/`git pull` that brings both new revision files into one
+        # versions/ directory) — only now, after the fact, does the branch
+        # become visible in a single script directory.
+        shutil.rmtree(combined)
+        shutil.copytree(checkout_a, combined)
+        for f in (checkout_b / "versions").glob("*concurrentB*"):
+            shutil.copy(f, combined / "versions" / f.name)
+        script = ScriptDirectory.from_config(_cfg_for(combined))
+        heads = sorted(script.get_heads())
+        print(f"    heads after combining both checkouts' revision files: {heads}")
+        if len(heads) == 2:
+            print(
+                "PASS (demonstrates the residual risk Case 2 does not cover): "
+                "combining two independently created, un-spliced revisions off "
+                "the same parent still produces a real branch — Case 2's "
+                "un-spliced-branch refusal only fires when the second "
+                "`alembic revision` call can already see the first developer's "
+                "file on disk in the same script directory; it cannot see "
+                "across two developers' separate checkouts, so the common "
+                "concurrent-development branch is not caught by Alembic's "
+                "default at revision-creation time at all"
+            )
+        else:
+            print(f"UNEXPECTED: expected 2 heads, got {len(heads)}")
+    finally:
+        shutil.rmtree(checkout_a, ignore_errors=True)
+        shutil.rmtree(checkout_b, ignore_errors=True)
+        shutil.rmtree(combined, ignore_errors=True)
+
+
 def case_3_upgrade_head_singular_fails_with_multiple_heads(cfg: Config) -> None:
     _log("Case 3: `alembic upgrade head` (singular target) with multiple heads present")
     try:
@@ -289,6 +362,7 @@ if __name__ == "__main__":
     try:
         cfg = build_env(root)
         last_linear_head = case_1_linear_chain_one_head(cfg)
+        case_2b_concurrent_checkouts_bypass_unspliced_guard(root, last_linear_head)
         case_2_branch_creates_two_heads(cfg, last_linear_head)
         case_3_upgrade_head_singular_fails_with_multiple_heads(cfg)
         case_4_linear_only_gate_catches_the_branch(cfg)
