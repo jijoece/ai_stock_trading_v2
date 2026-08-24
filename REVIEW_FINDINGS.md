@@ -15,7 +15,7 @@
 - Review status: FIXES_APPLIED_PENDING_REVIEW
 - Highest priority: P1
 - Finding count: 0
-- Fix commit: `2c503be01bbb263d1c0767c0265d3501a856b9eb`
+- Fix commit: `97bf12298240d70a6989135b80d24c5e836fa961`
 
 ## Findings
 
@@ -96,3 +96,21 @@ Required fix: Verify and address the review comment in code and add the requeste
 Validation: Run the focused regression test and the repository's canonical validation; a subsequent full-PR review must find no remaining defect.
 
 Resolution: Fixed by `2c503be01bbb263d1c0767c0265d3501a856b9eb`; both canonical PR 12 status entries now state `EVALUATED, NOT MERGED`, with regression coverage. Validation: 23 focused tests passed and `.venv/bin/python -m nox -s ci` passed all five sessions (3142 main tests, 160 paper tests, safety typecheck clean, migration smoke clean).
+
+### [P2] Record the final post-fix validation results
+
+Commit: `d7493a445c02ec4e62051bdf95280d951a0ceb32`
+
+Location: `docs/library-migration/STATUS.md:2756`
+
+Problem: The canonical PR 12 status still recorded validation counts from before the last review-fix tests were added.
+
+Evidence: [GitHub review thread](https://github.com/jijoece/ai_stock_trading_v2/pull/29#discussion_r3840577161) identified that the recorded 3,267 direct tests and 3,139 Nox tests no longer matched the final suites.
+
+Impact: The canonical migration record would report stale validation evidence for the PR that is about to merge.
+
+Required fix: Rerun both suites, record their exact final counts, and pin those values in regression coverage.
+
+Validation: `.venv/bin/python -m pytest tests/ -q --tb=short` passed with 3,270 tests and 57 skipped; `.venv/bin/python -m nox -s ci` passed all five sessions with 3,142 main tests and 106 skipped, 160 paper tests, clean safety typecheck, and clean migration smoke.
+
+Resolution: Fixed by `97bf12298240d70a6989135b80d24c5e836fa961`; `STATUS.md` now records both final counts and the documentation-consistency test requires them.
