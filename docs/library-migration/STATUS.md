@@ -2820,23 +2820,33 @@ reasoned about:
 (a) whether trigger-protected tables can be restricted to SQLAlchemy Core
 statements only. A scratch reproduction copy-pasted the exact production
 trigger DDL for `real_orders` (fully reserved) and `paper_book_cash_ledger`
-(append-only) and drove both via Core statements and an ORM `Session`
-across six cases, including two adversarial ones beyond the original
-hypothesis: a caller that forgets to roll back after a rejected flush
-(SQLAlchemy raises `PendingRollbackError` on the next operation rather than
-proceeding), and an ORM relationship cascade deleting a parent row (the
-cascade still issues a real `DELETE` the trigger still rejects). Every case
-failed closed; no object ever appeared "persistent" in memory before
-rollback. `DEPENDENCY_MATRIX.md` Section 5's PR 0 concern — "the ORM's
-unit-of-work flush ordering and identity-map caching can mask a
-trigger-rejected write" — is **withdrawn as unsubstantiated**. A seventh
-case then proved the Core-only boundary can be *enforced*, not just
-followed: a `before_flush` guard on the ORM `Session` class blocks every
-permitted session construction path tested, before any SQL is emitted,
-while Core access is unaffected. Core-only for trigger-protected tables
-remains the recommendation for any future adoption regardless, as an
-auditability preference with a proven enforcement mechanism available, not
-a correctness requirement.
+(append-only) and drove both via Core statements and an ORM `Session`,
+against a file-backed SQLite database (matching `storage/database.py`) so
+that independent visibility checks use a genuinely separate DBAPI
+connection, across seven masking cases, including three adversarial ones
+beyond the original hypothesis: a caller that forgets to roll back after a
+rejected flush (SQLAlchemy raises `PendingRollbackError` on the next
+operation rather than proceeding), an ORM relationship cascade deleting a
+parent row (the cascade still issues a real `DELETE` the trigger still
+rejects), and an ORM UPDATE of an already-loaded row through the identity
+map (rejected identically; re-reading the mutated attribute before an
+explicit rollback itself raises `PendingRollbackError`). Every case failed
+closed; no object ever appeared "persistent" in memory before rollback, nor
+did any attribute return a stale/masked value. `DEPENDENCY_MATRIX.md`
+Section 5's PR 0 concern — "the ORM's unit-of-work flush ordering and
+identity-map caching can mask a trigger-rejected write" — is **withdrawn as
+unsubstantiated**. An eighth case then proved the Core-only boundary can be
+*enforced*, not just followed: a `before_flush` guard on the ORM `Session`
+class blocks every permitted session construction path tested, before any
+SQL is emitted, while Core access is unaffected. A ninth case proved that
+guard's table policy is complete: derived by scanning production's schema
+modules for every write-rejecting trigger (50 tables, not the 2 a
+hand-maintained allowlist previously covered), the guard rejects ORM writes
+pre-SQL against every one of them, and cannot silently go stale as
+production's schema grows. Core-only for trigger-protected tables remains
+the recommendation for any future adoption regardless, as an auditability
+preference with a proven, complete enforcement mechanism available, not a
+correctness requirement.
 
 (b) whether Alembic's branching revision graph can be constrained to
 linear-only history matching `storage/schema_version.py`'s existing

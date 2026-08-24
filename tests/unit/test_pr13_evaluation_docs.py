@@ -47,12 +47,12 @@ def test_scratch_reproductions_exist():
 
 
 def test_trigger_scratch_output_shows_no_masking_across_all_cases():
-    """Pins the empirical result of Section 2's six cases: every one must
+    """Pins the empirical result of Section 2's nine cases: every one must
     report PASS, not FAIL — a FAIL anywhere means the masking hypothesis
     was substantiated and the "defer" outcome's Section 2 finding is stale."""
     text = TRIGGER_OUTPUT.read_text(encoding="utf-8")
     assert "FAIL" not in text
-    assert text.count("PASS") >= 6
+    assert text.count("PASS") >= 9
     assert "real_orders is reserved" in text
     assert "paper_book_cash_ledger is append-only" in text
     assert "PendingRollbackError" in text
@@ -70,7 +70,7 @@ def test_alembic_scratch_output_shows_linear_gate_catches_branch():
 def test_trigger_scratch_output_shows_core_only_guard_blocks_all_orm_paths():
     """Regression for review finding: question (a) requires proving
     trigger-protected tables can be constrained to Core-only statements, not
-    just that the trigger still fires under ORM usage. Pins case 7's guard
+    just that the trigger still fires under ORM usage. Pins case 8's guard
     result: both permitted session construction paths are blocked before any
     SQL is emitted, and Core access still works with the guard installed."""
     text = TRIGGER_OUTPUT.read_text(encoding="utf-8")
@@ -78,6 +78,80 @@ def test_trigger_scratch_output_shows_core_only_guard_blocks_all_orm_paths():
     assert "sessionmaker() session blocked pre-SQL" in text
     assert "Session(bind=...) session blocked pre-SQL" in text
     assert "Core statements still work with the guard installed" in text
+
+
+def test_trigger_scratch_output_shows_orm_update_masking_case():
+    """Regression for review finding "Exercise ORM updates before
+    withdrawing the masking risk": cases 1-6 (before this fix round) covered
+    a new-object INSERT (case 2) and a cascade DELETE (case 6) but never an
+    UPDATE reached through the identity map on an already-loaded row — the
+    exact scenario the unresolved review thread described. Pins case 7's
+    result: the ORM UPDATE is rejected, re-reading the mutated attribute
+    before an explicit rollback itself raises PendingRollbackError (proving
+    the session refuses to serve a possibly-stale value), and the row's
+    value after rollback+refresh matches the database exactly — no masking."""
+    text = TRIGGER_OUTPUT.read_text(encoding="utf-8")
+    assert "Case 7: ORM UPDATE" in text
+    assert "loaded existing row via ORM identity map" in text
+    assert "PASS: ORM update rejected" in text
+    assert "PASS: the rejected UPDATE's in-memory mutation never became durable" in text
+
+
+def test_trigger_scratch_output_shows_guard_covers_every_discovered_table():
+    """Regression for review finding "Enforce Core-only access for every
+    trigger-protected table": the guard's allowlist previously covered only
+    2 tables (`real_orders`, `paper_book_cash_ledger`) even though
+    production defines many more append-only/reserved tables. Pins case 9's
+    result: the guard's policy is derived from the production schema (not
+    hardcoded) and blocks ORM writes pre-SQL against every discovered table,
+    explicitly including the tables the original finding cited as omitted."""
+    text = TRIGGER_OUTPUT.read_text(encoding="utf-8")
+    assert "Case 9:" in text
+    assert "discovered 50 trigger-protected tables" in text
+    assert "PASS: guard blocked ORM writes pre-SQL for all 50 discovered" in text
+    for table in (
+        "paper_book_fills",
+        "research_attempts",
+        "research_attempt_failures",
+        "research_cycle_provider_provenance_links",
+    ):
+        assert table in text
+
+
+def test_guard_policy_matches_current_production_trigger_protected_tables():
+    """Regression for review finding "Enforce Core-only access for every
+    trigger-protected table" validation requirement: "add a regression check
+    that fails whenever production gains a protected table absent from the
+    guard policy." Independently re-derives the trigger-protected table set
+    directly from the *current* production schema files (duplicating, not
+    importing, `scratch_trigger_orm_vs_core.py`'s discovery regex, so a bug
+    in that regex cannot hide from this check) and compares the count
+    against the committed scratch output. If production gains (or loses) a
+    write-rejecting trigger, this count diverges from the pinned output and
+    this test fails until the scratch script is re-run and the output/docs
+    are regenerated — the guard's policy can no longer go silently stale."""
+    import re as _re
+
+    schema_dir = ROOT / "src" / "trading_research" / "storage"
+    trigger_block = _re.compile(
+        r"CREATE TRIGGER.*?BEFORE\s+(?:INSERT|UPDATE|DELETE)\s+ON\s+(\w+).*?END;",
+        _re.DOTALL,
+    )
+    current_tables: set[str] = set()
+    for schema_file in sorted(schema_dir.glob("*_schema.py")):
+        source = schema_file.read_text(encoding="utf-8")
+        for match in trigger_block.finditer(source):
+            if "RAISE(ABORT" in match.group(0):
+                current_tables.add(match.group(1))
+
+    assert {"real_orders", "paper_book_cash_ledger"} <= current_tables
+    output_text = TRIGGER_OUTPUT.read_text(encoding="utf-8")
+    assert f"discovered {len(current_tables)} trigger-protected tables" in output_text, (
+        f"production schema now defines {len(current_tables)} trigger-protected "
+        f"table(s), but the pinned scratch output/EVALUATION.md record a "
+        f"different count — re-run scratch_trigger_orm_vs_core.py and update "
+        f"the committed output and docs"
+    )
 
 
 def test_alembic_scratch_output_shows_depends_on_edges_are_caught():
@@ -120,6 +194,23 @@ def test_evaluation_proves_core_only_boundary_not_just_recommends_it():
     assert "Question (a) is answered, not just recommended" in text
     assert "TriggerProtectedTableORMGuard" in text
     assert "before_flush" in text
+
+
+def test_evaluation_records_independent_connection_fix_and_narrowed_claim():
+    """Regression for review finding "Use a separate DB connection for the
+    visibility check": case 4's `engine.connect()` used to reuse the same
+    single StaticPool-pinned in-memory connection as the ORM session,
+    defeating the "independent observer" claim, and the check ran after
+    SQLAlchemy's automatic post-failure rollback, not during a still-pending
+    transaction. Pins that EVALUATION.md now (a) records the engine as
+    file-backed so `engine.connect()` is a genuinely separate DBAPI
+    connection, and (b) narrows the documented conclusion to post-failure
+    rollback state rather than a pending-write visibility window."""
+    text = EVALUATION.read_text(encoding="utf-8")
+    assert "file-backed SQLite database" in text
+    assert "genuinely independent DBAPI connection" in text
+    assert "post-failure end-state" in text
+    assert "not that a" in text and "pending" in text
 
 
 def test_evaluation_records_depends_on_gap_and_fix():

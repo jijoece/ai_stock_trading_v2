@@ -53,7 +53,12 @@ RESERVED: every INSERT/UPDATE/DELETE unconditionally rejected by three
 `BEFORE ... BEGIN SELECT RAISE(ABORT, ...) END` triggers) and
 `storage/paper_books_schema.py` (`paper_book_cash_ledger`, append-only:
 INSERT allowed, UPDATE/DELETE rejected). `PRAGMA foreign_keys=ON` is set on
-every connection, matching `storage/database.py`. Six cases:
+every connection, matching `storage/database.py`. The engine is a
+file-backed SQLite database (a temp file, not `:memory:`), also matching
+`storage/database.py`'s own `sqlite3.connect(str(db_path))` — required so
+that `engine.connect()` opens a genuinely independent DBAPI connection from
+the ORM session's own connection, not the same connection an in-memory
+`:memory:` + `StaticPool` engine would silently reuse. Nine cases:
 
 1. **Core INSERT into `real_orders` (control).** Rejected —
    `sqlalchemy.exc.IntegrityError` wrapping the trigger's `RAISE(ABORT, ...)`
@@ -75,12 +80,17 @@ every connection, matching `storage/database.py`. Six cases:
    in a possibly-inconsistent state; it does not silently keep going.
 4. **A single `flush()` batching one legal row (`paper_book_cash_ledger`)
    and one illegal row (`real_orders`) together.** Rejected as one unit;
-   before `rollback()`, both objects report `persistent=False` and a direct
-   read of the database (bypassing the ORM session entirely, via
-   `engine.connect()`) shows **zero** rows for the legal entry — the whole
-   flush is one SQL transaction, so the legal row's write never became
-   externally visible while the illegal row's rejection was still being
-   handled. Nothing was masked, partially applied, or visible-then-reverted.
+   before `rollback()`, both objects report `persistent=False` and a read
+   from a genuinely independent DBAPI connection (`engine.connect()`
+   against the file-backed engine — not the session's own connection)
+   shows **zero** rows for the legal entry at both checkpoints. Per case 3's
+   `PendingRollbackError`, SQLAlchemy has already rolled back the failed
+   flush's transaction internally by the time the `except` block runs,
+   before this test's own `session.rollback()` — so this proves the
+   **post-failure end-state** is clean via true cross-connection visibility
+   (nothing was left behind), not that a still-pending, not-yet-rolled-back
+   write was momentarily invisible mid-transaction; no such window is
+   claimed. Nothing was masked, partially applied, or persisted-then-reverted.
 5. **Core UPDATE/DELETE against `paper_book_cash_ledger` (control).** Both
    rejected, confirming the append-only (INSERT-allowed) trigger pair fires
    under Core exactly as the fully-reserved `real_orders` triggers did.
@@ -91,12 +101,29 @@ every connection, matching `storage/database.py`. Six cases:
    SQL `DELETE` against the child table, and the trigger still rejects it —
    the cascade does not resolve itself purely in Python/the identity map
    without touching the database.
-7. **The Core-only boundary itself, enforced and adversarially tested.**
+7. **ORM UPDATE of an already-loaded, existing row.** Cases 2 and 6 cover a
+   new-object INSERT and a cascade DELETE, but not an UPDATE reached through
+   the identity map — precisely the scenario a future mapper hits when it
+   loads an existing `paper_book_cash_ledger` row, changes a protected
+   field, and flushes. This case loads the row case 5 inserted via
+   `session.get()`, mutates `amount_usd` in place, and flushes: rejected
+   identically (`IntegrityError`). Critically, re-reading the mutated
+   attribute *before* calling `session.rollback()` was attempted and itself
+   raised `PendingRollbackError` — SQLAlchemy expires an object's attributes
+   after a failed UPDATE flush, and a session left dirty by an unhandled
+   flush error refuses to serve even a read of its own expired attribute,
+   the same fail-closed behavior case 3 pins for unrelated work. A read from
+   a genuinely independent connection during that same window shows the
+   original, unmutated value; after `session.rollback()` and
+   `session.expire()`, re-reading the attribute triggers a fresh `SELECT`
+   that returns the same original value — the identity map does not retain
+   or later resurface the rejected mutation.
+8. **The Core-only boundary itself, enforced and adversarially tested.**
    Question (a) asks not only whether the trigger fires under ORM usage
-   (cases 2–6), but whether trigger-protected tables can be *constrained to*
-   Core-only statements, never ORM-session flush/unit-of-work. Cases 2–6
+   (cases 2–7), but whether trigger-protected tables can be *constrained to*
+   Core-only statements, never ORM-session flush/unit-of-work. Cases 2–7
    demonstrate the trigger still fires when ORM usage is attempted; they do
-   not by themselves prevent that usage. Case 7 closes that gap: a
+   not by themselves prevent that usage. Case 8 closes that gap: a
    `before_flush` guard registered once on the ORM `Session` class
    (`TriggerProtectedTableORMGuard`, ~10 lines) rejects any flush touching
    `real_orders` or `paper_book_cash_ledger` *before* any SQL is emitted —
@@ -110,28 +137,62 @@ every connection, matching `storage/database.py`. Six cases:
    the same class). With the guard installed, Core statements against the
    same tables (case 5's insert) are re-verified to still succeed unmodified
    — the guard is ORM-flush-only and never intercepts Core.
+9. **The guard's table coverage, checked against every trigger-protected
+   table production actually defines, not just the two reproduced here.**
+   Cases 1–8 only ever exercise `real_orders`/`paper_book_cash_ledger`,
+   because those are the two tables with real DDL copy-pasted into this
+   file. A hand-maintained allowlist limited to those two would silently
+   admit ORM writes to the other 48 tables production protects with a
+   write-rejecting trigger — including `paper_book_fills`,
+   `research_attempts`, `research_attempt_failures`, and
+   `research_cycle_provider_provenance_links`. Case 9 closes that gap
+   structurally: `TRIGGER_PROTECTED_TABLES` is no longer a hardcoded set but
+   is derived by
+   `discover_trigger_protected_tables_from_production_schema()`, which scans
+   every `src/trading_research/storage/*_schema.py` module for a `CREATE
+   TRIGGER ... BEFORE {INSERT,UPDATE,DELETE} ON <table> ... RAISE(ABORT ...
+   END;` block (unconditional or `WHEN`-conditional, e.g. `recommendations`'
+   frozen-row guard) and collects `<table>` — currently **50** tables, not
+   2. The guard (unchanged logic) is then exercised against a disposable
+   synthetic single-column table for every one of the 50 discovered names
+   (full production DDL for 50 tables is unnecessary: the guard only
+   inspects `obj.__table__.name` and fires before any SQL reaches a real
+   trigger), and every single one is rejected pre-SQL by
+   `TriggerProtectedTableORMGuard`. Because the policy is re-derived from
+   the same production files on every run rather than hand-maintained, a
+   future table gaining a write-rejecting trigger is picked up automatically
+   the next time this reproduction (or its regression test) runs; it cannot
+   silently regress to a stale hardcoded list the way the original
+   two-table allowlist did.
 
 **Finding: the masking hypothesis is not substantiated against SQLAlchemy
-2.0.52 for either representative table.** Every one of the six cases —
-including the two adversarial ones (an unhandled failed flush, and an ORM
-relationship cascade) — fails closed: the trigger fires, the exception
-propagates, and the ORM's own session-state machine (not this evaluation's
-code) prevents any further work on a session left in an inconsistent state.
-`DEPENDENCY_MATRIX.md` Section 5's concern — "the ORM's unit-of-work flush
-ordering and identity-map caching can mask a trigger-rejected write" — is
-**withdrawn as unsubstantiated** for the tested version and table shapes;
-see "Correction" below. This does not prove no ORM version or usage pattern
-could ever produce a masking effect (bulk `insert()`/`update()` constructs
-that skip ORM events, or a future SQLAlchemy release, were not tested), but
-no such effect was found under direct, adversarial testing here.
+2.0.52 for either representative table.** Every one of the seven masking
+cases (2–7) — including the two adversarial ones beyond the original
+hypothesis (an unhandled failed flush, and an ORM relationship cascade) plus
+an ORM UPDATE through the identity map — fails closed: the trigger fires,
+the exception propagates, and the ORM's own session-state machine (not this
+evaluation's code) prevents any further work, or even any attribute read, on
+a session left in an inconsistent state. `DEPENDENCY_MATRIX.md` Section 5's
+concern — "the ORM's unit-of-work flush ordering and identity-map caching
+can mask a trigger-rejected write" — is **withdrawn as unsubstantiated** for
+the tested version and table shapes, across INSERT, UPDATE, and cascade
+DELETE; see "Correction" below. This does not prove no ORM version or usage
+pattern could ever produce a masking effect (bulk `insert()`/`update()`
+constructs that skip ORM events, or a future SQLAlchemy release, were not
+tested), but no such effect was found under direct, adversarial testing
+here.
 
 **Question (a) is answered, not just recommended.** Separately from the
-masking withdrawal, case 7 proves trigger-protected tables *can* be
+masking withdrawal, case 8 proves trigger-protected tables *can* be
 constrained to Core-only statements: a single class-level `before_flush`
 guard blocks every permitted ORM session construction path tested, before
-any SQL reaches the trigger, while Core access is unaffected. Any future
-adoption that wants the Core-only boundary enforced, not merely followed by
-convention, has a proven, minimal mechanism to enforce it — not because the
+any SQL reaches the trigger, while Core access is unaffected. Case 9
+additionally proves that guard's *policy* — which tables it protects — is
+complete against every table production currently defines, not just the two
+tables this reproduction happens to carry real DDL for, and cannot silently
+go stale as production's schema grows. Any future adoption that wants the
+Core-only boundary enforced, not merely followed by convention, has a
+proven, minimal, self-updating mechanism to enforce it — not because the
 ORM is unsafe (Section 2's masking finding says it is not), but because
 Core statements map 1:1 onto the exact SQL the triggers were written
 against, which is easier to audit line-by-line for a safety-critical table
@@ -279,7 +340,8 @@ richer persistence/migration layer is later scoped:
   to write but easy to forget once branching (or a `depends_on` edge)
   becomes possible.
 * Keep trigger-protected tables on Core-only statements, enforced with the
-  `before_flush` guard proven in Section 2 case 7 (not merely followed by
+  `before_flush` guard proven in Section 2 case 8, with its table policy
+  derived from the production schema per case 9 (not merely followed by
   convention) — an auditability preference, not a correctness finding since
   Section 2 found no masking risk, and worth re-confirming against whatever
   SQLAlchemy version is current at that time.

@@ -17,11 +17,16 @@ Run: /tmp/pr13_scratch_venv/bin/python scratch_trigger_orm_vs_core.py
 """
 from __future__ import annotations
 
+import re
 import sqlite3
+import tempfile
+from pathlib import Path
 
 from sqlalchemy import (
     Column,
     ForeignKey,
+    Integer,
+    MetaData,
     String,
     Table,
     create_engine,
@@ -32,7 +37,7 @@ from sqlalchemy import (
     update,
 )
 from sqlalchemy.exc import IntegrityError, PendingRollbackError
-from sqlalchemy.orm import DeclarativeBase, sessionmaker
+from sqlalchemy.orm import DeclarativeBase, registry, sessionmaker
 
 # --- exact production DDL, copy-pasted verbatim -----------------------------
 # `real_orders` + its 3 triggers: storage/trading_schema.py
@@ -165,15 +170,27 @@ class CashLedgerORM(Base):
 
 
 def make_engine():
-    # Mirrors storage/database.py: foreign_keys ON. sqlite3 DBAPI default
-    # isolation_level (SQLAlchemy manages transactions itself here) is used
-    # deliberately in Case 6 to test the pysqlite/SQLAlchemy transaction
-    # interaction the production code's own isolation_level=None +
-    # explicit-BEGIN pattern (storage/transactions.py) does not use.
-    # StaticPool keeps the single in-memory DB alive across connections/engine.begin() blocks.
-    from sqlalchemy.pool import StaticPool
-
-    engine = create_engine("sqlite:///:memory:", future=True, poolclass=StaticPool)
+    # Mirrors storage/database.py: file-backed SQLite (storage/database.py's
+    # own sqlite3.connect(str(db_path)) never uses ":memory:"), foreign_keys
+    # ON. sqlite3 DBAPI default isolation_level (SQLAlchemy manages
+    # transactions itself here) is used deliberately in Case 6 to test the
+    # pysqlite/SQLAlchemy transaction interaction the production code's own
+    # isolation_level=None + explicit-BEGIN pattern (storage/transactions.py)
+    # does not use.
+    #
+    # A file-backed DB (default QueuePool, no StaticPool) is required, not
+    # cosmetic: Case 4's masking check needs `engine.connect()` to open a
+    # DBAPI connection genuinely independent of the ORM session's own
+    # connection. An in-memory `:memory:` URL is a distinct, empty database
+    # per DBAPI connection unless pinned to a single shared connection via
+    # StaticPool — which would make `engine.connect()` silently reuse the
+    # *same* connection the session is using, defeating the independent-
+    # observer check (review finding: "Use a separate DB connection for the
+    # visibility check"). A file-backed DB lets every connection, including
+    # the session's and the check's, see the same on-disk data through
+    # genuinely separate DBAPI connections, like production.
+    db_path = Path(tempfile.mkdtemp(prefix="pr13_scratch_trigger_")) / "scratch.sqlite3"
+    engine = create_engine(f"sqlite:///{db_path}", future=True)
 
     @event.listens_for(engine, "connect")
     def _set_fk_pragma(dbapi_connection, connection_record):
@@ -307,11 +324,28 @@ def case_4_batched_flush_partial_visibility(engine) -> None:
             f"    pre-rollback: good.persistent={good_state.persistent} "
             f"good.pending={good_state.pending} bad.persistent={bad_state.persistent}"
         )
+        # Genuinely independent observer: `engine` is file-backed (make_engine()),
+        # so `engine.connect()` opens a second, distinct DBAPI connection from
+        # the session's own — not the same connection reused, as an in-memory
+        # `:memory:` + StaticPool engine would give (review finding: "Use a
+        # separate DB connection for the visibility check"). Per Case 3's
+        # `PendingRollbackError`, SQLAlchemy has already rolled back the failed
+        # flush's transaction internally by the time this `except` block runs,
+        # before `session.rollback()` is called below — so this check proves
+        # the post-failure end-state is clean via true cross-connection
+        # visibility, not that a still-pending, not-yet-rolled-back write was
+        # momentarily invisible mid-transaction (no such observable window is
+        # claimed).
         with engine.connect() as check_conn:
             row = check_conn.execute(
                 text("SELECT COUNT(*) FROM paper_book_cash_ledger WHERE ledger_entry_id='le-2'")
             ).scalar()
-        print(f"    DB row count for 'good' row while session still open, pre-rollback: {row}")
+        print(
+            f"    DB row count for 'good' row from a genuinely independent "
+            f"connection, checked immediately after the caught IntegrityError "
+            f"(after SQLAlchemy's internal rollback, before this test's "
+            f"explicit session.rollback()): {row}"
+        )
         session.rollback()
         good_state = sa_inspect(good)
         with engine.connect() as check_conn:
@@ -320,13 +354,23 @@ def case_4_batched_flush_partial_visibility(engine) -> None:
             ).scalar()
         print(
             f"    post-rollback: good.persistent={good_state.persistent} "
-            f"good.transient={good_state.transient} DB row count: {row_after}"
+            f"good.transient={good_state.transient} DB row count from an "
+            f"independent connection: {row_after}"
         )
-        if row_after == 0:
-            print("PASS: the whole flush is one transaction — the legal row's DB write "
-                  "was rolled back along with the illegal one (atomic, not masked)")
+        if row == 0 and row_after == 0:
+            print(
+                "PASS: a truly independent connection never observed the legal "
+                "row at either checkpoint — the whole flush is one atomic "
+                "transaction, and its failure left no trace once SQLAlchemy's "
+                "own fail-closed rollback ran (post-failure state, not a "
+                "mid-transaction pending-write leak)"
+            )
         else:
-            print("FAIL: the legal row was persisted despite the batch failing (masking risk substantiated)")
+            print(
+                f"FAIL: an independent connection observed the legal row "
+                f"(pre-rollback count={row}, post-rollback count={row_after}) "
+                f"despite the batch failing (masking risk substantiated)"
+            )
     session.close()
 
 
@@ -407,6 +451,84 @@ def case_6_orm_relationship_cascade_hits_trigger(engine) -> None:
     session.close()
 
 
+def case_7_orm_update_existing_row_masking(engine) -> None:
+    _log(
+        "Case 7: ORM UPDATE — load an existing paper_book_cash_ledger row "
+        "through the identity map, mutate a protected field, flush (must be "
+        "rejected) — is the trigger-rejected UPDATE masked by the "
+        "already-persistent object's in-memory state, before and after "
+        "rollback?"
+    )
+    from sqlalchemy import inspect as sa_inspect
+
+    Session = sessionmaker(bind=engine)
+    session = Session()
+    row = session.get(CashLedgerORM, ("book-3", "le-3"))
+    if row is None:
+        print("    (setup) no book-3/le-3 row found — skipping ORM update case")
+        session.close()
+        return
+    original_amount = row.amount_usd
+    print(f"    loaded existing row via ORM identity map: amount_usd={original_amount!r}")
+    mutated_amount = "999.00"
+    row.amount_usd = mutated_amount
+    state = sa_inspect(row)
+    print(
+        f"    object state pre-flush: persistent={state.persistent} "
+        f"dirty(in session.dirty)={row in session.dirty} in-memory amount_usd={mutated_amount!r}"
+    )
+    try:
+        session.flush()
+        print("FAIL: ORM UPDATE of an append-only row was NOT rejected")
+    except IntegrityError as exc:
+        print(f"PASS: ORM update rejected — {exc.orig}")
+        state = sa_inspect(row)
+        # Do NOT touch row.amount_usd here: SQLAlchemy expires an object's
+        # attributes after a failed UPDATE flush, and re-reading an expired
+        # attribute issues a reload query — which raises PendingRollbackError
+        # on this still-dirty session (the same fail-closed behavior Case 3
+        # pins), not a silent stale/masked read. `mutated_amount` (the value
+        # this test itself assigned, captured above) stands in for what the
+        # identity map was holding immediately before the failed flush.
+        print(
+            f"    object state pre-rollback: persistent={state.persistent} "
+            f"expired={state.expired} (in-memory value this test assigned "
+            f"before the rejected flush: {mutated_amount!r} — reading the "
+            f"live attribute here would itself raise PendingRollbackError, "
+            f"proving the session refuses to serve a possibly-stale value "
+            f"rather than masking one)"
+        )
+        with engine.connect() as check_conn:
+            db_value = check_conn.execute(
+                text("SELECT amount_usd FROM paper_book_cash_ledger WHERE ledger_entry_id='le-3'")
+            ).scalar()
+        print(f"    DB value from a genuinely independent connection, pre-rollback: {db_value!r}")
+        session.rollback()
+        session.expire(row)
+        state = sa_inspect(row)
+        refreshed_amount = row.amount_usd  # triggers a re-SELECT since row was expired
+        print(
+            f"    object state post-rollback: persistent={state.persistent} "
+            f"re-fetched-from-DB amount_usd={refreshed_amount!r}"
+        )
+        if db_value == original_amount and refreshed_amount == original_amount:
+            print(
+                "PASS: the rejected UPDATE's in-memory mutation never became "
+                "durable — an independent connection saw the original value "
+                "throughout, and the identity map itself reverts to the true "
+                "DB value on refresh after rollback (no masking of the "
+                "rejected ORM UPDATE)"
+            )
+        else:
+            print(
+                f"FAIL: the append-only row's value diverged from the original "
+                f"{original_amount!r} (db_value={db_value!r}, "
+                f"refreshed={refreshed_amount!r}) — masking risk substantiated "
+                f"for ORM UPDATE"
+            )
+    session.close()
+
+
 class TriggerProtectedTableORMGuard(Exception):
     """Raised by the Core-only architectural guard, before any SQL is
     emitted, when an ORM session attempts to flush a change against a
@@ -417,7 +539,46 @@ class TriggerProtectedTableORMGuard(Exception):
     recommendation."""
 
 
-TRIGGER_PROTECTED_TABLES = {"real_orders", "paper_book_cash_ledger"}
+def discover_trigger_protected_tables_from_production_schema() -> frozenset[str]:
+    """Derives the Core-only guard's table policy from the *actual*
+    production schema DDL — the centralized, authoritative source review
+    finding "Enforce Core-only access for every trigger-protected table"
+    required — instead of a hand-maintained allowlist that silently omits
+    tables. A hand-maintained set (the original `{"real_orders",
+    "paper_book_cash_ledger"}`) covered only 2 of the 50 tables production
+    actually protects with a write-rejecting trigger, including
+    `paper_book_fills`, `research_attempts`, `research_attempt_failures`,
+    and `research_cycle_provider_provenance_links` cited in that finding.
+
+    Scans every `src/trading_research/storage/*_schema.py` module for a
+    `CREATE TRIGGER ... BEFORE {INSERT,UPDATE,DELETE} ON <table> ... END;`
+    block (unconditional or `WHEN`-conditional, e.g. `recommendations`'
+    frozen-row guard) whose body contains `RAISE(ABORT`, and collects
+    `<table>`. Because this re-derives the set from the same production
+    files on every run, a future table gaining a write-rejecting trigger is
+    picked up automatically — the guard cannot go stale by omission the way
+    a hardcoded set could.
+    """
+    schema_dir = (
+        Path(__file__).resolve().parents[3] / "src" / "trading_research" / "storage"
+    )
+    trigger_block = re.compile(
+        r"CREATE TRIGGER.*?BEFORE\s+(?:INSERT|UPDATE|DELETE)\s+ON\s+(\w+).*?END;",
+        re.DOTALL,
+    )
+    tables: set[str] = set()
+    for schema_file in sorted(schema_dir.glob("*_schema.py")):
+        source = schema_file.read_text(encoding="utf-8")
+        for match in trigger_block.finditer(source):
+            if "RAISE(ABORT" in match.group(0):
+                tables.add(match.group(1))
+    return frozenset(tables)
+
+
+TRIGGER_PROTECTED_TABLES = discover_trigger_protected_tables_from_production_schema()
+assert {"real_orders", "paper_book_cash_ledger"} <= TRIGGER_PROTECTED_TABLES, (
+    "discovery regressed: lost the two tables cases 1-7 exercise against real DDL"
+)
 
 
 def _reject_protected_table_orm_writes(session, flush_context, instances) -> None:
@@ -431,9 +592,9 @@ def _reject_protected_table_orm_writes(session, flush_context, instances) -> Non
             )
 
 
-def case_7_core_only_guard_blocks_every_orm_session_construction_path(engine) -> None:
+def case_8_core_only_guard_blocks_every_orm_session_construction_path(engine) -> None:
     _log(
-        "Case 7: architectural Core-only guard — does a `before_flush` guard "
+        "Case 8: architectural Core-only guard — does a `before_flush` guard "
         "registered on the ORM `Session` class block every permitted session "
         "construction path *before* any SQL reaches the trigger, while Core "
         "access keeps working unmodified?"
@@ -513,6 +674,85 @@ def case_7_core_only_guard_blocks_every_orm_session_construction_path(engine) ->
         event.remove(SASession, "before_flush", _reject_protected_table_orm_writes)
 
 
+def case_9_core_only_guard_covers_every_discovered_protected_table() -> None:
+    """Regression for review finding: "Enforce Core-only access for every
+    trigger-protected table". Cases 1-8 only ever exercise the guard against
+    `real_orders`/`paper_book_cash_ledger` — the two tables with real DDL
+    reproduced in this file. This case proves the guard's *coverage*, not
+    its blocking mechanism (already proven pre-SQL by case 8): every one of
+    the `TRIGGER_PROTECTED_TABLES` derived from the real production schema
+    (currently 50 tables, not 2) is rejected by
+    `_reject_protected_table_orm_writes` before any SQL is emitted. Uses a
+    disposable, single-column synthetic table per discovered name — full
+    production DDL/triggers for 50 tables is out of scope here and
+    unnecessary, since the guard only inspects `obj.__table__.name` and
+    fires before any SQL reaches a real trigger.
+    """
+    _log(
+        "Case 9: does the Core-only guard block ORM writes against *every* "
+        "trigger-protected table discovered from the production schema, not "
+        "just the two representative tables cases 1-8 exercise?"
+    )
+    print(
+        f"    discovered {len(TRIGGER_PROTECTED_TABLES)} trigger-protected "
+        f"tables from src/trading_research/storage/*_schema.py"
+    )
+    from sqlalchemy.orm import Session as SASession
+    from sqlalchemy.pool import StaticPool
+
+    synthetic_engine = create_engine("sqlite:///:memory:", future=True, poolclass=StaticPool)
+    synthetic_metadata = MetaData()
+    synthetic_tables = {
+        name: Table(name, synthetic_metadata, Column("id", Integer, primary_key=True))
+        for name in sorted(TRIGGER_PROTECTED_TABLES)
+    }
+    synthetic_metadata.create_all(synthetic_engine)
+
+    synthetic_registry = registry()
+    mapped_classes = {}
+    for name, table in synthetic_tables.items():
+        mapped_cls = type(f"Synthetic_{name}", (), {})
+        synthetic_registry.map_imperatively(mapped_cls, table)
+        mapped_classes[name] = mapped_cls
+
+    event.listen(SASession, "before_flush", _reject_protected_table_orm_writes)
+    blocked: list[str] = []
+    not_blocked: list[str] = []
+    try:
+        for name, mapped_cls in mapped_classes.items():
+            session = SASession(bind=synthetic_engine)
+            session.add(mapped_cls())
+            try:
+                session.flush()
+                not_blocked.append(name)
+            except TriggerProtectedTableORMGuard:
+                blocked.append(name)
+            except Exception as exc:  # pragma: no cover - diagnostic only
+                not_blocked.append(f"{name} ({type(exc).__name__})")
+            session.close()
+    finally:
+        event.remove(SASession, "before_flush", _reject_protected_table_orm_writes)
+
+    if not_blocked:
+        print(
+            f"FAIL: guard did not block {len(not_blocked)} discovered "
+            f"protected table(s): {sorted(not_blocked)}"
+        )
+    else:
+        previously_omitted = [
+            "paper_book_fills",
+            "research_attempts",
+            "research_attempt_failures",
+            "research_cycle_provider_provenance_links",
+        ]
+        assert all(name in blocked for name in previously_omitted)
+        print(
+            f"PASS: guard blocked ORM writes pre-SQL for all {len(blocked)} "
+            f"discovered trigger-protected tables, including the tables the "
+            f"prior 2-table allowlist omitted: {previously_omitted}"
+        )
+
+
 if __name__ == "__main__":
     import sqlalchemy
 
@@ -524,5 +764,7 @@ if __name__ == "__main__":
     case_4_batched_flush_partial_visibility(engine)
     case_5_core_append_only_allows_insert_rejects_update_delete(engine)
     case_6_orm_relationship_cascade_hits_trigger(engine)
-    case_7_core_only_guard_blocks_every_orm_session_construction_path(engine)
+    case_7_orm_update_existing_row_masking(engine)
+    case_8_core_only_guard_blocks_every_orm_session_construction_path(engine)
+    case_9_core_only_guard_covers_every_discovered_protected_table()
     print("\nDone.")

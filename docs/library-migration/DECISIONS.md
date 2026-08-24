@@ -1272,32 +1272,34 @@ license or dependency-weight blocker exists for either package.
 
 **Question (a), empirically tested — masking hypothesis withdrawn.** A
 scratch reproduction (`pr13/scratch_trigger_orm_vs_core.py`) copy-pasted the
-exact production trigger DDL for `real_orders` (fully reserved — every
-write rejected) and `paper_book_cash_ledger` (append-only — insert allowed,
-update/delete rejected) and drove both via SQLAlchemy Core statements and an
-ORM `Session`, including two adversarial cases beyond the original
-hypothesis: a caller that forgets to call `session.rollback()` after a
-rejected flush (SQLAlchemy raises `PendingRollbackError` on the next
-operation rather than proceeding), and an ORM relationship configured with
-`cascade="all, delete-orphan"` deleting a parent row (the cascade still
-issues a real `DELETE` the trigger still rejects, rather than resolving
-silently in the identity map). In every one of six cases the trigger fired,
-the exception propagated, and no object was left appearing "persistent" in
-memory before rollback. **The PR 0 theoretical concern that ORM
-usage could mask a trigger rejection is withdrawn as unsubstantiated** for
-SQLAlchemy 2.0.52 against these two representative tables — this is a
-correction to `DEPENDENCY_MATRIX.md` Section 5, not a reason to adopt.
-Separately, a seventh case proves the Core-only boundary MASTER_PLAN.md row
-13 requires can be *enforced*, not just followed by convention: a
-`before_flush` guard registered once on the ORM `Session` class rejects a
-flush against either table, before any SQL is emitted, through both a
-`sessionmaker()`-produced session and a directly constructed
-`Session(bind=...)`, while Core statements against the same tables continue
-to work unmodified. Core-only for trigger-protected tables remains the
-recommendation for any future adoption regardless, as an auditability
-preference (Core SQL maps 1:1 onto the exact statements the triggers were
-written against) with a proven enforcement mechanism available, not because
-the ORM was found unsafe.
+exact production trigger DDL for `real_orders` (fully reserved) and
+`paper_book_cash_ledger` (append-only) and drove both via Core and ORM,
+against a file-backed SQLite database so independent visibility checks use
+a genuinely separate DBAPI connection, not the same connection an in-memory
+`StaticPool` engine would silently reuse. Three adversarial cases went
+beyond the original hypothesis: an unhandled failed flush (`PendingRollbackError` on the next
+operation), a `cascade="all, delete-orphan"` DELETE (still a real,
+trigger-rejected `DELETE`), and an ORM UPDATE on an already-loaded row
+through the identity map (rejected identically; re-reading the mutated
+attribute pre-rollback itself raises `PendingRollbackError`, and the value
+post-rollback matches the database exactly). All seven cases failed
+closed; no object appeared "persistent" and no attribute returned a
+stale/masked value. This is **withdrawn as unsubstantiated** for
+SQLAlchemy 2.0.52 across INSERT/UPDATE/cascade DELETE — a correction to
+`DEPENDENCY_MATRIX.md` Section 5, not a reason to adopt. An eighth case
+proves the Core-only boundary can be *enforced*: a `before_flush` guard on
+the ORM `Session` class rejects a flush against either table pre-SQL,
+through both a `sessionmaker()` session and `Session(bind=...)`, while Core
+still works. A ninth case proves that guard's table policy is *complete*,
+not just correct for these two tables: `TRIGGER_PROTECTED_TABLES` is
+derived by scanning production schema modules for write-rejecting triggers
+(50 tables, not 2) and the guard rejects
+ORM writes pre-SQL against every one, including `paper_book_fills`,
+`research_attempts`, `research_attempt_failures`, and
+`research_cycle_provider_provenance_links`, omitted by the prior allowlist; re-deriving from production means a future protected table
+cannot fall outside guard coverage. Core-only for trigger-protected tables
+remains the recommendation regardless, as an auditability preference with a
+proven, self-updating mechanism — not because the ORM is unsafe.
 
 **Question (b), empirically tested — constrainable, but only with an added
 guard.** A second scratch reproduction (`pr13/scratch_alembic_linearity.py`)

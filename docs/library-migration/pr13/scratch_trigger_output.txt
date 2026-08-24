@@ -13,9 +13,9 @@ PASS: SQLAlchemy fails closed — a session left dirty by an unhandled flush err
 
 === Case 4: multi-object flush, one row rejected — does any object in the batch look 'flushed'/persistent in memory before rollback (masking risk)? ===
     pre-rollback: good.persistent=False good.pending=False bad.persistent=False
-    DB row count for 'good' row while session still open, pre-rollback: 0
-    post-rollback: good.persistent=False good.transient=True DB row count: 0
-PASS: the whole flush is one transaction — the legal row's DB write was rolled back along with the illegal one (atomic, not masked)
+    DB row count for 'good' row from a genuinely independent connection, checked immediately after the caught IntegrityError (after SQLAlchemy's internal rollback, before this test's explicit session.rollback()): 0
+    post-rollback: good.persistent=False good.transient=True DB row count from an independent connection: 0
+PASS: a truly independent connection never observed the legal row at either checkpoint — the whole flush is one atomic transaction, and its failure left no trace once SQLAlchemy's own fail-closed rollback ran (post-failure state, not a mid-transaction pending-write leak)
 
 === Case 5: Core against paper_book_cash_ledger — INSERT allowed, UPDATE/DELETE rejected (control) ===
     Core insert succeeded (expected)
@@ -26,9 +26,22 @@ PASS: Core delete rejected — paper_book_cash_ledger is append-only
     book-3 has 1 ledger entries in the relationship collection
 PASS: ORM relationship cascade still issues a real DELETE that the trigger blocks — paper_book_cash_ledger is append-only
 
-=== Case 7: architectural Core-only guard — does a `before_flush` guard registered on the ORM `Session` class block every permitted session construction path *before* any SQL reaches the trigger, while Core access keeps working unmodified? ===
+=== Case 7: ORM UPDATE — load an existing paper_book_cash_ledger row through the identity map, mutate a protected field, flush (must be rejected) — is the trigger-rejected UPDATE masked by the already-persistent object's in-memory state, before and after rollback? ===
+    loaded existing row via ORM identity map: amount_usd='10.00'
+    object state pre-flush: persistent=True dirty(in session.dirty)=True in-memory amount_usd='999.00'
+PASS: ORM update rejected — paper_book_cash_ledger is append-only
+    object state pre-rollback: persistent=True expired=True (in-memory value this test assigned before the rejected flush: '999.00' — reading the live attribute here would itself raise PendingRollbackError, proving the session refuses to serve a possibly-stale value rather than masking one)
+    DB value from a genuinely independent connection, pre-rollback: '10.00'
+    object state post-rollback: persistent=True re-fetched-from-DB amount_usd='10.00'
+PASS: the rejected UPDATE's in-memory mutation never became durable — an independent connection saw the original value throughout, and the identity map itself reverts to the true DB value on refresh after rollback (no masking of the rejected ORM UPDATE)
+
+=== Case 8: architectural Core-only guard — does a `before_flush` guard registered on the ORM `Session` class block every permitted session construction path *before* any SQL reaches the trigger, while Core access keeps working unmodified? ===
 PASS: sessionmaker() session blocked pre-SQL by TriggerProtectedTableORMGuard — ORM session flush blocked before any SQL was emitted: 'real_orders' is a trigger-protected table — use Core statements only
 PASS: Session(bind=...) session blocked pre-SQL by TriggerProtectedTableORMGuard — ORM session flush blocked before any SQL was emitted: 'paper_book_cash_ledger' is a trigger-protected table — use Core statements only
 PASS: Core statements still work with the guard installed — the guard is ORM-session-flush-only and never intercepts Core
+
+=== Case 9: does the Core-only guard block ORM writes against *every* trigger-protected table discovered from the production schema, not just the two representative tables cases 1-8 exercise? ===
+    discovered 50 trigger-protected tables from src/trading_research/storage/*_schema.py
+PASS: guard blocked ORM writes pre-SQL for all 50 discovered trigger-protected tables, including the tables the prior 2-table allowlist omitted: ['paper_book_fills', 'research_attempts', 'research_attempt_failures', 'research_cycle_provider_provenance_links']
 
 Done.
