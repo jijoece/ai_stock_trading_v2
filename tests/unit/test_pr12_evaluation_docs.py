@@ -284,8 +284,8 @@ def test_status_completed_work_records_the_added_test_file():
     assert "No test file was added or modified" not in section
     assert "test_pr12_evaluation_docs.py" in section
     assert "3119" not in section
-    assert "3272 passed, 57" in section
-    assert "3144 passed, 106" in section
+    assert "3273 passed, 57" in section
+    assert "3145 passed, 106" in section
     assert "PLACEHOLDER" not in section
 
 
