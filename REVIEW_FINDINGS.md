@@ -3,32 +3,46 @@
 ## Review Metadata
 
 - Repository: `/Users/jijopaul/workspace/ai_stock_trading_v2`
-- Branch: `migration/11-quantstats-analytics-parity`
-- Reviewed HEAD: `5b2ea86e808691d5153bb7529763cb57f0b1c345`
-- Subject: PR 11: QuantStats/analytics fixture-parity migration
-- Claude commits reviewed: 5b2ea86e808691d5153bb7529763cb57f0b1c345
+- Branch: `migration/12-riskfolio-lib-evaluation`
+- Reviewed HEAD: `dc4e71b6a8497af26d027a8b446fbb9088cfcce0`
+- Subject: PR 12: Riskfolio-Lib evaluation only — defer, not adopted
+- Claude commits reviewed: dc4e71b6a8497af26d027a8b446fbb9088cfcce0
+- Review scope: FULL_PR
+- Reviewed base: `611b3dfeb0d485d00461ee2a5c3f15e13c0b153f`
+- GitHub PR: #29
+- Fix round: 0
 - Trigger: local Git `post-commit`
 - Review status: FIXES_APPLIED_PENDING_REVIEW
 - Highest priority: P2
 - Finding count: 0
-- Fix commit: `9f63d0c53ae7c2619311b42e55443dd43698acf5`
+- Fix commit: `faa4a9bcb7aa3fef15230a1909c1c5be8908e842`
 
 ## Findings
 
-### [P2] Preserve empty-input semantics before declaring parity
+### [P2] Account for the repository's Python 3.10 floor
 
-Commit: `5b2ea86e808691d5153bb7529763cb57f0b1c345`
+Commit: `dc4e71b6a8497af26d027a8b446fbb9088cfcce0`
 
-Location: [analytics_parity.py](./src/trading_research/evaluation/analytics_parity.py) (lines 90, 142) and [test_analytics_parity.py](./tests/unit/test_analytics_parity.py) (line 84)
+Location: `/Users/jijopaul/workspace/ai_stock_trading_v2/docs/library-migration/pr12/EVALUATION.md:55`
 
-Problem: `cumulative_return_parity()` and `max_drawdown_parity()` do not preserve the authoritative functions' behavior for empty input when `min_sample_size=0`, despite the commit marking fixture parity.
+Problem: An active GitHub review thread remains unresolved:
 
-Evidence: The existing public functions accept `min_sample_size=0`. For empty input, `metrics.cumulative_return([], min_sample_size=0)` returns `OK` with `Decimal("0")`, and `metrics.max_drawdown([], min_sample_size=0)` also returns `OK` with `Decimal("0")`.
+> **<sub><sub>![P2 Badge](https://img.shields.io/badge/P2-yellow?style=flat)</sub></sub>  Account for the repository's Python 3.10 floor**
+>
+> The compatibility conclusion is only established on Python 3.14. On the repository's declared Python 3.10 minimum, the adopted `vectorbt>=1.1.0,<1.2` range cannot resolve because VectorBT 1.1 requires Python >=3.11 (as the `research`-extra comment and `DEPENDENCY_MATRIX.md` already document). Therefore a future installation combining Riskfolio-Lib with the adopted VectorBT constraint would still require either a Python-floor increase or an explicitly narrower optional extra; record that limitation instead of describing the pairing as unconditionally conflict-free.
+>
+> AGENTS.md reference: [AGENTS.md:L68-L68](https://github.com/jijoece/ai_stock_trading_v2/blob/dc4e71b6a8497af26d027a8b446fbb9088cfcce0/AGENTS.md#L68-L68)
+>
+> Useful? React with 👍 / 👎.
 
-Impact: PR 17 could rely on the recorded parity decision and replace the authoritative implementation, changing a valid public parameter combination from deterministic zero to `NaN`. That can contaminate downstream analytics and reports.
+Evidence: [chatgpt-codex-connector review thread](https://github.com/jijoece/ai_stock_trading_v2/pull/29#discussion_r3839089593) is current, unresolved, and not outdated.
 
-Required fix: Either explicitly handle empty returns in both candidate functions so they reproduce the current zero result, or validate and reject non-positive `min_sample_size` consistently in both old and new implementations.
+Impact: Merging would knowingly carry unresolved review feedback into main.
 
-Validation: Add parity tests for both functions using empty evaluations with `min_sample_size=0`, asserting matching status, sample size, and finite zero value. Also test any chosen rejection contract.
+Required fix: Verify and address the review comment in code and add the requested regression coverage.
 
-Tests or diagnostics run: Inspected the full commit diff and relevant metrics, model, test, dependency, migration, and CI contracts. `git diff --check` passed. Could not execute the canonical Nox suite locally.
+Validation: Run the focused regression test and the repository's canonical validation; a subsequent full-PR review must find no remaining defect.
+
+Resolution: Fixed in `faa4a9bcb7aa3fef15230a1909c1c5be8908e842`. The evaluation now scopes the compatibility result to Python 3.11 and later, explicitly records that the adopted VectorBT constraint cannot resolve on Python 3.10, and carries the same caveat into the recommendation. Regression coverage pins the project floor, the VectorBT floor, and both qualified conclusions.
+
+Tests or diagnostics run: `.venv/bin/python -m pytest tests/unit/test_pr12_evaluation_docs.py -q` (5 passed); `.venv/bin/python -m nox -s ci` (all five sessions passed: tests 3124 passed/106 skipped, paper tests 160 passed, safety typecheck 0 errors, migration smoke passed).
