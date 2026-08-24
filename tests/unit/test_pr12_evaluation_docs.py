@@ -88,33 +88,58 @@ def test_evaluation_states_the_3_10_floor_caveat():
     assert "vectorbt>=1.1.0,<1.2" in section2
 
 
-def test_evaluation_compatibility_claim_is_scoped_to_python_3_11():
-    """The 'do not conflict' claim must be qualified, not floor-independent."""
+def test_evaluation_compatibility_claim_is_scoped_to_tested_interpreters_only():
+    """The 'do not conflict' claim must name only the two interpreters
+    actually tested, not the whole declared `>=3.11,<3.15` range — and must
+    say outright that Python 3.12/3.13 were not tested (PR 29 fix round 9:
+    two tested endpoints do not establish the interval between them)."""
     text = EVALUATION.read_text(encoding="utf-8")
     section2 = _section(text, "## 2.", "## 3.")
     idx = section2.index("do not conflict")
-    scoped = section2[idx : idx + 200]
-    assert ">=3.11" in scoped
-    assert "<3.15" in scoped
+    scoped = section2[idx : idx + 900]
+    assert "3.11.15" in scoped
+    assert "3.14.5rc1" in scoped
+    assert "3.12" in scoped
+    assert "3.13" in scoped
+    assert "were not installed or tested" in scoped
 
 
 def test_recommendation_also_scopes_the_conflict_free_claim():
     text = EVALUATION.read_text(encoding="utf-8")
     section5 = _section(text, "## 5.", "**Decision:")
     idx = section5.index("technically installable")
-    scoped = section5[idx : idx + 250]
-    assert ">=3.11" in scoped
-    assert "<3.15" in scoped
+    scoped = section5[idx : idx + 400]
+    assert "3.11.15" in scoped
+    assert "3.14.5rc1" in scoped
+    assert "3.12" in scoped
+    assert "3.13" in scoped
+    assert "untested" in scoped
     assert "3.10" in scoped
 
 
+def test_evaluation_python_floor_caveat_names_untested_minors():
+    """The Python-floor caveat paragraph must also flag 3.12/3.13 as
+    untested, not just the pre-existing `>=3.10` project-floor gap."""
+    text = EVALUATION.read_text(encoding="utf-8")
+    section2 = _section(text, "## 2.", "## 3.")
+    idx = section2.index("Python-floor caveat")
+    caveat = section2[idx : idx + 400]
+    assert "3.12" in caveat
+    assert "3.13" in caveat
+    assert "not installed or tested" in caveat
+
+
 def test_dependency_matrix_riskfolio_row_scopes_no_conflict_claim():
-    """DEPENDENCY_MATRIX.md's Riskfolio-Lib row must not read as unconditional."""
+    """DEPENDENCY_MATRIX.md's Riskfolio-Lib row must name only the two
+    tested interpreters, not the whole declared range (PR 29 fix round 9)."""
     text = DEPENDENCY_MATRIX.read_text(encoding="utf-8")
     idx = text.index("| Riskfolio-Lib | 7.3.0 |")
-    row = text[idx : idx + 600]
-    assert ">=3.11" in row
-    assert "<3.15" in row
+    row = text[idx : idx + 700]
+    assert "3.11.15" in row
+    assert "3.14.5rc1" in row
+    assert "3.12" in row
+    assert "3.13" in row
+    assert "untested" in row
     assert "3.10" in row
 
 
@@ -122,27 +147,36 @@ def test_dependency_matrix_rejected_deferred_table_scopes_no_conflict_claim():
     """Section 4's rejected/deferred summary row must carry the same caveat."""
     text = DEPENDENCY_MATRIX.read_text(encoding="utf-8")
     idx = text.index("| Riskfolio-Lib | Defer (PR 12, evaluated 2026-08-23)")
-    row = text[idx : idx + 400]
-    assert ">=3.11" in row
-    assert "<3.15" in row
+    row = text[idx : idx + 500]
+    assert "3.11.15" in row
+    assert "3.14.5rc1" in row
+    assert "3.12" in row
+    assert "3.13" in row
+    assert "untested" in row
     assert "3.10" in row
 
 
 def test_master_plan_row_12_scopes_no_conflict_claim():
     text = MASTER_PLAN.read_text(encoding="utf-8")
     idx = text.index("| 12 | Riskfolio-Lib evaluation only |")
-    row = text[idx : idx + 800]
-    assert ">=3.11" in row
-    assert "<3.15" in row
+    row = text[idx : idx + 900]
+    assert "3.11.15" in row
+    assert "3.14.5rc1" in row
+    assert "3.12" in row
+    assert "3.13" in row
+    assert "untested" in row
     assert "3.10" in row
 
 
 def test_component_matrix_portfolio_optimization_row_scopes_conflict_free_claim():
     text = COMPONENT_MATRIX.read_text(encoding="utf-8")
     idx = text.index("| Portfolio optimization |")
-    row = text[idx : idx + 500]
-    assert ">=3.11" in row
-    assert "<3.15" in row
+    row = text[idx : idx + 600]
+    assert "3.11.15" in row
+    assert "3.14.5rc1" in row
+    assert "3.12" in row
+    assert "3.13" in row
+    assert "untested" in row
     assert "3.10" in row
 
 
@@ -150,36 +184,45 @@ def test_decisions_d10_scopes_no_conflict_claim():
     text = DECISIONS.read_text(encoding="utf-8")
     idx = text.index("## D10")
     section = text[idx : idx + 4000]
-    assert ">=3.11" in section
-    assert "<3.15" in section
+    assert "3.11.15" in section
+    assert "3.14.5rc1" in section
+    assert "3.12" in section
+    assert "3.13" in section
     assert "3.10" in section
 
 
 def test_decisions_d10_ruling_scopes_technically_unblocked_claim():
     text = DECISIONS.read_text(encoding="utf-8")
     idx = text.index("**Ruling: defer, do not adopt.**")
-    ruling = text[idx : idx + 500]
+    ruling = text[idx : idx + 600]
     assert "technically installable without" in ruling
-    assert ">=3.11" in ruling
-    assert "<3.15" in ruling
+    assert "3.11.15" in ruling
+    assert "3.14.5rc1" in ruling
+    assert "3.12" in ruling
+    assert "3.13" in ruling
     assert "3.10" in ruling
 
 
 def test_status_current_phase_scopes_no_conflict_claim():
     text = STATUS.read_text(encoding="utf-8")
     idx = text.index("**Current phase: PR 12")
-    section = text[idx : idx + 1000]
-    assert ">=3.11" in section
-    assert "<3.15" in section
+    section = text[idx : idx + 1100]
+    assert "3.11.15" in section
+    assert "3.14.5rc1" in section
+    assert "3.12" in section
+    assert "3.13" in section
+    assert "untested" in section
     assert "3.10" in section
 
 
 def test_status_completed_work_section_scopes_no_conflict_claim():
     text = STATUS.read_text(encoding="utf-8")
     idx = text.index("that Riskfolio-Lib does not conflict with the")
-    scoped = text[idx : idx + 250]
-    assert ">=3.11" in scoped
-    assert "<3.15" in scoped
+    scoped = text[idx : idx + 450]
+    assert "3.11.15" in scoped
+    assert "3.14.5rc1" in scoped
+    assert "3.12" in scoped
+    assert "3.13" in scoped
     assert "3.10" in scoped
 
 

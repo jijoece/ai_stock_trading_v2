@@ -71,16 +71,26 @@ resolved, `pip check` again reported no broken requirements, and `import
 riskfolio` (`7.3.0`) / `import vectorbt` (`1.1.0`) both succeeded (raw
 output in `scratch_output_py311.txt`). This is a live, reproducible
 confirmation that Riskfolio-Lib's floor and the already-adopted VectorBT pin
-do not conflict on Python >=3.11,<3.15 — the range VectorBT 1.1.0 itself
-declares — verified at both the tested development interpreter (3.14.5rc1)
-and the declared floor itself (3.11.15) — not just a reading of declared
-metadata or an inference from a single interpreter. Neither run tested
-Python 3.15+, where VectorBT 1.1.0's own `Requires-Python` ceiling means the
-pairing cannot resolve at all without a future VectorBT upgrade.
+do not conflict **at Python 3.11.15 and 3.14.5rc1** — the two interpreters
+actually installed and tested, both inside VectorBT 1.1.0's own declared
+`>=3.11,<3.15` range — not just a reading of declared metadata or an
+inference from a single interpreter. The same reasoning that ruled out
+extrapolating a single-interpreter install to the whole declared range
+applies here too: **Python 3.12 and 3.13, the two minor versions between
+the tested endpoints, were not installed or tested by either run, and this
+evaluation does not verify them.** Resolver behavior, wheel availability,
+imports, or functional optimization could differ on those interpreters and
+would need their own wheel-only install, `pip check`, and import/smoke test
+before being treated as confirmed. Neither run tested Python 3.15+, where
+VectorBT 1.1.0's own `Requires-Python` ceiling means the pairing cannot
+resolve at all without a future VectorBT upgrade.
 
 **Python-floor caveat.** These confirmations are scoped to the two `>=3.11`
 interpreters tested (3.11.15 and 3.14.5rc1) and do not establish
-conflict-free installation across this repository's full declared floor.
+conflict-free installation across this repository's full declared floor,
+nor across the full `>=3.11,<3.15` range VectorBT 1.1.0 declares — Python
+3.12 and 3.13 were not installed or tested and are not covered by this
+evaluation.
 `pyproject.toml` still declares
 `requires-python = ">=3.10"` project-wide; PR 5 left that unchanged and scoped
 its own `>=3.11` requirement to the `research` extra only
@@ -176,12 +186,14 @@ code" → **do not adopt**, since there is no existing code to compare
 against here) or to VectorBT ("owner-approved exception for a scoped,
 already-consumed capability" → **Adopt**): Riskfolio-Lib is legally
 unblocked (OSI-approved BSD-3, unlike VectorBT) and technically installable
-without conflict on Python >=3.11,<3.15 (not on the project's `>=3.10` floor
-without also raising it to `>=3.11`, and not on Python 3.15+ without a
-future VectorBT upgrade — see Section 2's Python-floor caveat),
-confirmed by live resolution at both the 3.11.15 floor boundary and the
-3.14.5rc1 development interpreter against the already-adopted
-`vectorbt>=1.1.0,<1.2` pin, but its 82-package closure — including several
+without conflict at Python 3.11.15 and 3.14.5rc1 — the only two
+interpreters actually tested, both within VectorBT 1.1.0's own declared
+`>=3.11,<3.15` range (Python 3.12 and 3.13 remain untested; not on the
+project's `>=3.10` floor without also raising it to `>=3.11`, and not on
+Python 3.15+ without a future VectorBT upgrade — see Section 2's
+Python-floor caveat), confirmed by live resolution at both the 3.11.15
+floor boundary and the 3.14.5rc1 development interpreter against the
+already-adopted `vectorbt>=1.1.0,<1.2` pin, but its 82-package closure — including several
 packages with no other purpose in this codebase (Jupyter widgets, a second
 charting library, multiple QP solver backends, `astropy`) — is not justified
 by any concrete current consumer. Per the advisory-only constraint this PR
