@@ -2,11 +2,14 @@
 
 Scope per `MASTER_PLAN.md` row 12: **evaluation only.** No dependency is
 added to `pyproject.toml`; no file under `src/`, `scripts/`,
-`paper_runtime/src/`, `backtest_runtime/`, or `tests/` is modified by this
-PR. `docs/library-migration/pr12/scratch_smoke_test.py` and
-`scratch_output.txt` (this directory) are a scratch reproduction, not merged
-into `src/` — mirroring the pattern PR 2 established for an
-evaluation-only phase.
+`paper_runtime/src/`, or `backtest_runtime/` is modified by this PR.
+`docs/library-migration/pr12/scratch_smoke_test.py`, `scratch_output.txt`,
+and `scratch_output_py311.txt` (this directory) are a scratch reproduction,
+not merged into `src/` — mirroring the pattern PR 2 established for an
+evaluation-only phase. This PR's review fix rounds added one regression
+test, `tests/unit/test_pr12_evaluation_docs.py`, which checks only that this
+directory's documentation states the facts above consistently — it adds no
+application code and exercises no trading capability.
 
 ## 1. What Riskfolio-Lib would add
 
@@ -43,8 +46,9 @@ terms (`DECISIONS.md` D4), Riskfolio-Lib carries no fair-code restriction
 requiring an owner exception. This resolves the "OSI-compatible resolution"
 open item `DEPENDENCY_MATRIX.md` Section 6 listed as outstanding.
 
-**Hard dependency on VectorBT — confirmed, and confirmed compatible on
-Python >=3.11 (not on the repository's project-wide Python floor).**
+**Hard dependency on VectorBT — confirmed, and confirmed compatible at both
+tested ends of the Python >=3.11 range (not on the repository's
+project-wide Python floor).**
 `requires_dist` includes `vectorbt>=0.28.0` (no upper bound), reconfirming
 `DEPENDENCY_MATRIX.md`'s existing row ("not a documentation error"). Installed
 into a clean scratch virtualenv (`python3 -m venv`, wheel-only:
@@ -52,13 +56,28 @@ into a clean scratch virtualenv (`python3 -m venv`, wheel-only:
 3.14.5rc1 — this development machine, matching the interpreter PR 4/PR 5 also
 verified against), pip's resolver picked **`vectorbt==1.1.0`** — exactly the
 version already pinned by the approved `research` extra's
-`vectorbt>=1.1.0,<1.2` (`pyproject.toml`, PR 5). This is a live, reproducible
-confirmation that Riskfolio-Lib's floor and the already-adopted VectorBT pin
-do not conflict on Python >=3.11, not just a reading of declared metadata.
+`vectorbt>=1.1.0,<1.2` (`pyproject.toml`, PR 5).
 
-**Python-floor caveat.** This confirmation is scoped to the interpreter it ran
-on and does not establish conflict-free installation across this repository's
-full declared floor. `pyproject.toml` still declares
+A prior review round of this PR correctly noted that a single Python 3.14
+install does not establish compatibility across the full declared
+`>=3.11` range — VectorBT 1.1.0's own `Requires-Python: >=3.11,<3.15`
+classifier makes 3.11 the actual floor, not 3.14. A second, independent
+wheel-only install of the identical `riskfolio-lib==7.3.0` was therefore run
+in a second disposable scratch virtualenv on **Python 3.11.15** (macOS
+arm64) — the declared floor boundary itself, not an extrapolation from it.
+pip's resolver again picked `vectorbt==1.1.0`, the same 82-package closure
+resolved, `pip check` again reported no broken requirements, and `import
+riskfolio` (`7.3.0`) / `import vectorbt` (`1.1.0`) both succeeded (raw
+output in `scratch_output_py311.txt`). This is a live, reproducible
+confirmation that Riskfolio-Lib's floor and the already-adopted VectorBT pin
+do not conflict on Python >=3.11, verified at both the tested development
+interpreter (3.14.5rc1) and the declared floor itself (3.11.15) — not just
+a reading of declared metadata or an inference from a single interpreter.
+
+**Python-floor caveat.** These confirmations are scoped to the two `>=3.11`
+interpreters tested (3.11.15 and 3.14.5rc1) and do not establish
+conflict-free installation across this repository's full declared floor.
+`pyproject.toml` still declares
 `requires-python = ">=3.10"` project-wide; PR 5 left that unchanged and scoped
 its own `>=3.11` requirement to the `research` extra only
 (`DEPENDENCY_MATRIX.md` Section 2). VectorBT 1.1.0 itself requires
@@ -71,9 +90,11 @@ already-documented `>=3.11` floor or a project-wide floor increase to
 `>=3.11`; it would not resolve on a bare Python 3.10 install of the base
 project. This evaluation does not claim otherwise.
 
-Full install: **82 packages**, wheel-only (no source compilation on this
-platform), `pip check` reported **no broken requirements**, `import
-riskfolio` and `import vectorbt` both succeeded. Key resolved versions:
+Full install (Python 3.14.5rc1 run): **82 packages**, wheel-only (no source
+compilation on this platform), `pip check` reported **no broken
+requirements**, `import riskfolio` and `import vectorbt` both succeeded. The
+Python 3.11.15 run resolved the same 82-package closure with the same
+clean `pip check` and import result. Key resolved versions (3.14.5rc1 run):
 
 | Package | Resolved version |
 |---|---|
@@ -151,10 +172,11 @@ code" → **do not adopt**, since there is no existing code to compare
 against here) or to VectorBT ("owner-approved exception for a scoped,
 already-consumed capability" → **Adopt**): Riskfolio-Lib is legally
 unblocked (OSI-approved BSD-3, unlike VectorBT) and technically installable
-without conflict on Python >=3.11 (confirmed by live resolution against the
-already-adopted `vectorbt>=1.1.0,<1.2` pin; see Section 2's Python-floor
-caveat — this does not hold on the project's `>=3.10` floor without also
-raising it to `>=3.11`), but its 82-package closure — including several
+without conflict on Python >=3.11 (not on the project's `>=3.10` floor
+without also raising it to `>=3.11` — see Section 2's Python-floor caveat),
+confirmed by live resolution at both the 3.11.15 floor boundary and the
+3.14.5rc1 development interpreter against the already-adopted
+`vectorbt>=1.1.0,<1.2` pin, but its 82-package closure — including several
 packages with no other purpose in this codebase (Jupyter widgets, a second
 charting library, multiple QP solver backends, `astropy`) — is not justified
 by any concrete current consumer. Per the advisory-only constraint this PR
