@@ -47,8 +47,9 @@ requiring an owner exception. This resolves the "OSI-compatible resolution"
 open item `DEPENDENCY_MATRIX.md` Section 6 listed as outstanding.
 
 **Hard dependency on VectorBT — confirmed, and confirmed compatible at both
-tested ends of the Python >=3.11 range (not on the repository's
-project-wide Python floor).**
+tested ends of the Python >=3.11,<3.15 range (not on the repository's
+project-wide Python floor, and not beyond VectorBT 1.1.0's own `<3.15`
+ceiling).**
 `requires_dist` includes `vectorbt>=0.28.0` (no upper bound), reconfirming
 `DEPENDENCY_MATRIX.md`'s existing row ("not a documentation error"). Installed
 into a clean scratch virtualenv (`python3 -m venv`, wheel-only:
@@ -70,9 +71,12 @@ resolved, `pip check` again reported no broken requirements, and `import
 riskfolio` (`7.3.0`) / `import vectorbt` (`1.1.0`) both succeeded (raw
 output in `scratch_output_py311.txt`). This is a live, reproducible
 confirmation that Riskfolio-Lib's floor and the already-adopted VectorBT pin
-do not conflict on Python >=3.11, verified at both the tested development
-interpreter (3.14.5rc1) and the declared floor itself (3.11.15) — not just
-a reading of declared metadata or an inference from a single interpreter.
+do not conflict on Python >=3.11,<3.15 — the range VectorBT 1.1.0 itself
+declares — verified at both the tested development interpreter (3.14.5rc1)
+and the declared floor itself (3.11.15) — not just a reading of declared
+metadata or an inference from a single interpreter. Neither run tested
+Python 3.15+, where VectorBT 1.1.0's own `Requires-Python` ceiling means the
+pairing cannot resolve at all without a future VectorBT upgrade.
 
 **Python-floor caveat.** These confirmations are scoped to the two `>=3.11`
 interpreters tested (3.11.15 and 3.14.5rc1) and do not establish
@@ -172,8 +176,9 @@ code" → **do not adopt**, since there is no existing code to compare
 against here) or to VectorBT ("owner-approved exception for a scoped,
 already-consumed capability" → **Adopt**): Riskfolio-Lib is legally
 unblocked (OSI-approved BSD-3, unlike VectorBT) and technically installable
-without conflict on Python >=3.11 (not on the project's `>=3.10` floor
-without also raising it to `>=3.11` — see Section 2's Python-floor caveat),
+without conflict on Python >=3.11,<3.15 (not on the project's `>=3.10` floor
+without also raising it to `>=3.11`, and not on Python 3.15+ without a
+future VectorBT upgrade — see Section 2's Python-floor caveat),
 confirmed by live resolution at both the 3.11.15 floor boundary and the
 3.14.5rc1 development interpreter against the already-adopted
 `vectorbt>=1.1.0,<1.2` pin, but its 82-package closure — including several

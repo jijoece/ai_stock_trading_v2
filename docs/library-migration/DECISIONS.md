@@ -1197,10 +1197,11 @@ into a clean scratch virtualenv resolved 82 packages, `pip check` clean, no
 source compilation. Its `vectorbt>=0.28.0` floor resolved to
 **`vectorbt==1.1.0`** — the exact version already pinned by the `research`
 extra's `vectorbt>=1.1.0,<1.2` (PR 5) — confirming no conflict with the
-already-adopted dependency on Python >=3.11, live rather than by reading
-declared metadata alone; the same `vectorbt>=1.1.0,<1.2` range cannot
-resolve on this repository's `>=3.10` project-wide floor without also
-raising it to `>=3.11`. The closure includes several packages with no other purpose in this
+already-adopted dependency on Python >=3.11,<3.15, live rather than by
+reading declared metadata alone; the same `vectorbt>=1.1.0,<1.2` range
+cannot resolve on this repository's `>=3.10` project-wide floor without
+also raising it to `>=3.11`, nor on Python 3.15+ without a future VectorBT
+upgrade. The closure includes several packages with no other purpose in this
 repository: Jupyter widget support (`ipywidgets`, `anywidget`,
 `jupyterlab_widgets`, `widgetsnbextension`), a second charting library
 (`plotly`, alongside the existing `streamlit`), multiple QP/conic solver
@@ -1229,8 +1230,9 @@ for Pandera/PyArrow ("no concrete current need exists" → Defer) rather than
 Pydantic's bar (no existing code to compare against here) or VectorBT's
 (an owner-approved exception consumed immediately by a scoped adapter):
 Riskfolio-Lib is legally unblocked and technically installable without
-conflict on Python >=3.11 (not on this repository's `>=3.10` project-wide
-floor without also raising it) but not justified by any current consumer,
+conflict on Python >=3.11,<3.15 (not on this repository's `>=3.10`
+project-wide floor without also raising it, nor on Python 3.15+ without a
+future VectorBT upgrade) but not justified by any current consumer,
 and even an adopted Riskfolio-Lib could not become
 authoritative over sizing or risk decisions per the binding advisory-only
 constraint. **`riskfolio-lib` is not added to any dependency declaration.**

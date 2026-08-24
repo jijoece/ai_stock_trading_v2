@@ -9,9 +9,10 @@
 added.** License re-verified OSI-approved (BSD-3-Clause); a live scratch
 install confirmed Riskfolio-Lib's `vectorbt>=0.28.0` hard dependency
 resolves cleanly to the already-adopted `vectorbt==1.1.0` (PR 5) with no
-conflict on Python >=3.11 (the adopted `vectorbt>=1.1.0,<1.2` range cannot
-resolve on this repository's `>=3.10` project-wide floor without also
-raising it), but the resulting 82-package closure has no current in-repo
+conflict on Python >=3.11,<3.15 (the adopted `vectorbt>=1.1.0,<1.2` range
+cannot resolve on this repository's `>=3.10` project-wide floor without
+also raising it, nor on Python 3.15+ without a future VectorBT upgrade),
+but the resulting 82-package closure has no current in-repo
 consumer (`COMPONENT_MATRIX.md`'s "Portfolio optimization" row: no existing
 implementation) — so `riskfolio-lib` is **not added** to any dependency
 declaration. See "Completed work (PR 12)" below.
@@ -2710,9 +2711,10 @@ check` clean and no source compilation; its `vectorbt>=0.28.0` hard
 dependency resolved to **`vectorbt==1.1.0`**, the exact version already
 pinned by the approved `research` extra (PR 5) — confirmed live, not only by
 reading declared metadata, that Riskfolio-Lib does not conflict with the
-already-adopted VectorBT pin on Python >=3.11 (the same `vectorbt>=1.1.0,<1.2`
-range cannot resolve on this repository's `>=3.10` project-wide floor without
-also raising it to `>=3.11`) — confirmed at both the 3.14.5rc1 development
+already-adopted VectorBT pin on Python >=3.11,<3.15 (the same
+`vectorbt>=1.1.0,<1.2` range cannot resolve on this repository's `>=3.10`
+project-wide floor without also raising it to `>=3.11`, nor on Python
+3.15+ without a future VectorBT upgrade) — confirmed at both the 3.14.5rc1 development
 interpreter and, in a later review fix round, an independent second install
 on Python 3.11.15 itself (the actual floor boundary VectorBT's
 `>=3.11,<3.15` classifier declares), which resolved the same 82-package
@@ -2745,7 +2747,7 @@ added during this PR's review fix rounds, not new application code.
 **Tests run:**
 - `tests/unit/test_pr12_evaluation_docs.py` was added during this PR's
   review fix rounds (not present in the original evaluation-only commit).
-  It pins the Python >=3.11 qualification into `EVALUATION.md`,
+  It pins the Python >=3.11,<3.15 qualification into `EVALUATION.md`,
   `DEPENDENCY_MATRIX.md`, `MASTER_PLAN.md`, `COMPONENT_MATRIX.md`,
   `DECISIONS.md` D10, and this file, and pins the independent Python 3.11
   boundary verification recorded above. The scratch reproductions still run

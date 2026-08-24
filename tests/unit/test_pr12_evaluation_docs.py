@@ -30,6 +30,15 @@ defects, each pinned by a further test below:
    `test_pr12_evaluation_docs.py` (this file) was added in fix round 1.
 3. `STATUS.md` still labeled the already-merged PR 11 as "IMPLEMENTED, NOT
    MERGED", contradicting `git log` (PR 11 merged as PR #28, `611b3df`).
+
+A third follow-up review round (PR 29 fix round 3) found that every
+canonical record's "conflict-free"/"no conflict" conclusion was qualified
+only with the lower bound (`>=3.11`), never the upper one — even though
+VectorBT 1.1.0's own `Requires-Python` classifier is `>=3.11,<3.15`, so the
+adopted `vectorbt>=1.1.0,<1.2` pin cannot resolve on Python 3.15+ either.
+The tests below require both bounds (`>=3.11` and `<3.15`) wherever a
+record states the compatibility conclusion, so a regression that drops
+either bound fails here.
 """
 from __future__ import annotations
 
@@ -84,6 +93,7 @@ def test_evaluation_compatibility_claim_is_scoped_to_python_3_11():
     idx = section2.index("do not conflict")
     scoped = section2[idx : idx + 200]
     assert ">=3.11" in scoped
+    assert "<3.15" in scoped
 
 
 def test_recommendation_also_scopes_the_conflict_free_claim():
@@ -92,6 +102,7 @@ def test_recommendation_also_scopes_the_conflict_free_claim():
     idx = section5.index("technically installable")
     scoped = section5[idx : idx + 250]
     assert ">=3.11" in scoped
+    assert "<3.15" in scoped
     assert "3.10" in scoped
 
 
@@ -101,6 +112,7 @@ def test_dependency_matrix_riskfolio_row_scopes_no_conflict_claim():
     idx = text.index("| Riskfolio-Lib | 7.3.0 |")
     row = text[idx : idx + 600]
     assert ">=3.11" in row
+    assert "<3.15" in row
     assert "3.10" in row
 
 
@@ -110,6 +122,7 @@ def test_dependency_matrix_rejected_deferred_table_scopes_no_conflict_claim():
     idx = text.index("| Riskfolio-Lib | Defer (PR 12, evaluated 2026-08-23)")
     row = text[idx : idx + 400]
     assert ">=3.11" in row
+    assert "<3.15" in row
     assert "3.10" in row
 
 
@@ -118,6 +131,7 @@ def test_master_plan_row_12_scopes_no_conflict_claim():
     idx = text.index("| 12 | Riskfolio-Lib evaluation only |")
     row = text[idx : idx + 800]
     assert ">=3.11" in row
+    assert "<3.15" in row
     assert "3.10" in row
 
 
@@ -126,6 +140,7 @@ def test_component_matrix_portfolio_optimization_row_scopes_conflict_free_claim(
     idx = text.index("| Portfolio optimization |")
     row = text[idx : idx + 500]
     assert ">=3.11" in row
+    assert "<3.15" in row
     assert "3.10" in row
 
 
@@ -134,6 +149,7 @@ def test_decisions_d10_scopes_no_conflict_claim():
     idx = text.index("## D10")
     section = text[idx : idx + 4000]
     assert ">=3.11" in section
+    assert "<3.15" in section
     assert "3.10" in section
 
 
@@ -143,6 +159,7 @@ def test_decisions_d10_ruling_scopes_technically_unblocked_claim():
     ruling = text[idx : idx + 500]
     assert "technically installable without" in ruling
     assert ">=3.11" in ruling
+    assert "<3.15" in ruling
     assert "3.10" in ruling
 
 
@@ -151,6 +168,7 @@ def test_status_current_phase_scopes_no_conflict_claim():
     idx = text.index("**Current phase: PR 12")
     section = text[idx : idx + 1000]
     assert ">=3.11" in section
+    assert "<3.15" in section
     assert "3.10" in section
 
 
@@ -159,6 +177,7 @@ def test_status_completed_work_section_scopes_no_conflict_claim():
     idx = text.index("that Riskfolio-Lib does not conflict with the")
     scoped = text[idx : idx + 250]
     assert ">=3.11" in scoped
+    assert "<3.15" in scoped
     assert "3.10" in scoped
 
 
@@ -197,7 +216,7 @@ def test_status_current_phase_records_python_3_11_verification():
     imply the >=3.11 claim rests on a single untested interpreter."""
     text = STATUS.read_text(encoding="utf-8")
     idx = text.index("that Riskfolio-Lib does not conflict with the")
-    scoped = text[idx : idx + 400]
+    scoped = text[idx : idx + 500]
     assert "3.11.15" in scoped
     assert "3.14.5rc1" in scoped
 
