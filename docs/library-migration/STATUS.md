@@ -2829,9 +2829,14 @@ cascade still issues a real `DELETE` the trigger still rejects). Every case
 failed closed; no object ever appeared "persistent" in memory before
 rollback. `DEPENDENCY_MATRIX.md` Section 5's PR 0 concern — "the ORM's
 unit-of-work flush ordering and identity-map caching can mask a
-trigger-rejected write" — is **withdrawn as unsubstantiated**. Core-only for
-trigger-protected tables remains the recommendation for any future adoption
-regardless, as an auditability preference, not a correctness requirement.
+trigger-rejected write" — is **withdrawn as unsubstantiated**. A seventh
+case then proved the Core-only boundary can be *enforced*, not just
+followed: a `before_flush` guard on the ORM `Session` class blocks every
+permitted session construction path tested, before any SQL is emitted,
+while Core access is unaffected. Core-only for trigger-protected tables
+remains the recommendation for any future adoption regardless, as an
+auditability preference with a proven enforcement mechanism available, not
+a correctness requirement.
 
 (b) whether Alembic's branching revision graph can be constrained to
 linear-only history matching `storage/schema_version.py`'s existing
@@ -2841,13 +2846,17 @@ branching (an un-spliced second child of an existing head is refused by
 default; an ambiguous `upgrade head` with multiple heads present is
 refused), but a deliberate `splice=True` still creates a real branch, and
 `alembic merge` converges to one head while leaving a merge revision (a
-tuple `down_revision`) that is not linear. A ~15-line custom gate (one
-head, no revision with more than one child, no tuple `down_revision`)
-caught every case, including the merge case where "one head" alone would
-have looked linear but was not. **Conclusion: constrainable to linear-only
-history, but only via a new, unbuilt, permanently-maintained CI gate** —
-`schema_version.py`'s `dict[int, ...]` ledger has no branch concept to
-guard against in the first place.
+tuple `down_revision`) that is not linear. A custom gate (one head, no
+revision with more than one child, no tuple `down_revision`, no non-empty
+`depends_on`) caught every case, including the merge case where "one head"
+alone would have looked linear but was not, and two further cases showing
+a single or multiple `depends_on` dependency edge — which Alembic counts
+toward neither `get_heads()` nor down-revision fan-out — evades a
+`down_revision`-only gate entirely unless checked explicitly.
+**Conclusion: constrainable to linear-only history, but only via a new,
+unbuilt, permanently-maintained CI gate that checks `depends_on` as well
+as `down_revision`** — `schema_version.py`'s `dict[int, ...]` ledger has no
+branch or dependency concept to guard against in the first place.
 
 Neither finding is a correctness blocker, but neither identifies a current
 capability gap either: `COMPONENT_MATRIX.md`'s "Persistence"/"Migrations"

@@ -67,6 +67,30 @@ def test_alembic_scratch_output_shows_linear_gate_catches_branch():
     assert "a branch, not a linear chain" in text
 
 
+def test_trigger_scratch_output_shows_core_only_guard_blocks_all_orm_paths():
+    """Regression for review finding: question (a) requires proving
+    trigger-protected tables can be constrained to Core-only statements, not
+    just that the trigger still fires under ORM usage. Pins case 7's guard
+    result: both permitted session construction paths are blocked before any
+    SQL is emitted, and Core access still works with the guard installed."""
+    text = TRIGGER_OUTPUT.read_text(encoding="utf-8")
+    assert "TriggerProtectedTableORMGuard" in text
+    assert "sessionmaker() session blocked pre-SQL" in text
+    assert "Session(bind=...) session blocked pre-SQL" in text
+    assert "Core statements still work with the guard installed" in text
+
+
+def test_alembic_scratch_output_shows_depends_on_edges_are_caught():
+    """Regression for review finding: linear_only_gate() originally checked
+    only down_revision, silently missing depends_on dependency edges. Pins
+    cases 7-8's result: single and multiple depends_on targets are both
+    flagged as violations even though get_heads() alone would miss them."""
+    text = ALEMBIC_OUTPUT.read_text(encoding="utf-8")
+    assert "depends_on dependency edge" in text
+    assert "a single `depends_on` edge" in text
+    assert "multiple depends_on targets are also caught" in text
+
+
 def test_evaluation_states_defer_outcome():
     text = EVALUATION.read_text(encoding="utf-8")
     assert "Recommendation: defer" in text
@@ -86,6 +110,24 @@ def test_evaluation_confirms_linear_only_gate_is_needed_not_default():
     text = EVALUATION.read_text(encoding="utf-8")
     assert "linear_only_gate" in text
     assert "not the library's default end-state" in text or "only its default resistance" in text
+
+
+def test_evaluation_proves_core_only_boundary_not_just_recommends_it():
+    """Regression: EVALUATION.md must record that question (a) was answered
+    by a proven enforcement mechanism, not carried forward only as an
+    unenforced recommendation."""
+    text = EVALUATION.read_text(encoding="utf-8")
+    assert "Question (a) is answered, not just recommended" in text
+    assert "TriggerProtectedTableORMGuard" in text
+    assert "before_flush" in text
+
+
+def test_evaluation_records_depends_on_gap_and_fix():
+    """Regression: EVALUATION.md must record that the linear-only gate
+    initially missed depends_on edges and was corrected."""
+    text = EVALUATION.read_text(encoding="utf-8")
+    assert "depends_on" in text
+    assert "real gap, not a hypothetical one" in text
 
 
 def test_dependency_matrix_records_defer_outcome_for_both_packages():

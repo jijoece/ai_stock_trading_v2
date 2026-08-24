@@ -26,4 +26,9 @@ PASS: Core delete rejected — paper_book_cash_ledger is append-only
     book-3 has 1 ledger entries in the relationship collection
 PASS: ORM relationship cascade still issues a real DELETE that the trigger blocks — paper_book_cash_ledger is append-only
 
+=== Case 7: architectural Core-only guard — does a `before_flush` guard registered on the ORM `Session` class block every permitted session construction path *before* any SQL reaches the trigger, while Core access keeps working unmodified? ===
+PASS: sessionmaker() session blocked pre-SQL by TriggerProtectedTableORMGuard — ORM session flush blocked before any SQL was emitted: 'real_orders' is a trigger-protected table — use Core statements only
+PASS: Session(bind=...) session blocked pre-SQL by TriggerProtectedTableORMGuard — ORM session flush blocked before any SQL was emitted: 'paper_book_cash_ledger' is a trigger-protected table — use Core statements only
+PASS: Core statements still work with the guard installed — the guard is ORM-session-flush-only and never intercepts Core
+
 Done.

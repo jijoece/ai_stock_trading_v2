@@ -407,6 +407,112 @@ def case_6_orm_relationship_cascade_hits_trigger(engine) -> None:
     session.close()
 
 
+class TriggerProtectedTableORMGuard(Exception):
+    """Raised by the Core-only architectural guard, before any SQL is
+    emitted, when an ORM session attempts to flush a change against a
+    trigger-protected table. MASTER_PLAN.md row 13 question (a) requires
+    proving trigger-protected tables can be constrained to Core-only
+    statements, never ORM-session flush/unit-of-work — this is the
+    representative enforcement mechanism that proves it, not just a
+    recommendation."""
+
+
+TRIGGER_PROTECTED_TABLES = {"real_orders", "paper_book_cash_ledger"}
+
+
+def _reject_protected_table_orm_writes(session, flush_context, instances) -> None:
+    del flush_context, instances
+    for obj in list(session.new) + list(session.dirty) + list(session.deleted):
+        table = getattr(obj, "__table__", None)
+        if table is not None and table.name in TRIGGER_PROTECTED_TABLES:
+            raise TriggerProtectedTableORMGuard(
+                f"ORM session flush blocked before any SQL was emitted: "
+                f"{table.name!r} is a trigger-protected table — use Core statements only"
+            )
+
+
+def case_7_core_only_guard_blocks_every_orm_session_construction_path(engine) -> None:
+    _log(
+        "Case 7: architectural Core-only guard — does a `before_flush` guard "
+        "registered on the ORM `Session` class block every permitted session "
+        "construction path *before* any SQL reaches the trigger, while Core "
+        "access keeps working unmodified?"
+    )
+    from sqlalchemy.orm import Session as SASession
+
+    event.listen(SASession, "before_flush", _reject_protected_table_orm_writes)
+    try:
+        # Path 1: sessionmaker()-produced session — the construction path
+        # every other case in this file uses.
+        Session = sessionmaker(bind=engine)
+        session = Session()
+        obj = RealOrderORM(
+            order_id="ord-7a", approval_id="appr-1", payload_hash="h", created_at="t", status="pending"
+        )
+        session.add(obj)
+        try:
+            session.flush()
+            print("FAIL: sessionmaker()-constructed session was not blocked by the guard")
+        except TriggerProtectedTableORMGuard as exc:
+            print(f"PASS: sessionmaker() session blocked pre-SQL by TriggerProtectedTableORMGuard — {exc}")
+        except IntegrityError:
+            print(
+                "FAIL: the guard did not fire before the trigger — the trigger caught it "
+                "instead, so the guard itself is not proven to act pre-SQL"
+            )
+        session.close()
+
+        # Path 2: Session(bind=...) constructed directly, with no
+        # sessionmaker in between — a distinct, equally permitted
+        # construction path that must go through the same class-level event.
+        session2 = SASession(bind=engine)
+        obj2 = CashLedgerORM(
+            book_id="book-3", ledger_entry_id="le-guard", event_type="DEPOSIT", amount_usd="1.00",
+            event_timestamp="t", idempotency_key="kguard", created_at="t",
+        )
+        session2.add(obj2)
+        try:
+            session2.flush()
+            print("FAIL: directly-constructed Session(bind=...) was not blocked by the guard")
+        except TriggerProtectedTableORMGuard as exc:
+            print(f"PASS: Session(bind=...) session blocked pre-SQL by TriggerProtectedTableORMGuard — {exc}")
+        except IntegrityError:
+            print(
+                "FAIL: the guard did not fire before the trigger — the trigger caught it "
+                "instead, so the guard itself is not proven to act pre-SQL"
+            )
+        session2.close()
+
+        # Core access must still work unmodified with the guard installed —
+        # the guard only listens on the ORM Session class, never on Core
+        # connections/engines.
+        with engine.begin() as conn:
+            conn.execute(text("INSERT OR IGNORE INTO paper_books (book_id) VALUES ('book-guard')"))
+            conn.execute(
+                text(
+                    "INSERT INTO paper_book_cash_ledger (book_id, ledger_entry_id, event_type, "
+                    "amount_usd, event_timestamp, idempotency_key, created_at) VALUES "
+                    "('book-guard', 'le-core-with-guard', 'DEPOSIT', '5.00', 't', 'kcore', 't')"
+                )
+            )
+        with engine.connect() as check_conn:
+            row = check_conn.execute(
+                text(
+                    "SELECT COUNT(*) FROM paper_book_cash_ledger WHERE "
+                    "ledger_entry_id='le-core-with-guard'"
+                )
+            ).scalar()
+        if row == 1:
+            print(
+                "PASS: Core statements still work with the guard installed — the guard "
+                "is ORM-session-flush-only and never intercepts Core"
+            )
+        else:
+            print(f"FAIL: Core insert did not persist with the guard installed (row count={row})")
+    finally:
+        event.remove(SASession, "before_flush", _reject_protected_table_orm_writes)
+
+
 if __name__ == "__main__":
     import sqlalchemy
 
@@ -418,4 +524,5 @@ if __name__ == "__main__":
     case_4_batched_flush_partial_visibility(engine)
     case_5_core_append_only_allows_insert_rejects_update_delete(engine)
     case_6_orm_relationship_cascade_hits_trigger(engine)
+    case_7_core_only_guard_blocks_every_orm_session_construction_path(engine)
     print("\nDone.")

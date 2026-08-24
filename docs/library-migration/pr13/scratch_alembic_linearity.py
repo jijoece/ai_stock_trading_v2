@@ -30,6 +30,7 @@ SCRIPT_PY_MAKO = """\
 \"\"\"${message}\"\"\"
 revision = ${repr(up_revision)}
 down_revision = ${repr(down_revision)}
+depends_on = ${repr(depends_on)}
 
 def upgrade():
     pass
@@ -140,7 +141,16 @@ def linear_only_gate(script: ScriptDirectory) -> list[str]:
     monotonic-ledger model onto Alembic's DAG. Returns a list of violation
     messages (empty means the graph is a single strict chain, isomorphic to
     schema_version.py's `_MIGRATIONS` dict: one predecessor per revision,
-    one head, no merges, no branches)."""
+    one head, no merges, no branches, no `depends_on` cross-edges).
+
+    `depends_on` is a separate dependency mechanism from `down_revision`:
+    Alembic does not count it toward `get_heads()` or toward a revision's
+    down-revision children, so a revision can carry a `depends_on` edge
+    while the graph still reports exactly one head and no down_revision
+    branch — case 7/8 below reproduce this. Any non-empty `dependencies`
+    is therefore rejected outright rather than incorporated into the
+    linearity proof: schema_version.py's ledger has no dependency concept
+    at all, so no `depends_on` edge is equivalent to it."""
     violations = []
     heads = script.get_heads()
     if len(heads) != 1:
@@ -153,6 +163,12 @@ def linear_only_gate(script: ScriptDirectory) -> list[str]:
                 f"{rev.down_revision!r}) — schema_version.py's ledger has no merge concept"
             )
             continue
+        if rev.dependencies:
+            violations.append(
+                f"revision {rev.revision!r} has a depends_on dependency edge "
+                f"(dependencies={rev.dependencies!r}) outside down_revision — "
+                "schema_version.py's ledger has no dependency concept"
+            )
         if rev.down_revision is not None:
             seen_as_down_revision.setdefault(rev.down_revision, []).append(rev.revision)
     for parent, children in seen_as_down_revision.items():
@@ -221,6 +237,50 @@ def case_6_delete_and_rebase_restores_linearity(root: Path, cfg: Config) -> None
         print(f"UNEXPECTED: heads={heads} violations={violations}")
 
 
+def case_7_single_depends_on_edge_evades_head_count(root: Path, cfg: Config) -> None:
+    _log(
+        "Case 7: a revision with a single `depends_on` edge — Alembic does not count "
+        "this toward get_heads() or down_revision children, so does it evade a "
+        "head-count-only gate while the corrected gate still catches it?"
+    )
+    command.revision(cfg, message="single depends_on", rev_id="0005dep", head="0004a", depends_on="0002")
+    script = ScriptDirectory.from_config(cfg)
+    heads = script.get_heads()
+    print(f"    heads after adding a depends_on edge: {heads}")
+    violations = linear_only_gate(script)
+    print(f"    violations found: {len(violations)}")
+    for v in violations:
+        print(f"    - {v}")
+    if len(heads) == 1 and violations:
+        print(
+            "PASS: get_heads() alone still reports exactly one head (depends_on adds no "
+            "new head and is not a down_revision branch), but the corrected gate's "
+            "dependencies check catches the extra edge that a head-count-only gate would miss"
+        )
+    else:
+        print(f"UNEXPECTED: heads={heads} violations={violations}")
+    for fname in (root / "versions").glob("*0005dep*"):
+        fname.unlink()
+
+
+def case_8_multiple_depends_on_edges_also_caught(root: Path, cfg: Config) -> None:
+    _log("Case 8: a revision with multiple depends_on targets is also caught")
+    command.revision(cfg, message="multi depends_on", rev_id="0006dep", head="0004a", depends_on=["0001", "0002"])
+    script = ScriptDirectory.from_config(cfg)
+    heads = script.get_heads()
+    violations = linear_only_gate(script)
+    print(f"    heads: {heads}")
+    print(f"    violations found: {len(violations)}")
+    for v in violations:
+        print(f"    - {v}")
+    if len(heads) == 1 and violations:
+        print("PASS: multiple depends_on targets are also caught by the corrected gate")
+    else:
+        print(f"FAIL: multiple depends_on targets were not caught (heads={heads} violations={violations})")
+    for fname in (root / "versions").glob("*0006dep*"):
+        fname.unlink()
+
+
 if __name__ == "__main__":
     import alembic
 
@@ -236,6 +296,8 @@ if __name__ == "__main__":
         heads_for_merge = sorted(script.get_heads())
         case_5_merge_revision_still_fails_the_gate(cfg, heads_for_merge)
         case_6_delete_and_rebase_restores_linearity(root, cfg)
+        case_7_single_depends_on_edge_evades_head_count(root, cfg)
+        case_8_multiple_depends_on_edges_also_caught(root, cfg)
         print("\nDone.")
     finally:
         shutil.rmtree(root, ignore_errors=True)

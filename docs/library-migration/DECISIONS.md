@@ -1287,10 +1287,17 @@ memory before rollback. **The PR 0 theoretical concern that ORM
 usage could mask a trigger rejection is withdrawn as unsubstantiated** for
 SQLAlchemy 2.0.52 against these two representative tables — this is a
 correction to `DEPENDENCY_MATRIX.md` Section 5, not a reason to adopt.
-Core-only for trigger-protected tables remains the recommendation for any
-future adoption regardless, as an auditability preference (Core SQL maps
-1:1 onto the exact statements the triggers were written against), not
-because the ORM was found unsafe.
+Separately, a seventh case proves the Core-only boundary MASTER_PLAN.md row
+13 requires can be *enforced*, not just followed by convention: a
+`before_flush` guard registered once on the ORM `Session` class rejects a
+flush against either table, before any SQL is emitted, through both a
+`sessionmaker()`-produced session and a directly constructed
+`Session(bind=...)`, while Core statements against the same tables continue
+to work unmodified. Core-only for trigger-protected tables remains the
+recommendation for any future adoption regardless, as an auditability
+preference (Core SQL maps 1:1 onto the exact statements the triggers were
+written against) with a proven enforcement mechanism available, not because
+the ORM was found unsafe.
 
 **Question (b), empirically tested — constrainable, but only with an added
 guard.** A second scratch reproduction (`pr13/scratch_alembic_linearity.py`)
@@ -1303,15 +1310,23 @@ with multiple heads present is refused rather than silently resolved
 absolute: `splice=True` still creates a real branch, and `alembic merge`
 converges a branch back to one head while leaving a merge revision (a tuple
 `down_revision`, i.e. two parents) that is not a linear predecessor. A
-~15-line custom gate (asserting exactly one head **and** no revision has
-more than one child **and** no revision's `down_revision` is a tuple) caught
-every branching and merge case tested, including the case where "one head"
-alone would have looked linear but was not. **Conclusion: yes, constrainable
-to linear-only history, but only by building and permanently maintaining
-that gate as a blocking CI check** — `schema_version.py`'s
-`dict[int, ...]` ledger has no branch concept to guard against in the first
-place, so this would be new maintenance surface, not a like-for-like
-replacement.
+custom gate (asserting exactly one head **and** no revision has more than
+one child **and** no revision's `down_revision` is a tuple **and** no
+revision has a non-empty `depends_on`) caught every branching and merge
+case tested, including the case where "one head" alone would have looked
+linear but was not. The `depends_on` check was added after two further
+adversarial cases showed it was necessary, not optional: `depends_on` is a
+dependency edge separate from `down_revision` that Alembic does not count
+toward `get_heads()` or down-revision fan-out, so a revision with one or
+several `depends_on` targets reports zero violations against a
+`down_revision`-only gate while still introducing a graph edge
+`schema_version.py`'s ledger has no counterpart for. **Conclusion: yes,
+constrainable to linear-only history, but only by building and permanently
+maintaining a gate that checks heads, down-revision fan-out, merge
+revisions, *and* `depends_on` as a blocking CI check** —
+`schema_version.py`'s `dict[int, ...]` ledger has no branch or dependency
+concept to guard against in the first place, so this would be new
+maintenance surface, not a like-for-like replacement.
 
 **Need.** `COMPONENT_MATRIX.md`'s "Persistence" and "Migrations" rows
 describe the existing hand-written `storage/*_schema.py` DDL modules and

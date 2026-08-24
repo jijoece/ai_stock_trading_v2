@@ -91,6 +91,25 @@ every connection, matching `storage/database.py`. Six cases:
    SQL `DELETE` against the child table, and the trigger still rejects it —
    the cascade does not resolve itself purely in Python/the identity map
    without touching the database.
+7. **The Core-only boundary itself, enforced and adversarially tested.**
+   Question (a) asks not only whether the trigger fires under ORM usage
+   (cases 2–6), but whether trigger-protected tables can be *constrained to*
+   Core-only statements, never ORM-session flush/unit-of-work. Cases 2–6
+   demonstrate the trigger still fires when ORM usage is attempted; they do
+   not by themselves prevent that usage. Case 7 closes that gap: a
+   `before_flush` guard registered once on the ORM `Session` class
+   (`TriggerProtectedTableORMGuard`, ~10 lines) rejects any flush touching
+   `real_orders` or `paper_book_cash_ledger` *before* any SQL is emitted —
+   verified by asserting the guard's own exception type is raised, not
+   `IntegrityError` from the trigger, which would mean the guard fired too
+   late. Tested through two distinct, independently permitted session
+   construction paths — a `sessionmaker()`-produced session and a directly
+   constructed `Session(bind=engine)` — because both route through the same
+   class-level event and must both be blocked for the boundary to hold
+   generally (as would `scoped_session` and `Session.begin()`, which wrap
+   the same class). With the guard installed, Core statements against the
+   same tables (case 5's insert) are re-verified to still succeed unmodified
+   — the guard is ORM-flush-only and never intercepts Core.
 
 **Finding: the masking hypothesis is not substantiated against SQLAlchemy
 2.0.52 for either representative table.** Every one of the six cases —
@@ -106,15 +125,20 @@ could ever produce a masking effect (bulk `insert()`/`update()` constructs
 that skip ORM events, or a future SQLAlchemy release, were not tested), but
 no such effect was found under direct, adversarial testing here.
 
-**Recommendation carried forward regardless.** Even with the masking risk
-withdrawn, this evaluation still recommends that any future adoption keep
-trigger-protected tables (`real_orders`, the append-only ledgers) on
-Core-only statements — not because the ORM is unsafe, but because Core
-statements map 1:1 onto the exact SQL the triggers were written against,
-which is easier to audit line-by-line for a safety-critical table than an
-ORM unit-of-work whose generated SQL depends on session state, mapper
-configuration, and cascade settings. This is a simplicity/auditability
-preference for a High-risk decision, not a correctness requirement.
+**Question (a) is answered, not just recommended.** Separately from the
+masking withdrawal, case 7 proves trigger-protected tables *can* be
+constrained to Core-only statements: a single class-level `before_flush`
+guard blocks every permitted ORM session construction path tested, before
+any SQL reaches the trigger, while Core access is unaffected. Any future
+adoption that wants the Core-only boundary enforced, not merely followed by
+convention, has a proven, minimal mechanism to enforce it — not because the
+ORM is unsafe (Section 2's masking finding says it is not), but because
+Core statements map 1:1 onto the exact SQL the triggers were written
+against, which is easier to audit line-by-line for a safety-critical table
+than an ORM unit-of-work whose generated SQL depends on session state,
+mapper configuration, and cascade settings. This is a simplicity/
+auditability preference for a High-risk decision, reinforced by a proven
+enforcement mechanism, not merely asserted as a convention.
 
 ## 3. Question (b): can Alembic be constrained to linear-only history?
 
@@ -165,19 +189,40 @@ of documented behavior. Six cases:
    repair shape `schema_version.py`'s dict-based ledger already has by
    construction (there is nothing to branch in a `dict[int, ...]` keyed by a
    strictly increasing integer).
+7. **A revision with a single `depends_on` edge.** `depends_on` is a
+   dependency mechanism separate from `down_revision`: Alembic does not
+   count it toward `get_heads()` or toward a revision's down-revision
+   children, so a revision can carry a `depends_on` edge while the graph
+   still reports exactly one head and no down-revision branch. The initial
+   version of `linear_only_gate()` inspected only `down_revision` and
+   parent fan-out, so it evaluated zero violations against this case: a
+   real gap, not a hypothetical one. The gate now also rejects any revision
+   whose
+   `dependencies` attribute is non-empty, and re-running this case confirms
+   it: one head, one violation reported, correctly naming the `depends_on`
+   target.
+8. **A revision with multiple `depends_on` targets.** Same result: the
+   corrected gate flags the revision, naming every dependency target in the
+   violation message.
 
 **Finding: yes, Alembic's branching graph can be constrained to
-linear-only history, but only with an added, maintained guard — it is not
-the library's default end-state, only its default resistance.** Alembic
-already resists *accidental* branching (Case 2's un-spliced refusal, Case
-3's ambiguous-upgrade refusal) better than this evaluation expected going
-in, but a deliberate `--splice` or an `alembic merge` both still produce a
+linear-only history, but only with an added, maintained guard that must
+account for `depends_on` as well as `down_revision` — this is not the
+library's default end-state, only its default resistance.** Alembic
+already resists *accidental* branching
+(Case 2's un-spliced refusal, Case 3's ambiguous-upgrade refusal) better
+than this evaluation expected going in, but a deliberate `--splice`, an
+`alembic merge`, or a `depends_on` edge (cases 7–8) all still produce a
 graph shape (`schema_version.py`'s ledger has no counterpart for) that a
-two-part CI gate — exactly the ~15-line function this evaluation wrote and
-proved catches every case tested — would be needed to keep out permanently.
-That gate does not exist today and would need to be built, tested, and kept
-in CI indefinitely if Alembic were adopted; it is not something Alembic
-ships.
+gate checking `get_heads()`, down-revision fan-out, merge revisions, *and*
+`dependencies` — exactly the corrected `linear_only_gate()` function this
+evaluation wrote and proved catches every case tested, including
+`depends_on` — would be needed to keep out permanently. That gate does not
+exist today and would need to be built, tested, and kept in CI
+indefinitely if Alembic were adopted; it is not something Alembic ships.
+A `down_revision`-only gate would have been a real defect: it silently
+accepts a `depends_on` edge that has no equivalent in the monotonic
+integer ledger it is meant to enforce equivalence with.
 
 ## 4. Need assessment
 
@@ -228,14 +273,16 @@ richer persistence/migration layer is later scoped:
 
 * Re-verify against Alembic 1.19.1 (or whatever is then current) directly,
   not only inferred from the 1.18.5 pin tested here.
-* Build the linear-only CI gate (Section 3, Case 4's `linear_only_gate()`)
-  as an actual blocking check *before* any Alembic revision is committed,
-  not after — the gate is cheap to write but easy to forget once branching
+* Build the linear-only CI gate (Section 3, `linear_only_gate()`, including
+  its `depends_on` check added after cases 7–8) as an actual blocking check
+  *before* any Alembic revision is committed, not after — the gate is cheap
+  to write but easy to forget once branching (or a `depends_on` edge)
   becomes possible.
-* Keep trigger-protected tables on Core-only statements even though Section
-  2 found no masking risk — an auditability preference, not a correctness
-  finding, and worth re-confirming against whatever SQLAlchemy version is
-  current at that time.
+* Keep trigger-protected tables on Core-only statements, enforced with the
+  `before_flush` guard proven in Section 2 case 7 (not merely followed by
+  convention) — an auditability preference, not a correctness finding since
+  Section 2 found no masking risk, and worth re-confirming against whatever
+  SQLAlchemy version is current at that time.
 * Bulk Core constructs (`sqlalchemy.dml.Insert`/`Update` used for
   multi-row bulk operations, which bypass ORM events but not Core/trigger
   execution) were not separately tested here and should be, since they were
