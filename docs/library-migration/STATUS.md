@@ -2700,7 +2700,12 @@ and `scratch_output_py311.txt` (scratch reproductions, not merged into
 `scripts/`, `paper_runtime/src/`, or `backtest_runtime/` was modified. No
 change to `pyproject.toml`. This PR's review fix rounds added
 `tests/unit/test_pr12_evaluation_docs.py` — a documentation-consistency
-regression test, not application code; see "Tests run" below.
+regression test, not application code — and, to give that test's
+`git merge-base --is-ancestor` check the commit history it needs in CI,
+changed `.github/workflows/ci.yml` so the `main-tests`,
+`python-3-10-floor`, and `research-tests` jobs' `actions/checkout@v4`
+steps set `fetch-depth: 0` instead of the default single-commit shallow
+checkout; see "Tests run" below.
 
 **Outcome: defer, do not adopt.** Riskfolio-Lib 7.3.0 was re-verified live
 against the PyPI JSON API: BSD-3-Clause, `License :: OSI Approved :: BSD
@@ -2754,9 +2759,9 @@ added during this PR's review fix rounds, not new application code.
   boundary verification recorded above. The scratch reproductions still run
   only inside disposable virtualenvs outside this repository's dependency
   graph, never against the project's own `.venv`.
-- `.venv/bin/python -m pytest tests/ -q --tb=short` — **3271 passed, 57
+- `.venv/bin/python -m pytest tests/ -q --tb=short` — **3272 passed, 57
   skipped, 0 failed**.
-- `nox -s ci` — all four blocking sessions passed: `tests` (3143 passed, 106
+- `nox -s ci` — all four blocking sessions passed: `tests` (3144 passed, 106
   skipped, `.[dev]` only), `paper_tests` (160 passed), `safety_typecheck`
   (pyright, 0 errors — `pr12/scratch_smoke_test.py` is outside both
   `[tool.pyright]`'s `include` and `pyright-safety.json`'s scope, same as

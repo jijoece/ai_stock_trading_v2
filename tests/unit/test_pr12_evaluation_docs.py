@@ -241,8 +241,8 @@ def test_status_completed_work_records_the_added_test_file():
     assert "No test file was added or modified" not in section
     assert "test_pr12_evaluation_docs.py" in section
     assert "3119" not in section
-    assert "3271 passed, 57" in section
-    assert "3143 passed, 106" in section
+    assert "3272 passed, 57" in section
+    assert "3144 passed, 106" in section
     assert "PLACEHOLDER" not in section
 
 
@@ -347,3 +347,22 @@ def test_ci_full_suite_jobs_fetch_full_git_history():
                 f"{job_name}'s checkout step must set `fetch-depth: 0` so "
                 "the full-suite git-ancestor check has the required history"
             )
+
+
+def test_status_completed_work_scope_records_ci_workflow_change():
+    """PR 29 fix round 8: STATUS.md's "Completed work (PR 12)" **Scope:**
+    paragraph must record that `.github/workflows/ci.yml` was changed (to
+    give this file's `git merge-base` ancestry check the full history it
+    needs in CI), not just the new test file. Omitting it would leave a
+    future maintainer relying on STATUS.md unaware of a persistent CI
+    behavior and performance change (`fetch-depth: 0` instead of the
+    default shallow checkout) made in this PR."""
+    text = STATUS.read_text(encoding="utf-8")
+    section = text.split("## Completed work (PR 12)", 1)[1].split(
+        "**Outcome:", 1
+    )[0]
+    assert ".github/workflows/ci.yml" in section
+    assert "fetch-depth: 0" in section
+    assert "main-tests" in section
+    assert "python-3-10-floor" in section
+    assert "research-tests" in section
