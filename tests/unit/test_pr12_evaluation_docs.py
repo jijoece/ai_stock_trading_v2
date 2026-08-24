@@ -251,4 +251,36 @@ def test_pr_11_merge_commit_is_an_ancestor_of_this_branch():
         cwd=ROOT,
         check=False,
     )
-    assert result.returncode == 0
+    assert result.returncode == 0, (
+        "git merge-base could not resolve 611b3df (exit "
+        f"{result.returncode}); this requires the full commit history, not "
+        "a single-commit shallow checkout -- see the CI workflow's "
+        "full-suite jobs, which must set `fetch-depth: 0`"
+    )
+
+
+def test_ci_full_suite_jobs_fetch_full_git_history():
+    """PR 29 fix round 4: every CI job whose full offline suite run
+    includes this file's `git merge-base` check must not use the default
+    single-commit shallow checkout. `actions/checkout@v4` defaults to
+    `fetch-depth: 1`, which does not contain the `611b3df` commit object,
+    so `test_pr_11_merge_commit_is_an_ancestor_of_this_branch` would fail
+    with "Not a valid object name" (exit 128) in CI even though the
+    documented git fact is correct."""
+    import yaml
+
+    workflow = yaml.safe_load(
+        (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+    )
+    full_suite_jobs = {"main-tests", "python-3-10-floor", "research-tests"}
+    for job_name in full_suite_jobs:
+        job = workflow["jobs"][job_name]
+        checkout_steps = [
+            step for step in job["steps"] if step.get("uses", "").startswith("actions/checkout")
+        ]
+        assert checkout_steps, f"{job_name} has no actions/checkout step"
+        for step in checkout_steps:
+            assert step.get("with", {}).get("fetch-depth") == 0, (
+                f"{job_name}'s checkout step must set `fetch-depth: 0` so "
+                "the full-suite git-ancestor check has the required history"
+            )

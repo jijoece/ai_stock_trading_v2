@@ -31,7 +31,15 @@ jobs:
     name: main-tests
     runs-on: ubuntu-latest
     steps:
+      # Full history (not the default single-commit shallow checkout): the
+      # full suite run here includes test_pr12_evaluation_docs.py, whose
+      # test_pr_11_merge_commit_is_an_ancestor_of_this_branch runs
+      # `git merge-base --is-ancestor 611b3df HEAD`. A shallow checkout does
+      # not contain that commit object, so the check would fail with "Not a
+      # valid object name" (exit 128) rather than verifying the git fact.
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
@@ -84,7 +92,11 @@ jobs:
     # 3.11 (matching CI's historical choice), which does not prove the
     # floor actually resolves and passes; this job does.
     steps:
+      # Full history: see the main-tests job's checkout comment above --
+      # the same full-suite `git merge-base` dependency applies here.
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
           python-version: "3.10"
@@ -184,7 +196,12 @@ jobs:
     # (e.g. `indicators`/`analytics`/`observability` not installed here),
     # never a failure hidden because a module could not import.
     steps:
+      # Full history: see the main-tests job's checkout comment above --
+      # the full offline suite run below has the same full-suite
+      # `git merge-base` dependency.
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
