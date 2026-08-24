@@ -3,53 +3,101 @@
 ## Review Metadata
 
 - Repository: `/Users/jijopaul/workspace/ai_stock_trading_v2`
-- Branch: `migration/12-riskfolio-lib-evaluation`
-- Reviewed HEAD: `60ff33d9004b8cce2e883dbc92b3fd536864fa56`
-- Subject: Record final PR 12 validation totals
-- Claude commits reviewed: dc4e71b6a8497af26d027a8b446fbb9088cfcce0,b04690d9f661c601e800aa6db08a509627cdf35b,35fcd35e1a246856a9f39b56d80abd9e4764c2a2,36bfd84cf2bda0fd6a1b842baa369e71c4e47a33,897ba7114ea753113ee3ab56ac250fd185da100d,15f7184157b5313243f3e3b96c22e8269fd86005,042aa9841f6e13f41a10a323cf6fea2a79e8b97a,2fc01d2037895c9a50cd5663fbaf932e0cf87994,711876314c030c61c10952a04ad5e490aa22c751,fda7367f9a333c8fe5c3d08dcb2bb052df626018,d7493a445c02ec4e62051bdf95280d951a0ceb32,2c503be01bbb263d1c0767c0265d3501a856b9eb,97bf12298240d70a6989135b80d24c5e836fa961,cb63b8f7618d510d989ccba789f31feb78940202,c351be0e537d4b9a8b09b52c3c53c9a6433c7be7,e2c4811bd7395fdc0a2074e40e547d2c4b8669a7,04e23c915cfef6edcdd3a448d67dcbe20c2fa2d1,751c888fb7bd43968d14d93b5b575e821253629e,336282a7852718114c0202e5d4f2fbfab36b79f4,303128970be01980412467297dc0469ba64c6625
+- Branch: `migration/13-sqlalchemy-alembic-feasibility`
+- Reviewed HEAD: `4f81ba9087d39fa8024e36fe43446e8d5e2d0d1e`
+- Subject: PR 13: SQLAlchemy/Alembic feasibility and ADR — defer, not adopted
+- Claude commits reviewed: 4f81ba9087d39fa8024e36fe43446e8d5e2d0d1e
 - Review scope: FULL_PR
-- Reviewed base: `611b3dfeb0d485d00461ee2a5c3f15e13c0b153f`
-- GitHub PR: #29
-- Fix round: 17
+- Reviewed base: `641f5daee8d5ec629578f371555556a4a24b849e`
+- GitHub PR: #30
+- Fix round: 0
 - Trigger: local Git `post-commit`
 - Review status: FIXES_APPLIED_PENDING_REVIEW
 - Highest priority: P2
 - Finding count: 0
-- Fix commit: `af39c736214bf5e20508f083b3bca792531b3237`
+- Fix commit: `967fe9eca670129298362c786b1ab2b227359154`
 
 ## Findings
 
-### [P2] Remove the remaining current-phase STATUS assertion
+### [P2] Prove the required Core-only boundary before closing PR 13
 
-Commit: `bc288ca609621756243e6ec0367384b7579c98fc`
+Commit: `4f81ba9087d39fa8024e36fe43446e8d5e2d0d1e`
 
-Location: `/Users/jijopaul/workspace/ai_stock_trading_v2/tests/unit/test_pr12_evaluation_docs.py:310`
+Location: [EVALUATION.md](/Users/jijopaul/workspace/ai_stock_trading_v2/docs/library-migration/pr13/EVALUATION.md:47)
 
-Problem: An active GitHub review thread remains unresolved:
+Problem: The evaluation does not perform the Core-only enforcement test required by `MASTER_PLAN.md` row 13. It instead tests whether ORM operations propagate trigger failures and then withdraws the ORM-masking concern.
 
-> **<sub><sub>![P2 Badge](https://img.shields.io/badge/P2-yellow?style=flat)</sub></sub>  Remove the remaining current-phase STATUS assertion**
->
-> When PR 13 performs the documented rewrite of the opening `STATUS.md` summary, the text before its new `**Next phase:**` marker will no longer describe PR 12's lack of production code or its documentation-consistency coverage, so these assertions will fail the canonical test suite during normal migration advancement. The nearby simulation does not expose this because it replaces only the heading while retaining the entire PR 12 summary body. Fresh evidence after the earlier transient-phase fix is this separate surviving test, which still validates PR 12-specific wording inside the mutable current-phase section; anchor it in `## Completed work (PR 12)` instead.
->
-> AGENTS.md reference: [AGENTS.md:L68-L69](https://github.com/jijoece/ai_stock_trading_v2/blob/bc288ca609621756243e6ec0367384b7579c98fc/AGENTS.md#L68-L69)
->
-> Useful? React with 👍 / 👎.
+Evidence: The plan requires explicit testing that trigger-protected tables are “only ever touched via SQLAlchemy Core statements, never ORM-session flush/unit-of-work.” Cases 2, 4, and 6 deliberately map those tables into ORM sessions and demonstrate trigger behavior, but no metadata separation, mapping prohibition, import/static guard, or runtime enforcement prevents a future repository from using ORM sessions. Lines 109–112 consequently carry Core-only usage forward as a recommendation rather than a proven restriction.
 
-Evidence: [chatgpt-codex-connector review thread](https://github.com/jijoece/ai_stock_trading_v2/pull/29#discussion_r3840823260) is current, unresolved, and not outdated.
+Impact: PR 13 is recorded as complete even though one of its two high-decision acceptance conditions remains unverified. A future adoption could rely on this decision record while having no mechanism that prevents ORM access to safety-critical reserved and append-only tables.
 
-Impact: Merging would knowingly carry unresolved review feedback into main.
+Required fix: Mark question (a) incomplete or add a representative enforcement design and adversarial test proving ORM mappings/session operations cannot target any trigger-protected table while Core access remains available.
 
-Required fix: Verify and address the review comment in code and add the requested regression coverage.
+Validation: Add a test that attempts to map and flush representative reserved and append-only tables through every permitted SQLAlchemy session construction path and confirms the architectural guard rejects the operation before SQL execution; also verify Core statements still work as intended.
 
-Validation: Run the focused regression test and the repository's canonical validation; a subsequent full-PR review must find no remaining defect.
+Resolution: Fixed by `967fe9eca670129298362c786b1ab2b227359154`. Added case
+7 to `scratch_trigger_orm_vs_core.py`: a `before_flush` guard
+(`TriggerProtectedTableORMGuard`) registered once on the ORM `Session`
+class rejects a flush against `real_orders` or `paper_book_cash_ledger`
+before any SQL is emitted, verified through two independently permitted
+session construction paths (`sessionmaker()` and a directly constructed
+`Session(bind=...)`) by asserting the guard's own exception type is raised
+rather than the trigger's `IntegrityError`, which would mean the guard
+fired too late. Re-verified Core statements against the same tables still
+succeed with the guard installed. Re-ran the scratch script against the
+pinned scratch venv (sqlalchemy 2.0.52) and committed the regenerated
+`scratch_trigger_output.txt`. Updated `EVALUATION.md` question (a) and
+`DECISIONS.md` D11 to record the boundary as proven, not just recommended.
+Validation: `test_trigger_scratch_output_shows_core_only_guard_blocks_all_orm_paths`
+and `test_evaluation_proves_core_only_boundary_not_just_recommends_it`
+added to `tests/unit/test_pr13_evaluation_docs.py`.
 
-Resolution: Fixed by `af39c736214bf5e20508f083b3bca792531b3237`.
-The remaining PR 12 provenance assertions now anchor in the enduring
-`## Completed work (PR 12)` section, and a regression fixture replaces the
-entire mutable current-phase summary with PR 13 content to prove the checks
-survive normal milestone advancement. The adjacent Python-interpreter check
-was also renamed and explicitly scoped to the completed-work section. Final
-validation: 28 focused tests passed; the direct suite passed with 3,275 tests
-and 57 skipped; `nox -s ci` passed all five sessions with 3,147 main tests
-and 106 skipped, 160 paper tests, clean safety typecheck, and clean migration
-smoke.
+### [P2] Include Alembic dependency edges in the linear-history gate
+
+Commit: `4f81ba9087d39fa8024e36fe43446e8d5e2d0d1e`
+
+Location: [scratch_alembic_linearity.py](/Users/jijopaul/workspace/ai_stock_trading_v2/docs/library-migration/pr13/scratch_alembic_linearity.py:138)
+
+Problem: `linear_only_gate()` considers only `down_revision`. It ignores Alembic’s separate `depends_on` revision dependencies while claiming that an empty result proves the whole revision graph is a single strict chain isomorphic to the current integer migration ledger.
+
+Evidence: Lines 149–163 inspect `rev.down_revision` and parent-child counts exclusively. Neither the scratch reproduction nor its documentation mentions or tests `depends_on`. Alembic revisions can therefore introduce additional graph edges that the proposed gate does not evaluate.
+
+Impact: The decision record overstates that Alembic was proven constrainable using this gate. If adopted later as described, CI could accept a dependency graph that is not equivalent to the repository’s strictly linear monotonic ledger, undermining migration ordering assumptions.
+
+Required fix: Reject every non-empty `depends_on`/dependency edge, or formally incorporate those edges into the linearity proof. Update the evaluation and D11 conclusion to describe the corrected gate.
+
+Validation: Add adversarial revisions using single and multiple `depends_on` targets and demonstrate that the gate rejects them, alongside the existing splice, multiple-head, and merge cases.
+
+Resolution: Fixed by `967fe9eca670129298362c786b1ab2b227359154`.
+`linear_only_gate()` now also rejects any revision with a non-empty
+`dependencies` attribute. Added cases 7 and 8 to
+`scratch_alembic_linearity.py` using single (`depends_on="0002"`) and
+multiple (`depends_on=["0001", "0002"]`) dependency targets; both are
+confirmed as gate violations. Also fixed `build_env()`'s
+`script.py.mako` template, which never wrote `depends_on` into the
+generated revision file — without that fix, the corrected gate reported
+zero violations against a real `depends_on` edge because the attribute was
+lost on reload from disk, even though `linear_only_gate()`'s own logic was
+already correct; this was caught by re-running the script against the
+pinned scratch venv (alembic 1.18.5) rather than by reasoning alone. Also
+confirmed `get_heads()` still reports exactly one head with a `depends_on`
+edge present, so a head-count-only gate would miss it entirely. Committed
+the regenerated `scratch_alembic_output.txt`. Updated `EVALUATION.md`
+Section 3 and `DECISIONS.md` D11 to describe the corrected gate.
+Validation: `test_alembic_scratch_output_shows_depends_on_edges_are_caught`
+and `test_evaluation_records_depends_on_gap_and_fix` added to
+`tests/unit/test_pr13_evaluation_docs.py`.
+
+Tests or diagnostics run:
+
+- Inspected the complete range and commit diff with `git show`/`git diff`.
+- Compared scratch trigger DDL with current production trigger definitions.
+- Inspected `MASTER_PLAN.md`, D11, current architecture documentation, tests, and migration implementation.
+- `git diff --check 641f5daee8d5ec629578f371555556a4a24b849e..4f81ba9087d39fa8024e36fe43446e8d5e2d0d1e` passed.
+- Tests could not run: `nox` is unavailable, and the available `python3` environment has no `pytest` module.
+
+Fix round 0 validation: `.venv/bin/python -m pytest
+tests/unit/test_pr13_evaluation_docs.py tests/unit/test_pr12_evaluation_docs.py`
+— 46 passed. `.venv/bin/python -m nox -s ci` — all five sessions
+succeeded: `ci`, `tests` (3,165 passed, 106 skipped), `paper_tests` (160
+passed), `safety_typecheck` (0 errors), `migration_smoke`.
