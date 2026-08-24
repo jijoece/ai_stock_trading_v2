@@ -1,8 +1,38 @@
 # Migration Status
 
-**Current phase: PR 11 — QuantStats/analytics migration — IMPLEMENTED**
-(branch `migration/11-quantstats-analytics-parity`; `MASTER_PLAN.md` row
-11, `DECISIONS.md` D9). New, additive `evaluation/analytics_parity.py`
+**Current phase: PR 12 — Riskfolio-Lib evaluation only — EVALUATED, NOT MERGED**
+(branch `migration/12-riskfolio-lib-evaluation`; `MASTER_PLAN.md` row 12,
+`DECISIONS.md` D10). Evaluation only — documentation
+(`docs/library-migration/pr12/EVALUATION.md`) and a scratch reproduction
+(`pr12/scratch_smoke_test.py`, `pr12/scratch_output.txt`), no production code
+under `src/`, `scripts/`, or `paper_runtime/src/`; `tests/` gained only the
+documentation-consistency regression coverage described below. **Outcome:
+defer, not added.** License re-verified OSI-approved (BSD-3-Clause); a live scratch
+install confirmed Riskfolio-Lib's `vectorbt>=0.28.0` hard dependency
+resolves cleanly to the already-adopted `vectorbt==1.1.0` (PR 5) with no
+conflict at Python 3.11.15 and 3.14.5rc1 only — the two interpreters
+live-tested, both within VectorBT's declared `>=3.11,<3.15` range
+(3.12/3.13 untested; the adopted `vectorbt>=1.1.0,<1.2` range cannot
+resolve on this repository's `>=3.10` project-wide floor without also
+raising it, nor on Python 3.15+ without a future VectorBT upgrade),
+but the resulting 82-package closure has no current in-repo
+consumer (`COMPONENT_MATRIX.md`'s "Portfolio optimization" row: no existing
+implementation) — so `riskfolio-lib` is **not added** to any dependency
+declaration. See "Completed work (PR 12)" below.
+
+**Next phase: PR 13 — SQLAlchemy/Alembic feasibility and ADR**
+(`MASTER_PLAN.md` row 13), which depends only on PR 1 (already merged). PR 12
+above is now evaluated; row 13 is the next unstarted row whose dependency is
+already satisfied (row 8a remains independent of the numbered sequence, per
+its own note below, and is not "next" in this ordering).
+
+PR 11 — QuantStats/analytics migration — is **merged** (PR #28, `611b3df`,
+branch `migration/11-quantstats-analytics-parity`; `MASTER_PLAN.md` row
+11, `DECISIONS.md` D9). This entry previously read "IMPLEMENTED, NOT
+MERGED" after the merge landed — corrected here, per `AUTOMATION.md`'s
+"GitHub is authoritative for merge status" rule, rather than left to
+contradict `git log` (the same correction pattern already applied to PR 9's
+entry elsewhere in this file). New, additive `evaluation/analytics_parity.py`
 proves fixture parity for `evaluation/metrics.py`'s `cumulative_return`,
 `sharpe_ratio`, `sortino_ratio`, `max_drawdown`, and `calmar_ratio` against
 `empyrical-reloaded`, with `quantstats-lumi` exercised only for a
@@ -36,10 +66,11 @@ and never written, and bar availability is enforced once per run rather than
 per session. Row 8a is **not started** and remains independent of the
 numbered migration sequence — it can run at any point.
 
-**Next phase: PR 12 — Riskfolio-Lib evaluation only** (`MASTER_PLAN.md`
-row 12), which depends only on PR 1 (already merged). PR 11 above is now
-implemented, not merged; row 12 is the next unstarted row whose dependency
-is already satisfied.
+PR 12 — Riskfolio-Lib evaluation only — is **EVALUATED, NOT MERGED**
+(branch `migration/12-riskfolio-lib-evaluation`; `MASTER_PLAN.md` row 12,
+`DECISIONS.md` D10). See this file's "Current phase" note above and
+"Completed work (PR 12)" below for the full record; the next phase is now
+PR 13 (see above).
 
 PR 6 is **merged** (`bbd7a1f`, PR #18) and delivered everything ADR 0009
 Decision 4 requires:
@@ -2659,3 +2690,95 @@ market-data service was called; no live or historical market data was
 fetched — every fixture in the new tests is a small, hand-constructed
 in-memory list of `RecommendationEvaluation` objects; the scheduler was not
 enabled; no external paper order of any kind was submitted or referenced.
+
+## Completed work (PR 12)
+
+**Scope:** evaluation only — `docs/library-migration/pr12/EVALUATION.md`
+(full evaluation and recommendation),
+`docs/library-migration/pr12/scratch_smoke_test.py`, `scratch_output.txt`,
+and `scratch_output_py311.txt` (scratch reproductions, not merged into
+`src/`), plus this file, `MASTER_PLAN.md` row 12, `DEPENDENCY_MATRIX.md`,
+`COMPONENT_MATRIX.md`, and `DECISIONS.md` (D10). No file under `src/`,
+`scripts/`, `paper_runtime/src/`, or `backtest_runtime/` was modified. No
+change to `pyproject.toml`. This PR's review fix rounds added
+`tests/unit/test_pr12_evaluation_docs.py` — a documentation-consistency
+regression test, not application code — and, to give that test's
+`git merge-base --is-ancestor` check the commit history it needs in CI,
+changed `.github/workflows/ci.yml` so the `main-tests`,
+`python-3-10-floor`, and `research-tests` jobs' `actions/checkout@v4`
+steps set `fetch-depth: 0` instead of the default single-commit shallow
+checkout; see "Tests run" below.
+
+**Outcome: defer, do not adopt.** Riskfolio-Lib 7.3.0 was re-verified live
+against the PyPI JSON API: BSD-3-Clause, `License :: OSI Approved :: BSD
+License` — conventional OSI-approved open source, unlike VectorBT's
+Apache-2.0 + Commons Clause terms (`DECISIONS.md` D4), so no owner exception
+is needed on licensing grounds. A wheel-only install into a clean scratch
+virtualenv (macOS arm64, Python 3.14.5rc1) resolved 82 packages with `pip
+check` clean and no source compilation; its `vectorbt>=0.28.0` hard
+dependency resolved to **`vectorbt==1.1.0`**, the exact version already
+pinned by the approved `research` extra (PR 5) — confirmed live, not only by
+reading declared metadata, that Riskfolio-Lib does not conflict with the
+already-adopted VectorBT pin at Python 3.11.15 and 3.14.5rc1 only — the two
+interpreters actually installed and tested, both within VectorBT's declared
+`>=3.11,<3.15` range; Python 3.12 and 3.13 were not installed or tested and
+remain unverified (the same `vectorbt>=1.1.0,<1.2` range cannot resolve on
+this repository's `>=3.10` project-wide floor without also raising it to
+`>=3.11`, nor on Python 3.15+ without a future VectorBT upgrade) —
+confirmed at both the 3.14.5rc1 development interpreter and, in a later
+review fix round, an independent second install on Python 3.11.15 itself
+(the actual floor boundary VectorBT's `>=3.11,<3.15` classifier declares),
+which resolved the same 82-package closure with a clean `pip check` and
+successful imports. The closure nonetheless includes several
+packages with no other purpose in this repository (Jupyter widget support,
+a second charting library alongside the existing `streamlit`, multiple QP
+solver backends, `astropy`). A functional scratch smoke test confirmed
+`rp.Portfolio(...).optimization(...)` returns a plain `pandas.DataFrame` of
+per-asset weights with no order/share/authorization-shaped surface —
+structurally advisory, matching `MASTER_PLAN.md` row 12's framing — but also
+surfaced a `cvxpy` deprecation warning triggered by Riskfolio-Lib's own
+internal code, worth re-checking before any future adoption.
+`COMPONENT_MATRIX.md`'s "Portfolio optimization" row lists no existing
+implementation this would replace, and no module under
+`src/trading_research/` constructs a multi-position target allocation today
+— there is no in-repo consumer this dependency would unblock. Per the same
+"no concrete current need" bar `DECISIONS.md` already applies to Pandera/
+PyArrow, the recommendation is **defer**, not adopt. See `DECISIONS.md` D10
+and `pr12/EVALUATION.md` for the full record, including the binding
+advisory-only constraint (ADR 0003 pattern) any future re-evaluation must
+still satisfy.
+
+**Custom code removed:** none. This PR adds no new production capability and
+removes none — `pyproject.toml`, `src/`, and `scripts/` are byte-for-byte
+unchanged from `main`; `tests/` gained only the documentation-consistency
+regression coverage described above (`tests/unit/test_pr12_evaluation_docs.py`),
+added during this PR's review fix rounds, not new application code.
+
+**Tests run:**
+- `tests/unit/test_pr12_evaluation_docs.py` was added during this PR's
+  review fix rounds (not present in the original evaluation-only commit).
+  It pins the Python 3.11.15/3.14.5rc1-only qualification into `EVALUATION.md`,
+  `DEPENDENCY_MATRIX.md`, `MASTER_PLAN.md`, `COMPONENT_MATRIX.md`,
+  `DECISIONS.md` D10, and this file, and pins the independent Python 3.11
+  boundary verification recorded above. The scratch reproductions still run
+  only inside disposable virtualenvs outside this repository's dependency
+  graph, never against the project's own `.venv`.
+- `.venv/bin/python -m pytest tests/ -q --tb=short` — **3275 passed, 57
+  skipped, 0 failed**.
+- `nox -s ci` — all four blocking sessions passed: `tests` (3147 passed, 106
+  skipped, `.[dev]` only), `paper_tests` (160 passed), `safety_typecheck`
+  (pyright, 0 errors — `pr12/scratch_smoke_test.py` is outside both
+  `[tool.pyright]`'s `include` and `pyright-safety.json`'s scope, same as
+  PR 2's scratch file), `migration_smoke` (OK).
+- `scripts/check_links.sh` — 195 links checked, 193 OK, 0 errors, 2
+  excluded.
+
+**Safety:** no trading limit, authorization rule, `paper_books` accounting
+code, or scheduling behavior was touched; no broker, provider, or real
+market-data service was called; the only network access was two read-only,
+wheel-only `pip install` runs (Python 3.14.5rc1 and, added in a later
+review fix round, Python 3.11.15) plus a read-only PyPI JSON metadata
+lookup, each into a disposable scratch virtualenv outside the repository —
+none of which touched the project's own dependency graph, `.venv`, or any
+application code path; the scheduler was not enabled; no external paper
+order of any kind was submitted or referenced.

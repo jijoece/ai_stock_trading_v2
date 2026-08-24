@@ -49,7 +49,7 @@ end of this file.
 | Pandera | 0.32.1 (2026-06) | 3.10-3.14 | MIT | Active | No issues | Yes | Light with `[pandas]` extra only | None known | **Defer** |
 | PyArrow | 25.0.0 (2026-07) | 3.10-3.14 | Apache-2.0 | Very active | Prebuilt wheels both arches | Yes | Heavy (28-53MB wheel) | Watch numpy pin vs. numba (VectorBT dep) | **Defer** |
 | LumiBot | 4.5.78 (repository pins 4.5.78 in `paper_runtime/pyproject.toml`; no `paper` extra exists in the root `pyproject.toml` — see `DECISIONS.md` D5) | 3.10-3.12 declared | MIT | Active | No native deps | Yes | Heavy, already isolated | `numpy<2.5.0,>=1.20.0`, `pandas>=2.2.0` conflicts with VectorBT; `google-adk[extensions]`→`litellm` pins `jsonschema==4.23.0` exactly, unconditionally conflicting with this repo's `jsonschema>=4.26.0` base floor | **Bumped to 4.5.78** in `paper_runtime`; root `paper` extra removed, not "no change" |
-| Riskfolio-Lib | 7.3.0 | `>=3.10` | BSD-3-Clause | Active | No native issues, heavy deps | Yes | Very heavy (cvxpy, matplotlib, sklearn, statsmodels, astropy) + hard-depends on `vectorbt>=0.28.0` | Transitively pulls VectorBT's pandas/numpy chain | **Evaluate** (PR 12, advisory only) |
+| Riskfolio-Lib | 7.3.0 | `>=3.10` | BSD-3-Clause (OSI-approved, confirmed PR 12) | Active | No native issues, heavy deps | Yes | Very heavy (82-package closure verified live, PR 12: cvxpy, matplotlib, sklearn, statsmodels, astropy, Jupyter widgets, plotly, multiple QP solvers) + hard-depends on `vectorbt>=0.28.0` (confirmed resolves to the already-adopted `vectorbt==1.1.0` with no conflict at Python 3.11.15 and 3.14.5rc1 only — the two interpreters tested, both within VectorBT 1.1.0's declared `>=3.11,<3.15` range, 3.12/3.13 untested; the adopted `vectorbt>=1.1.0,<1.2` range cannot resolve on this repository's `>=3.10` project-wide floor without also raising it, nor on Python 3.15+ without a future VectorBT upgrade) | Transitively pulls VectorBT's pandas/numpy chain | **Defer** (PR 12, evaluated 2026-08-23 — not added; no existing consumer, see `pr12/EVALUATION.md`) |
 | SQLAlchemy | 2.0.51 (2026-06) | `>=3.7` | MIT | Very active | No issues | Yes | Light core (`typing-extensions`, `greenlet`) | None with sqlite3 | **Evaluate** (PR 13) |
 | Alembic | 1.18.5 | `>=3.10` | MIT | Active (SQLAlchemy team) | No issues | Yes | Light | None | **Evaluate** (PR 13/14) |
 | APScheduler | 3.11.3 stable (v4 alpha, not production-ready) | 3.8-3.14 | MIT | Active | No issues | Yes | Light (SQLite jobstore reuses SQLAlchemy) | SQLite jobstore documented unsuitable for multiple concurrent schedulers; no distributed lease/fencing | **Evaluate** (PR 14) |
@@ -154,11 +154,15 @@ analytics:
                                  Sortino, drawdown, alpha/beta)
   quantstats-lumi               (PR 1 — added; reporting/presentation only:
                                  tear sheets, tables, charts)
-  riskfolio-lib                 not added — remains PR 12 evaluation-only;
-                                 pulls vectorbt>=0.28.0 transitively
-                                 (confirmed via PyPI metadata), so it stays
-                                 out of this group until that evaluation is
-                                 approved
+  riskfolio-lib                 not added — evaluated and deferred in PR 12
+                                 (docs/library-migration/pr12/EVALUATION.md,
+                                 DECISIONS.md D10); pulls vectorbt>=0.28.0
+                                 transitively (confirmed via live scratch
+                                 install against PyPI, resolves cleanly to
+                                 the already-adopted vectorbt==1.1.0), so
+                                 the dependency question is resolved as
+                                 "defer, no current consumer" rather than
+                                 outstanding
 
 observability:
   structlog                    (PR 1 — added; PR 15 wires it in)
@@ -186,6 +190,7 @@ by PR 1 itself — see the "PR 1 correction record" note below and
 | Empyrical (original) | Reject | Abandoned since Quantopian's shutdown | `evaluation/metrics.py`, then empyrical-reloaded after PR 11 |
 | QuantStats (original) | Reject as primary | Long stagnation before a recent revival; quantstats-lumi shares a maintainer with the already-adopted LumiBot | `evaluation/metrics.py`, then quantstats-lumi after PR 11 |
 | freezegun | Reject as primary, fallback note only | Pure-Python monkeypatching misses time-travel inside pandas' C-extension datetime internals; no 3.14 support | time-machine |
+| Riskfolio-Lib | Defer (PR 12, evaluated 2026-08-23) | OSI-approved and technically conflict-free at Python 3.11.15 and 3.14.5rc1 only — the two interpreters live-verified against the adopted `vectorbt==1.1.0`, both within VectorBT's declared `>=3.11,<3.15` range (3.12/3.13 untested; the adopted `vectorbt>=1.1.0,<1.2` range cannot resolve on this repository's `>=3.10` project-wide floor without also raising it to `>=3.11`, nor on Python 3.15+ without a future VectorBT upgrade), but its 82-package closure has no current in-repo consumer — `COMPONENT_MATRIX.md`'s "Portfolio optimization" row lists no existing implementation to migrate off of | No portfolio-optimization capability exists; none is added |
 | Pandera | Defer | No current DataFrame-shaped contract exists in the repo | Existing dataclass/YAML validation |
 | PyArrow | Defer | No current bulk historical-dataset storage requirement; heaviest dependency evaluated | Existing fixtures/SQLite |
 | pandas-ta-classic | Evaluate only if needed | Only relevant if TA-Lib's native C-library requirement proves infeasible in some CI/macOS target | TA-Lib as primary |
@@ -254,7 +259,7 @@ summary of what changed and why:
 |---|---|---|---|
 | `exchange_calendars` | Optional `core` extra | Base application dependency | Becomes required infrastructure once PR 3 removes the custom calendar; must not require an extra for ordinary install |
 | VectorBT | Adopt, isolated `research` group | **Not added.** `BLOCKED_PENDING_LICENSE_DECISION` (`DECISIONS.md` D4) | Apache-2.0 + Commons Clause is source-available/fair-code, not conventional OSI-approved open source, without an explicit owner-approved exception |
-| Riskfolio-Lib | Added to `analytics` group | **Not added.** Remains PR 12 evaluation-only | Evaluation (need, dependency weight, advisory-output bounding, OSI-compatible resolution) has not happened yet |
+| Riskfolio-Lib | Added to `analytics` group | **Not added.** Remains PR 12 evaluation-only at the time of PR 1 | Evaluation (need, dependency weight, advisory-output bounding, OSI-compatible resolution) had not happened yet as of PR 1; PR 12 completed it 2026-08-23 with a **defer** outcome — see the Section 1/4 rows above and `pr12/EVALUATION.md` |
 | Python floor | Raise to `>=3.11` | **Unchanged, `>=3.10`** | The `>=3.11` requirement was solely VectorBT's; VectorBT is not added in this PR |
 | TA-Lib install guidance | Unconditional `brew install ta-lib` / apt package | Prebuilt wheel required first; system install is a documented fallback only if wheel resolution fails on a supported target | TA-Lib 0.7.1 ships prebuilt wheels for all CI-relevant platform/interpreter combinations |
 | Analytics authority | Ambiguous overlap between empyrical-reloaded and quantstats-lumi | empyrical-reloaded = authoritative primitives; quantstats-lumi = reporting/presentation only | Two independent authorities over the same metrics is a defect, not a feature |
