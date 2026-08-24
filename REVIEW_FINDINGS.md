@@ -4,118 +4,20 @@
 
 - Repository: `/Users/jijopaul/workspace/ai_stock_trading_v2`
 - Branch: `migration/13-sqlalchemy-alembic-feasibility`
-- Reviewed HEAD: `e303ed03b42b5623fb15447ba42e47f99f7cc87b`
-- Subject: Record PR 13 fix round: both findings resolved
-- Claude commits reviewed: 4f81ba9087d39fa8024e36fe43446e8d5e2d0d1e,967fe9eca670129298362c786b1ab2b227359154,e303ed03b42b5623fb15447ba42e47f99f7cc87b
+- Reviewed HEAD: `4a9b1a741fdac1f0c40bb1e58c898fd9d31be7ca`
+- Subject: Record PR 13 fix round 2: all three findings resolved
+- Claude commits reviewed: 4f81ba9087d39fa8024e36fe43446e8d5e2d0d1e,967fe9eca670129298362c786b1ab2b227359154,e303ed03b42b5623fb15447ba42e47f99f7cc87b,6869de867825c785c0b01823de0f300e63dca9ab,4a9b1a741fdac1f0c40bb1e58c898fd9d31be7ca
 - Review scope: FULL_PR
 - Reviewed base: `641f5daee8d5ec629578f371555556a4a24b849e`
 - GitHub PR: #30
-- Fix round: 1
+- Fix round: 2
 - Trigger: local Git `post-commit`
 - Review status: FIXES_APPLIED_PENDING_REVIEW
 - Highest priority: P2
 - Finding count: 0
-- Fix commit: `6869de867825c785c0b01823de0f300e63dca9ab`
+- Fix commit: `62a7c0dc911ac7a230abc4f3c9486bb4da6eabef`
 
 ## Findings
-
-### [P2] Enforce Core-only access for every trigger-protected table
-
-Commit: `967fe9eca670129298362c786b1ab2b227359154`
-
-Location: `/Users/jijopaul/workspace/ai_stock_trading_v2/docs/library-migration/pr13/scratch_trigger_orm_vs_core.py:420-430`
-
-Problem: The new guard claims to enforce the required Core-only boundary for trigger-protected tables, but its allowlist contains only `real_orders` and `paper_book_cash_ledger`.
-
-Evidence: Production defines many other append-only or immutable trigger-protected tables, including `paper_book_fills`, `research_attempts`, `research_attempt_failures`, `research_cycle_provider_provenance_links`, and numerous paper-execution audit tables. ORM flushes targeting any omitted table pass this guard. Nevertheless, `EVALUATION.md:128-134` records question (a) as answered and describes the mechanism generally as constraining trigger-protected tables. The regression test at `tests/unit/test_pr13_evaluation_docs.py:70-80` only searches previously generated output for two successful examples and cannot detect incomplete table coverage.
-
-Impact: A future SQLAlchemy adoption following D11 could treat this reproduction as a proven safety boundary while ORM unit-of-work writes remain permitted against most append-only audit, accounting, and execution-safety tables.
-
-Required fix: Define the complete trigger-protected-table policy from a centralized authoritative registry or derive and validate it against the production schema. The guard must reject ORM writes to every table governed by the Core-only policy, including subsequently added tables.
-
-Validation: Map and attempt ORM insert/update/delete operations against every protected table category, confirm the guard rejects them before SQL execution, and add a regression check that fails whenever production gains a protected table absent from the guard policy.
-
-Resolution: Fixed by `6869de867825c785c0b01823de0f300e63dca9ab`.
-`TRIGGER_PROTECTED_TABLES` is no longer a hardcoded 2-table set; it is now
-computed by `discover_trigger_protected_tables_from_production_schema()`,
-which scans every `src/trading_research/storage/*_schema.py` module for a
-`CREATE TRIGGER ... BEFORE {INSERT,UPDATE,DELETE} ON <table> ...
-RAISE(ABORT ... END;` block (unconditional or `WHEN`-conditional) and
-collects `<table>` — currently 50 tables, not 2. Added case 9 to
-`scratch_trigger_orm_vs_core.py`: builds a disposable synthetic
-single-column table for every one of the 50 discovered names, maps each
-imperatively, and confirms `TriggerProtectedTableORMGuard` rejects an ORM
-flush pre-SQL against every one, explicitly including the tables the
-finding cited as omitted (`paper_book_fills`, `research_attempts`,
-`research_attempt_failures`, `research_cycle_provider_provenance_links`).
-Re-ran the scratch script against the pinned scratch venv (sqlalchemy
-2.0.52) and committed the regenerated `scratch_trigger_output.txt`. Added
-`test_guard_policy_matches_current_production_trigger_protected_tables` to
-`tests/unit/test_pr13_evaluation_docs.py`, which independently re-derives
-the protected-table set from the *current* production schema (a duplicated,
-not imported, copy of the discovery regex) and fails if that count diverges
-from the pinned scratch output — so a future table gaining a
-write-rejecting trigger cannot silently fall outside guard coverage without
-failing CI. Updated `EVALUATION.md` Section 2 (new case 9) and
-`DECISIONS.md` D11 to record the guard's coverage as complete and
-self-updating, not a hand-maintained 2-table allowlist.
-Validation: `test_trigger_scratch_output_shows_guard_covers_every_discovered_table`
-and `test_guard_policy_matches_current_production_trigger_protected_tables`
-added to `tests/unit/test_pr13_evaluation_docs.py`.
-
-Tests or diagnostics run:
-
-- Inspected all three complete commit diffs chronologically with `git show` and `git diff`.
-- Compared the scratch DDL and guard coverage with current production schema and trigger definitions.
-- Reviewed `MASTER_PLAN.md`, D11, dependency/component matrices, status records, evaluation, scratch scripts, outputs, and regression tests.
-- Attempted `PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -m pytest -p no:cacheprovider tests/unit/test_pr13_evaluation_docs.py`; collection could not start because the read-only environment has no usable temporary directory.
-- No broker, scheduler, model, credentialed, or external-order operations were performed.
-
-### [P2] Exercise ORM updates before withdrawing the masking risk
-
-Commit: `4f81ba9087d39fa8024e36fe43446e8d5e2d0d1e`
-
-Location: `/Users/jijopaul/workspace/ai_stock_trading_v2/docs/library-migration/pr13/EVALUATION.md:103`
-
-Problem: An active GitHub review thread remains unresolved:
-
-> **<sub><sub>![P2 Badge](https://img.shields.io/badge/P2-yellow?style=flat)</sub></sub>  Exercise ORM updates before withdrawing the masking risk**
-> 
-> When a future mapper loads an existing `paper_book_cash_ledger` row, changes a protected field, and flushes, the trigger-rejected UPDATE and the already-persistent object's state are precisely the identity-map scenario under evaluation. Case 5 tests UPDATE only through Core, while the ORM cases cover a new-object INSERT and a cascade DELETE, so these six cases do not support withdrawing the ORM masking concern or downgrading Core-only access from a correctness constraint; add an ORM UPDATE case that inspects the object and database before and after rollback.
-> 
-> AGENTS.md reference: [AGENTS.md:L63-L69](https://github.com/jijoece/ai_stock_trading_v2/blob/4f81ba9087d39fa8024e36fe43446e8d5e2d0d1e/AGENTS.md#L63-L69)
-> 
-> Useful? React with 👍 / 👎.
-
-Evidence: [chatgpt-codex-connector review thread](https://github.com/jijoece/ai_stock_trading_v2/pull/30#discussion_r3840952291) is current, unresolved, and not outdated.
-
-Impact: Merging would knowingly carry unresolved review feedback into main.
-
-Required fix: Verify and address the review comment in code and add the requested regression coverage.
-
-Validation: Run the focused regression test and the repository's canonical validation; a subsequent full-PR review must find no remaining defect.
-
-Resolution: Fixed by `6869de867825c785c0b01823de0f300e63dca9ab`. Added
-case 7 to `scratch_trigger_orm_vs_core.py`: loads the `paper_book_cash_ledger`
-row case 5 inserted via `session.get()` (identity-map load of an existing
-row, not a new object), mutates the protected `amount_usd` field, and
-flushes — rejected identically (`IntegrityError`). Re-reading the mutated
-attribute before calling `session.rollback()` was itself attempted and
-raises `PendingRollbackError`, since SQLAlchemy expires an object's
-attributes after a failed UPDATE flush and a dirty session refuses to serve
-even a read of its own expired attribute — the same fail-closed behavior
-case 3 already pins for unrelated work. A read from a genuinely independent
-connection during that window shows the original, unmutated value; after
-`session.rollback()` and `session.expire()`, re-reading the attribute
-issues a fresh `SELECT` that returns the same original value, proving the
-identity map does not retain or later resurface the rejected mutation.
-Re-ran the scratch script against the pinned scratch venv (sqlalchemy
-2.0.52) and committed the regenerated `scratch_trigger_output.txt`. Updated
-`EVALUATION.md` Section 2 (new case 7) and `DECISIONS.md` D11 to record the
-masking withdrawal as covering INSERT, UPDATE, and cascade DELETE, not just
-INSERT and DELETE.
-Validation: `test_trigger_scratch_output_shows_orm_update_masking_case`
-added to `tests/unit/test_pr13_evaluation_docs.py`.
 
 ### [P2] Use a separate DB connection for the visibility check
 
@@ -131,7 +33,7 @@ Problem: An active GitHub review thread remains unresolved:
 > 
 > AGENTS.md reference: [AGENTS.md:L63-L69](https://github.com/jijoece/ai_stock_trading_v2/blob/4f81ba9087d39fa8024e36fe43446e8d5e2d0d1e/AGENTS.md#L63-L69)
 > 
-> Useful? React with 👍 / 👎.
+> Useful? React with 👍 / 👎.
 
 Evidence: [chatgpt-codex-connector review thread](https://github.com/jijoece/ai_stock_trading_v2/pull/30#discussion_r3840952295) is current, unresolved, and not outdated.
 
@@ -141,25 +43,91 @@ Required fix: Verify and address the review comment in code and add the requeste
 
 Validation: Run the focused regression test and the repository's canonical validation; a subsequent full-PR review must find no remaining defect.
 
-Resolution: Fixed by `6869de867825c785c0b01823de0f300e63dca9ab`.
-`make_engine()` now opens a file-backed SQLite database (a temp file, not
-`sqlite:///:memory:`), matching `storage/database.py`'s own
-`sqlite3.connect(str(db_path))`, with the default `QueuePool` (no
-`StaticPool`). `engine.connect()` in case 4 (and the new case 7) is
-therefore a genuinely independent DBAPI connection from the ORM session's
-own, not the same connection a `StaticPool`-pinned in-memory engine would
-silently reuse. Also narrowed the documented conclusion: per case 3's
+Resolution: Verified against current code at HEAD `62a7c0dc911ac7a230abc4f3c9486bb4da6eabef`
+— no further change was needed. This thread re-states the exact defect
+already fixed by `6869de867825c785c0b01823de0f300e63dca9ab` (recorded in
+this file's prior fix round): `make_engine()` in
+`scratch_trigger_orm_vs_core.py` opens a file-backed SQLite database (a
+temp file, not `sqlite:///:memory:`) with the default `QueuePool`, not
+`StaticPool`, so case 4's `engine.connect()` is a genuinely independent
+DBAPI connection from the ORM session's own. The documented conclusion is
+already narrowed to the **post-failure end-state** (per case 3's
 `PendingRollbackError`, SQLAlchemy has already rolled back the failed
-flush's transaction internally by the time the `except` block runs, before
-this test's own `session.rollback()` — so the check proves the
-**post-failure end-state** is clean via true cross-connection visibility,
-not that a still-pending, not-yet-rolled-back write was momentarily
-invisible mid-transaction, a window that is not claimed or observable given
-SQLAlchemy's fail-closed behavior. Re-ran the scratch script against the
-pinned scratch venv (sqlalchemy 2.0.52) and committed the regenerated
-`scratch_trigger_output.txt`. Updated `EVALUATION.md` case 4's description
-and `DECISIONS.md` D11 to match the corrected connection and the narrowed
-claim.
-Validation: `test_evaluation_records_independent_connection_fix_and_narrowed_claim`
-added to `tests/unit/test_pr13_evaluation_docs.py`.
+flush's transaction internally before the `except` block runs), not a
+claim about a still-pending, not-yet-rolled-back write. Confirmed by
+re-reading `make_engine()` and `case_4_batched_flush_partial_visibility()`
+directly: neither `:memory:` nor `StaticPool` appears anywhere in the
+visibility-check path. `EVALUATION.md`'s case 4 description and
+`test_evaluation_records_independent_connection_fix_and_narrowed_claim`
+(in `tests/unit/test_pr13_evaluation_docs.py`) already pin this fix and
+continue to pass unmodified. This GitHub thread is stale — it targets
+commit `4f81ba9087d39fa8024e36fe43446e8d5e2d0d1e` (the pre-fix state) and
+was not dismissed after `6869de8` superseded it; no code or doc change was
+required in this fix round.
 
+### [P2] Test concurrent revisions before claiming default resistance
+
+Commit: `e303ed03b42b5623fb15447ba42e47f99f7cc87b`
+
+Location: `/Users/jijopaul/workspace/ai_stock_trading_v2/docs/library-migration/pr13/EVALUATION.md:160`
+
+Problem: An active GitHub review thread remains unresolved:
+
+> **<sub><sub>![P2 Badge](https://img.shields.io/badge/P2-yellow?style=flat)</sub></sub>  Test concurrent revisions before claiming default resistance**
+> 
+> When two developers create revisions independently from the same `0003` checkout, each process sees `0003` as the current head and can create its child without `--splice`; combining those revision files later produces two heads. Case 2 only attempts the second child after the first is already visible in the same script directory, so it demonstrates protection against sequential local branching, not the common accidental branch created by concurrent development. Add the two-checkout/combined-files case or narrow the repeated claim that Alembic resists accidental branching.
+> 
+> AGENTS.md reference: [AGENTS.md:L68-L69](https://github.com/jijoece/ai_stock_trading_v2/blob/e303ed03b42b5623fb15447ba42e47f99f7cc87b/AGENTS.md#L68-L69)
+> 
+> Useful? React with 👍 / 👎.
+
+Evidence: [chatgpt-codex-connector review thread](https://github.com/jijoece/ai_stock_trading_v2/pull/30#discussion_r3840989534) is current, unresolved, and not outdated.
+
+Impact: Merging would knowingly carry unresolved review feedback into main.
+
+Required fix: Verify and address the review comment in code and add the requested regression coverage.
+
+Validation: Run the focused regression test and the repository's canonical validation; a subsequent full-PR review must find no remaining defect.
+
+Resolution: Fixed by `62a7c0dc911ac7a230abc4f3c9486bb4da6eabef`. Confirmed the
+finding was valid: `case_2_branch_creates_two_heads()` in
+`scratch_alembic_linearity.py` only re-attempts a second child of `0003`
+*after* the first child's file is already on disk in the same script
+directory, so its `CommandError`/`--splice` result demonstrates protection
+against a sequential, single-directory branch attempt only. Added case 2b:
+two isolated temp checkouts of the post-case-1 script directory (only
+0001-0003 present, no child of 0003 in either) each independently call
+`command.revision(cfg, head='0003')` — both succeed with no `--splice` and
+no `CommandError`, because from each checkout's own local view `0003` is
+still an unreferenced head. Their revision files are then copied into one
+combined `versions/` directory (simulating a `git merge`/`git pull`), and
+`ScriptDirectory.get_heads()` on the combined directory reports two heads
+— the same accidental branch, produced without either developer ever
+needing to override a guard. Re-ran the scratch script against the pinned
+scratch venv (alembic 1.18.5) and committed the regenerated
+`scratch_alembic_output.txt` (case 2b's output confirms neither `FAIL` nor
+`UNEXPECTED`). Narrowed the repeated "Alembic already resists accidental
+branching" claim in `EVALUATION.md` (added case 9 to the "Method" list and
+rewrote the Section 3 finding paragraph), `DECISIONS.md` D11, and
+`STATUS.md`'s PR 13 completed-work section to scope Case 2's and Case 3's
+guards to state already visible within a single script directory, and to
+record that the concurrent-checkout branch is not caught by Alembic's
+default at revision-creation time at all.
+Validation: `test_alembic_scratch_output_shows_concurrent_checkout_branch_case`
+and `test_evaluation_narrows_accidental_branch_resistance_claim` added to
+`tests/unit/test_pr13_evaluation_docs.py`.
+
+Tests or diagnostics run:
+
+- `.venv/bin/python -m pytest -q tests/unit/test_pr13_evaluation_docs.py` — 24 passed.
+- `.venv/bin/python -m nox -s ci` — ran `ci`, `tests` (3171 passed, 106 skipped),
+  `paper_tests` (160 passed), `safety_typecheck` (0 errors), and
+  `migration_smoke` sessions; all successful.
+- Re-ran `scratch_alembic_linearity.py` against the pinned scratch venv
+  (`/tmp/pr13_scratch_venv`, alembic 1.18.5) and regenerated
+  `scratch_alembic_output.txt`.
+- Read `scratch_trigger_orm_vs_core.py`'s `make_engine()` and
+  `case_4_batched_flush_partial_visibility()` directly to confirm the
+  separate-connection fix is already present in current code.
+- No broker, scheduler, model, credentialed, or external-order operations
+  were performed.
