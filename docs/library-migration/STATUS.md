@@ -1,6 +1,6 @@
 # Migration Status
 
-**Current phase: PR 12 — Riskfolio-Lib evaluation only — EVALUATED**
+**Current phase: PR 12 — Riskfolio-Lib evaluation only — EVALUATED, NOT MERGED**
 (branch `migration/12-riskfolio-lib-evaluation`; `MASTER_PLAN.md` row 12,
 `DECISIONS.md` D10). Evaluation only — documentation
 (`docs/library-migration/pr12/EVALUATION.md`) and a scratch reproduction
@@ -63,8 +63,8 @@ and never written, and bar availability is enforced once per run rather than
 per session. Row 8a is **not started** and remains independent of the
 numbered migration sequence — it can run at any point.
 
-PR 12 — Riskfolio-Lib evaluation only — is **EVALUATED** (branch
-`migration/12-riskfolio-lib-evaluation`; `MASTER_PLAN.md` row 12,
+PR 12 — Riskfolio-Lib evaluation only — is **EVALUATED, NOT MERGED**
+(branch `migration/12-riskfolio-lib-evaluation`; `MASTER_PLAN.md` row 12,
 `DECISIONS.md` D10). See this file's "Current phase" note above and
 "Completed work (PR 12)" below for the full record; the next phase is now
 PR 13 (see above).

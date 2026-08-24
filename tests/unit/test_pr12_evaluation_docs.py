@@ -246,6 +246,27 @@ def test_status_marks_pr_11_as_merged():
     assert "611b3df" in entry
 
 
+def test_status_marks_current_phase_not_merged():
+    """PR 29 fix round 6: while PR 12 remains the current, unmerged phase,
+    `AUTOMATION.md`'s "GitHub is authoritative for merge status" rule
+    requires STATUS.md to mark it "NOT MERGED" (the same convention already
+    used historically for PR 9, see `test_status_marks_pr_11_as_merged`'s
+    docstring) until GitHub confirms the merge and PR 13 rewrites this
+    file. Both the "Current phase" line and the PR 12 "Completed work"
+    entry must carry the marker, not just one of them."""
+    text = STATUS.read_text(encoding="utf-8")
+
+    current_phase_idx = text.index("**Current phase: PR 12")
+    current_phase_section = text[current_phase_idx : current_phase_idx + 200]
+    assert "NOT MERGED" in current_phase_section
+    assert "EVALUATED" in current_phase_section
+
+    entry_idx = text.index("PR 12 — Riskfolio-Lib evaluation only — is")
+    entry_section = text[entry_idx : entry_idx + 200]
+    assert "NOT MERGED" in entry_section
+    assert "EVALUATED" in entry_section
+
+
 def test_pr_11_merge_commit_is_an_ancestor_of_this_branch():
     """Pins the git fact the previous test's claim depends on. Skips (does
     not fail) when the commit object is unavailable -- e.g. a shallow
