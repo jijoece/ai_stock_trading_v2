@@ -43,7 +43,8 @@ terms (`DECISIONS.md` D4), Riskfolio-Lib carries no fair-code restriction
 requiring an owner exception. This resolves the "OSI-compatible resolution"
 open item `DEPENDENCY_MATRIX.md` Section 6 listed as outstanding.
 
-**Hard dependency on VectorBT — confirmed, and confirmed compatible.**
+**Hard dependency on VectorBT — confirmed, and confirmed compatible on
+Python >=3.11 (not on the repository's project-wide Python floor).**
 `requires_dist` includes `vectorbt>=0.28.0` (no upper bound), reconfirming
 `DEPENDENCY_MATRIX.md`'s existing row ("not a documentation error"). Installed
 into a clean scratch virtualenv (`python3 -m venv`, wheel-only:
@@ -53,7 +54,22 @@ verified against), pip's resolver picked **`vectorbt==1.1.0`** — exactly the
 version already pinned by the approved `research` extra's
 `vectorbt>=1.1.0,<1.2` (`pyproject.toml`, PR 5). This is a live, reproducible
 confirmation that Riskfolio-Lib's floor and the already-adopted VectorBT pin
-do not conflict, not just a reading of declared metadata.
+do not conflict on Python >=3.11, not just a reading of declared metadata.
+
+**Python-floor caveat.** This confirmation is scoped to the interpreter it ran
+on and does not establish conflict-free installation across this repository's
+full declared floor. `pyproject.toml` still declares
+`requires-python = ">=3.10"` project-wide; PR 5 left that unchanged and scoped
+its own `>=3.11` requirement to the `research` extra only
+(`DEPENDENCY_MATRIX.md` Section 2). VectorBT 1.1.0 itself requires
+`>=3.11,<3.15` (`DEPENDENCY_MATRIX.md`'s VectorBT row), so the adopted
+`vectorbt>=1.1.0,<1.2` range cannot resolve at all on a plain Python 3.10
+interpreter — a constraint that exists independently of Riskfolio-Lib. A
+future environment that combines Riskfolio-Lib with the adopted VectorBT
+constraint therefore still requires either the `research` extra's
+already-documented `>=3.11` floor or a project-wide floor increase to
+`>=3.11`; it would not resolve on a bare Python 3.10 install of the base
+project. This evaluation does not claim otherwise.
 
 Full install: **82 packages**, wheel-only (no source compilation on this
 platform), `pip check` reported **no broken requirements**, `import
@@ -135,8 +151,10 @@ code" → **do not adopt**, since there is no existing code to compare
 against here) or to VectorBT ("owner-approved exception for a scoped,
 already-consumed capability" → **Adopt**): Riskfolio-Lib is legally
 unblocked (OSI-approved BSD-3, unlike VectorBT) and technically installable
-without conflict (confirmed by live resolution against the already-adopted
-`vectorbt>=1.1.0,<1.2` pin), but its 82-package closure — including several
+without conflict on Python >=3.11 (confirmed by live resolution against the
+already-adopted `vectorbt>=1.1.0,<1.2` pin; see Section 2's Python-floor
+caveat — this does not hold on the project's `>=3.10` floor without also
+raising it to `>=3.11`), but its 82-package closure — including several
 packages with no other purpose in this codebase (Jupyter widgets, a second
 charting library, multiple QP solver backends, `astropy`) — is not justified
 by any concrete current consumer. Per the advisory-only constraint this PR
