@@ -15,7 +15,7 @@
 - Review status: FIXES_APPLIED_PENDING_REVIEW
 - Highest priority: P1
 - Finding count: 0
-- Fix commit: `97bf12298240d70a6989135b80d24c5e836fa961`
+- Fix commit: `b6109754de30436af300a8e5368d374324c47045`
 
 ## Findings
 
@@ -114,3 +114,21 @@ Required fix: Rerun both suites, record their exact final counts, and pin those 
 Validation: `.venv/bin/python -m pytest tests/ -q --tb=short` passed with 3,270 tests and 57 skipped; `.venv/bin/python -m nox -s ci` passed all five sessions with 3,142 main tests and 106 skipped, 160 paper tests, clean safety typecheck, and clean migration smoke.
 
 Resolution: Fixed by `97bf12298240d70a6989135b80d24c5e836fa961`; `STATUS.md` now records both final counts and the documentation-consistency test requires them.
+
+### [P2] Correct the current-phase scope
+
+Commit: `7a619c5b1a5e17d30fd1049a5f4f420d2111adfc`
+
+Location: `docs/library-migration/STATUS.md:8`
+
+Problem: The current-phase summary still said no code under `tests/` changed even though the review-fix rounds added a documentation-consistency test file.
+
+Evidence: [GitHub review thread](https://github.com/jijoece/ai_stock_trading_v2/pull/29#discussion_r3840606772) identified the contradiction between the opening summary and the completed-work record.
+
+Impact: Readers of the canonical current-phase summary would receive an inaccurate description of the PR scope.
+
+Required fix: Describe production code as unchanged while explicitly recording the review-only test coverage, and refresh the final validation counts after adding the regression test.
+
+Validation: 24 focused documentation tests passed; the direct suite passed with 3,271 tests and 57 skipped; `.venv/bin/python -m nox -s ci` passed all five sessions with 3,143 main tests and 106 skipped, 160 paper tests, clean safety typecheck, and clean migration smoke.
+
+Resolution: Fixed by `b6109754de30436af300a8e5368d374324c47045`; the current-phase summary now distinguishes unchanged production code from the added documentation-consistency coverage, and the regression test pins both the scope wording and final counts.
