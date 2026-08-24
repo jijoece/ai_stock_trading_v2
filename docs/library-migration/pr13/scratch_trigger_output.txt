@@ -1,0 +1,29 @@
+sqlalchemy 2.0.52, sqlite3 3.50.4
+
+=== Case 1: Core INSERT into real_orders (control — must be rejected) ===
+PASS: Core insert rejected — real_orders is reserved — no execution path exists in this phase
+
+=== Case 2: ORM session.add() + flush() into real_orders (must be rejected) ===
+PASS: ORM flush rejected — real_orders is reserved — no execution path exists in this phase
+    object state pre-rollback: pending=False persistent=False transient=True deleted=False
+    object state post-rollback: pending=False persistent=False transient=True deleted=False
+
+=== Case 3: caller forgets to rollback after a rejected flush — does the session mask further work? ===
+PASS: SQLAlchemy fails closed — a session left dirty by an unhandled flush error refuses further work (even a raw text() execute) rather than silently proceeding: PendingRollbackError
+
+=== Case 4: multi-object flush, one row rejected — does any object in the batch look 'flushed'/persistent in memory before rollback (masking risk)? ===
+    pre-rollback: good.persistent=False good.pending=False bad.persistent=False
+    DB row count for 'good' row while session still open, pre-rollback: 0
+    post-rollback: good.persistent=False good.transient=True DB row count: 0
+PASS: the whole flush is one transaction — the legal row's DB write was rolled back along with the illegal one (atomic, not masked)
+
+=== Case 5: Core against paper_book_cash_ledger — INSERT allowed, UPDATE/DELETE rejected (control) ===
+    Core insert succeeded (expected)
+PASS: Core update rejected — paper_book_cash_ledger is append-only
+PASS: Core delete rejected — paper_book_cash_ledger is append-only
+
+=== Case 6: ORM cascade-configured relationship issuing an implicit DELETE against an append-only child — does the cascade silently skip the DB, or does it issue a real DELETE that the trigger still blocks? ===
+    book-3 has 1 ledger entries in the relationship collection
+PASS: ORM relationship cascade still issues a real DELETE that the trigger blocks — paper_book_cash_ledger is append-only
+
+Done.

@@ -1,28 +1,33 @@
 # Migration Status
 
-**Current phase: PR 12 — Riskfolio-Lib evaluation only — EVALUATED, NOT MERGED**
-(branch `migration/12-riskfolio-lib-evaluation`; `MASTER_PLAN.md` row 12,
-`DECISIONS.md` D10). Evaluation only — documentation
-(`docs/library-migration/pr12/EVALUATION.md`) and a scratch reproduction
-(`pr12/scratch_smoke_test.py`, `pr12/scratch_output.txt`), no production code
-under `src/`, `scripts/`, or `paper_runtime/src/`; `tests/` gained only the
-documentation-consistency regression coverage described below. **Outcome:
-defer, not added.** License re-verified OSI-approved (BSD-3-Clause); a live scratch
-install confirmed Riskfolio-Lib's `vectorbt>=0.28.0` hard dependency
-resolves cleanly to the already-adopted `vectorbt==1.1.0` (PR 5) with no
-conflict at Python 3.11.15 and 3.14.5rc1 only — the two interpreters
-live-tested, both within VectorBT's declared `>=3.11,<3.15` range
-(3.12/3.13 untested; the adopted `vectorbt>=1.1.0,<1.2` range cannot
-resolve on this repository's `>=3.10` project-wide floor without also
-raising it, nor on Python 3.15+ without a future VectorBT upgrade),
-but the resulting 82-package closure has no current in-repo
-consumer (`COMPONENT_MATRIX.md`'s "Portfolio optimization" row: no existing
-implementation) — so `riskfolio-lib` is **not added** to any dependency
-declaration. See "Completed work (PR 12)" below.
+**Current phase: PR 13 — SQLAlchemy/Alembic feasibility and ADR — EVALUATED, NOT MERGED**
+(branch `migration/13-sqlalchemy-alembic-feasibility`; `MASTER_PLAN.md` row
+13, `DECISIONS.md` D11). No implementation — documentation
+(`docs/library-migration/pr13/EVALUATION.md`) and two scratch reproductions
+(`pr13/scratch_trigger_orm_vs_core.py`, `pr13/scratch_alembic_linearity.py`,
+with raw output in `scratch_trigger_output.txt`/`scratch_alembic_output.txt`),
+no production code under `src/`, `scripts/`, or `paper_runtime/src/`;
+`tests/` gained only the documentation-consistency regression coverage
+described below. **Outcome: defer, not added.** Both packages re-verified
+live as OSI-approved MIT; empirical testing against the exact production
+trigger DDL (`real_orders`, `paper_book_cash_ledger`) found no case, across
+six scenarios including an unhandled failed flush and an ORM relationship
+cascade, where SQLAlchemy's ORM masked a trigger-rejected write — the PR 0
+theoretical concern behind this row is withdrawn as unsubstantiated; and
+Alembic's branching revision graph was confirmed constrainable to
+linear-only history matching `storage/schema_version.py`'s existing
+monotonic ledger, but only via a new, unbuilt CI gate, not by any Alembic
+default. Neither finding is a correctness blocker, but neither identifies a
+current capability gap either (`COMPONENT_MATRIX.md`'s "Persistence"/
+"Migrations" rows: the existing hand-written schema/repository layer is not
+broken or unmaintained) — so `sqlalchemy`/`alembic` are **not added** to any
+dependency declaration, and no ADR was produced (none is required when
+adoption is not recommended, per `DECISIONS.md` D2's single-ADR rule). See
+"Completed work (PR 13)" below.
 
-**Next phase: PR 13 — SQLAlchemy/Alembic feasibility and ADR**
-(`MASTER_PLAN.md` row 13), which depends only on PR 1 (already merged). PR 12
-above is now evaluated; row 13 is the next unstarted row whose dependency is
+**Next phase: PR 14 — APScheduler/Tenacity feasibility**
+(`MASTER_PLAN.md` row 14), which depends only on PR 1 (already merged). PR 13
+above is now evaluated; row 14 is the next unstarted row whose dependency is
 already satisfied (row 8a remains independent of the numbered sequence, per
 its own note below, and is not "next" in this ordering).
 
@@ -66,11 +71,19 @@ and never written, and bar availability is enforced once per run rather than
 per session. Row 8a is **not started** and remains independent of the
 numbered migration sequence — it can run at any point.
 
-PR 12 — Riskfolio-Lib evaluation only — is **EVALUATED, NOT MERGED**
-(branch `migration/12-riskfolio-lib-evaluation`; `MASTER_PLAN.md` row 12,
-`DECISIONS.md` D10). See this file's "Current phase" note above and
-"Completed work (PR 12)" below for the full record; the next phase is now
-PR 13 (see above).
+PR 12 — Riskfolio-Lib evaluation only — is **merged** (PR #29, `641f5da`,
+branch `migration/12-riskfolio-lib-evaluation`; `MASTER_PLAN.md` row 12,
+`DECISIONS.md` D10). This entry previously read "EVALUATED, NOT MERGED"
+after the merge landed — corrected here, per `AUTOMATION.md`'s "GitHub is
+authoritative for merge status" rule, the same correction pattern already
+applied to PR 9's and PR 11's entries elsewhere in this file. See
+"Completed work (PR 12)" below for the full record.
+
+PR 13 — SQLAlchemy/Alembic feasibility and ADR — is **EVALUATED, NOT
+MERGED** (branch `migration/13-sqlalchemy-alembic-feasibility`;
+`MASTER_PLAN.md` row 13, `DECISIONS.md` D11). See this file's "Current
+phase" note above and "Completed work (PR 13)" below for the full record;
+the next phase is now PR 14 (see above).
 
 PR 6 is **merged** (`bbd7a1f`, PR #18) and delivered everything ADR 0009
 Decision 4 requires:
@@ -2782,3 +2795,102 @@ lookup, each into a disposable scratch virtualenv outside the repository —
 none of which touched the project's own dependency graph, `.venv`, or any
 application code path; the scheduler was not enabled; no external paper
 order of any kind was submitted or referenced.
+
+## Completed work (PR 13)
+
+**Scope:** no implementation — documentation
+(`docs/library-migration/pr13/EVALUATION.md`) and two scratch reproductions
+(`docs/library-migration/pr13/scratch_trigger_orm_vs_core.py`,
+`scratch_alembic_linearity.py`, with raw output in
+`scratch_trigger_output.txt`/`scratch_alembic_output.txt` and resolved
+package versions in `scratch_pip_freeze.txt`), plus this file,
+`DEPENDENCY_MATRIX.md`, `COMPONENT_MATRIX.md`, and `DECISIONS.md` (D11).
+No file under `src/`, `scripts/`, `paper_runtime/src/`, or
+`backtest_runtime/` was modified. No change to `pyproject.toml`.
+`tests/unit/test_pr13_evaluation_docs.py` is a documentation-consistency
+regression test, not application code.
+
+**Outcome: defer, do not adopt.** SQLAlchemy 2.0.52 and Alembic 1.19.1 (a
+`alembic>=1.18,<1.19` scratch pin resolved and tested 1.18.5) were
+re-verified live against the PyPI JSON API: both MIT, both OSI-approved,
+Alembic's `Requires-Python` (`>=3.10`) matching this repository's floor
+exactly. Row 13 required two questions to be explicitly tested, not just
+reasoned about:
+
+(a) whether trigger-protected tables can be restricted to SQLAlchemy Core
+statements only. A scratch reproduction copy-pasted the exact production
+trigger DDL for `real_orders` (fully reserved) and `paper_book_cash_ledger`
+(append-only) and drove both via Core statements and an ORM `Session`
+across six cases, including two adversarial ones beyond the original
+hypothesis: a caller that forgets to roll back after a rejected flush
+(SQLAlchemy raises `PendingRollbackError` on the next operation rather than
+proceeding), and an ORM relationship cascade deleting a parent row (the
+cascade still issues a real `DELETE` the trigger still rejects). Every case
+failed closed; no object ever appeared "persistent" in memory before
+rollback. `DEPENDENCY_MATRIX.md` Section 5's PR 0 concern — "the ORM's
+unit-of-work flush ordering and identity-map caching can mask a
+trigger-rejected write" — is **withdrawn as unsubstantiated**. Core-only for
+trigger-protected tables remains the recommendation for any future adoption
+regardless, as an auditability preference, not a correctness requirement.
+
+(b) whether Alembic's branching revision graph can be constrained to
+linear-only history matching `storage/schema_version.py`'s existing
+monotonic ledger. A second scratch reproduction built a real, disposable
+Alembic environment and found Alembic already resists *accidental*
+branching (an un-spliced second child of an existing head is refused by
+default; an ambiguous `upgrade head` with multiple heads present is
+refused), but a deliberate `splice=True` still creates a real branch, and
+`alembic merge` converges to one head while leaving a merge revision (a
+tuple `down_revision`) that is not linear. A ~15-line custom gate (one
+head, no revision with more than one child, no tuple `down_revision`)
+caught every case, including the merge case where "one head" alone would
+have looked linear but was not. **Conclusion: constrainable to linear-only
+history, but only via a new, unbuilt, permanently-maintained CI gate** —
+`schema_version.py`'s `dict[int, ...]` ledger has no branch concept to
+guard against in the first place.
+
+Neither finding is a correctness blocker, but neither identifies a current
+capability gap either: `COMPONENT_MATRIX.md`'s "Persistence"/"Migrations"
+rows describe the existing hand-written `storage/*_schema.py` DDL and
+`storage/schema_version.py`'s ordered-migration ledger as available for
+evaluation, not broken or unmaintained, and no module today has a problem
+SQLAlchemy/Alembic would solve that pattern does not already solve. Applying
+the same "no concrete current need exists" bar `DECISIONS.md` already uses
+for Pandera/PyArrow/Riskfolio-Lib: **defer**, not adopt. See `DECISIONS.md`
+D11 and `pr13/EVALUATION.md` for the full record. No ADR was produced —
+none is required when adoption is not recommended, per `DECISIONS.md` D2's
+single-ADR rule, reapplied in D10.
+
+**Custom code removed:** none. This PR adds no new production capability and
+removes none — `pyproject.toml`, `src/`, and `scripts/` are byte-for-byte
+unchanged from `main`; `tests/` gained only the documentation-consistency
+regression coverage described above
+(`tests/unit/test_pr13_evaluation_docs.py`).
+
+**Tests run:**
+- `tests/unit/test_pr13_evaluation_docs.py` pins the "defer, do not adopt"
+  outcome, the withdrawn masking-hypothesis finding, and the
+  linear-only-gate finding into `EVALUATION.md`, `DEPENDENCY_MATRIX.md`,
+  `COMPONENT_MATRIX.md`, `DECISIONS.md` D11, and this file, and asserts the
+  two scratch reproductions' raw output contains no `FAIL`/`UNEXPECTED`
+  marker. The scratch reproductions themselves ran only inside a disposable
+  virtualenv (`/tmp/pr13_scratch_venv`, not committed) outside this
+  repository's dependency graph, never against the project's own `.venv`.
+- `.venv/bin/python -m pytest tests/ -q --tb=short` — **3289 passed, 57
+  skipped, 0 failed**; no test outside the new file was modified.
+- `nox -s ci` — all four blocking sessions passed: `tests` (3161 passed, 106
+  skipped, `.[dev]` only), `paper_tests` (160 passed), `safety_typecheck`
+  (pyright, 0 errors — `pr13/scratch_trigger_orm_vs_core.py` and
+  `pr13/scratch_alembic_linearity.py` are outside both `[tool.pyright]`'s
+  `include` and `pyright-safety.json`'s scope, same as PR 2/PR 12's scratch
+  files), `migration_smoke` (OK).
+- `scripts/check_links.sh` — 189 links checked, 187 OK, 0 errors, 2
+  excluded.
+
+**Safety:** no trading limit, authorization rule, `paper_books` accounting
+code, or scheduling behavior was touched; no broker, provider, or real
+market-data service was called; the only network access was two read-only,
+wheel-only `pip install` runs into a disposable scratch virtualenv (never
+the project's own `.venv`) plus two read-only PyPI JSON metadata lookups;
+the scheduler was not enabled; no external paper order of any kind was
+submitted or referenced.

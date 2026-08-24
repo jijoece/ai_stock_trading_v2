@@ -50,8 +50,8 @@ end of this file.
 | PyArrow | 25.0.0 (2026-07) | 3.10-3.14 | Apache-2.0 | Very active | Prebuilt wheels both arches | Yes | Heavy (28-53MB wheel) | Watch numpy pin vs. numba (VectorBT dep) | **Defer** |
 | LumiBot | 4.5.78 (repository pins 4.5.78 in `paper_runtime/pyproject.toml`; no `paper` extra exists in the root `pyproject.toml` — see `DECISIONS.md` D5) | 3.10-3.12 declared | MIT | Active | No native deps | Yes | Heavy, already isolated | `numpy<2.5.0,>=1.20.0`, `pandas>=2.2.0` conflicts with VectorBT; `google-adk[extensions]`→`litellm` pins `jsonschema==4.23.0` exactly, unconditionally conflicting with this repo's `jsonschema>=4.26.0` base floor | **Bumped to 4.5.78** in `paper_runtime`; root `paper` extra removed, not "no change" |
 | Riskfolio-Lib | 7.3.0 | `>=3.10` | BSD-3-Clause (OSI-approved, confirmed PR 12) | Active | No native issues, heavy deps | Yes | Very heavy (82-package closure verified live, PR 12: cvxpy, matplotlib, sklearn, statsmodels, astropy, Jupyter widgets, plotly, multiple QP solvers) + hard-depends on `vectorbt>=0.28.0` (confirmed resolves to the already-adopted `vectorbt==1.1.0` with no conflict at Python 3.11.15 and 3.14.5rc1 only — the two interpreters tested, both within VectorBT 1.1.0's declared `>=3.11,<3.15` range, 3.12/3.13 untested; the adopted `vectorbt>=1.1.0,<1.2` range cannot resolve on this repository's `>=3.10` project-wide floor without also raising it, nor on Python 3.15+ without a future VectorBT upgrade) | Transitively pulls VectorBT's pandas/numpy chain | **Defer** (PR 12, evaluated 2026-08-23 — not added; no existing consumer, see `pr12/EVALUATION.md`) |
-| SQLAlchemy | 2.0.51 (2026-06) | `>=3.7` | MIT | Very active | No issues | Yes | Light core (`typing-extensions`, `greenlet`) | None with sqlite3 | **Evaluate** (PR 13) |
-| Alembic | 1.18.5 | `>=3.10` | MIT | Active (SQLAlchemy team) | No issues | Yes | Light | None | **Evaluate** (PR 13/14) |
+| SQLAlchemy | 2.0.52 (re-verified live, PR 13, 2026-08-23) | `>=3.7` | MIT | Very active | No issues | Yes | Light core (`typing-extensions`, `greenlet`) | None with sqlite3 | **Defer** (PR 13, evaluated 2026-08-23 — not added; no existing capability gap, see `pr13/EVALUATION.md`) |
+| Alembic | 1.19.1 (re-verified live, PR 13, 2026-08-23; scratch-tested at 1.18.5) | `>=3.10` | MIT | Active (SQLAlchemy team) | No issues | Yes | Light | None | **Defer** (PR 13, evaluated 2026-08-23 — not added; branching graph constrainable to linear-only history only via a new, unbuilt CI gate, see `pr13/EVALUATION.md`) |
 | APScheduler | 3.11.3 stable (v4 alpha, not production-ready) | 3.8-3.14 | MIT | Active | No issues | Yes | Light (SQLite jobstore reuses SQLAlchemy) | SQLite jobstore documented unsuitable for multiple concurrent schedulers; no distributed lease/fencing | **Evaluate** (PR 14) |
 | Tenacity | 9.1.4 (2026-02) | `>=3.10` | Apache-2.0 | Active | No issues | Yes | Negligible | None | **Evaluate** (PR 14) |
 | Structlog | 26.1.0 (2026-06) | `>=3.10` | MIT/Apache-2.0 | Active | No issues | Yes | Minimal | None | **Adopt** (PR 15) |
@@ -194,6 +194,7 @@ by PR 1 itself — see the "PR 1 correction record" note below and
 | Pandera | Defer | No current DataFrame-shaped contract exists in the repo | Existing dataclass/YAML validation |
 | PyArrow | Defer | No current bulk historical-dataset storage requirement; heaviest dependency evaluated | Existing fixtures/SQLite |
 | pandas-ta-classic | Evaluate only if needed | Only relevant if TA-Lib's native C-library requirement proves infeasible in some CI/macOS target | TA-Lib as primary |
+| SQLAlchemy / Alembic | Defer (PR 13, evaluated 2026-08-23) | Both OSI-approved MIT and technically de-risked by live testing — the PR 0 "ORM masks a trigger-rejected write" concern is withdrawn as unsubstantiated (`pr13/EVALUATION.md` Section 2), and Alembic's branching graph was confirmed constrainable to linear-only history (Section 3) — but adopting either would migrate ~20 existing schema/repository modules, including every trigger-protected table, for no current capability gap, while adding a linear-only CI gate that would need to be built and maintained | `storage/*_schema.py` hand-written DDL and `storage/schema_version.py`'s ordered-migration ledger |
 
 ## 5. Special findings called out by the migration plan
 
@@ -225,13 +226,21 @@ by PR 1 itself — see the "PR 1 correction record" note below and
   razor-thin overlap window, and untested against VectorBT's `pandas>=3.0.3`
   floor at all. Isolation via `paper_runtime` (already existing) is the
   correct mitigation, not a new requirement.
-- **SQLAlchemy/Alembic vs. trigger-heavy safety tables:** SQLite triggers
-  fire at the SQL-statement level regardless of ORM/Core usage, but the
-  ORM's unit-of-work flush ordering and identity-map caching can mask a
-  trigger-rejected write. Recommendation carried into `MASTER_PLAN.md` PR 13:
-  restrict any SQLAlchemy usage of trigger-protected tables (append-only
-  tables, `real_orders`) to Core-only explicit statements, never ORM
-  sessions.
+- **SQLAlchemy/Alembic vs. trigger-heavy safety tables — corrected 2026-08-23
+  (PR 13):** SQLite triggers fire at the SQL-statement level regardless of
+  ORM/Core usage. This PR 0 entry originally also asserted "the ORM's
+  unit-of-work flush ordering and identity-map caching can mask a
+  trigger-rejected write" as a reason to restrict any future SQLAlchemy
+  usage of trigger-protected tables (append-only tables, `real_orders`) to
+  Core-only statements. PR 13 tested that claim directly (six cases against
+  the real production trigger DDL, including an unhandled failed flush and
+  an ORM relationship cascade) and found **no masking in any case** —
+  SQLAlchemy 2.0.52's session fails closed every time (`pr13/EVALUATION.md`
+  Section 2). The masking-risk justification is withdrawn; the PR 13/D11
+  ruling was **defer, not adopt**, for unrelated reasons (no current
+  capability gap), so the Core-only recommendation is retained anyway as an
+  auditability preference for any future adoption, not as a correctness
+  requirement.
 - **APScheduler vs. database leases/generation fencing:** APScheduler v3's
   SQLite jobstore is explicitly documented upstream as unsuitable for
   multiple concurrent schedulers sharing a store, and provides only coarse

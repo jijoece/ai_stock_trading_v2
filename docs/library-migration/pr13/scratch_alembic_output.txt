@@ -1,0 +1,38 @@
+alembic 1.18.5
+
+=== Case 1: build a linear 3-revision chain (control) — exactly one head ===
+Generating /var/folders/sv/dszbshy136551gqb77bfqrbr0000gn/T/pr13_alembic_32zwnbzn/versions/0001_baseline.py ...  done
+Generating /var/folders/sv/dszbshy136551gqb77bfqrbr0000gn/T/pr13_alembic_32zwnbzn/versions/0002_add_column.py ...  done
+Generating /var/folders/sv/dszbshy136551gqb77bfqrbr0000gn/T/pr13_alembic_32zwnbzn/versions/0003_add_index.py ...  done
+    revisions created: 0001, 0002, 0003
+    heads: ['0003']
+PASS: linear chain has exactly one head
+
+=== Case 2: two revisions off the SAME parent (a real branch) ===
+Generating /var/folders/sv/dszbshy136551gqb77bfqrbr0000gn/T/pr13_alembic_32zwnbzn/versions/0004a_branch_a.py ...  done
+PASS: Alembic's own default refuses an un-spliced branch — Revision 0003 is not a head revision; please specify --splice to create a new branch from this revision
+Generating /var/folders/sv/dszbshy136551gqb77bfqrbr0000gn/T/pr13_alembic_32zwnbzn/versions/0004b_branch_b.py ...  done
+    heads after branching off '0003' with splice=True: ['0004a', '0004b']
+PASS (demonstrates the residual risk): `--splice`/`splice=True` still lets a branch through when a developer deliberately (or mistakenly) reaches for it — the default resists an accidental branch but does not make branching impossible
+
+=== Case 3: `alembic upgrade head` (singular target) with multiple heads present ===
+PASS: Alembic itself refuses an ambiguous singular-head upgrade — Multiple head revisions are present for given argument 'head'; please specify a specific target revision, '<branchname>@head' to narrow to a specific head, or 'heads' for all heads
+
+=== Case 4: a CI-style 'linear-only' gate function, run against the now-branched graph ===
+    violations found: 2
+    - expected exactly 1 head, found 2: ['0004a', '0004b']
+    - revision '0003' has 2 children ['0004a', '0004b'] — a branch, not a linear chain
+PASS: a straightforward custom gate (assert exactly one head + no revision has more than one child + no merge revisions) reliably detects the branch — Alembic exposes everything the gate needs via ScriptDirectory
+
+=== Case 5: reconciling the branch with `alembic merge` converges to one head, but the gate still (correctly) rejects it — a merge is not a linear chain ===
+Generating /var/folders/sv/dszbshy136551gqb77bfqrbr0000gn/T/pr13_alembic_32zwnbzn/versions/0005_merge_branch_a_and_b.py ...  done
+    merge revision: 0005, down_revision=('0004a', '0004b')
+    heads after merge: ['0005']
+PASS: `alembic merge` restores a single head but the merge revision itself has a tuple down_revision — the gate still flags it correctly, confirming 'one head' alone is NOT sufficient to prove linearity; the no-merge-revision check is required too
+
+=== Case 6: the actual repair a linear-only policy forces — delete the errant branch file and rebase the surviving one, exactly as this repo would edit schema_version.py's dict in place rather than merge ===
+    heads after removing the branch + merge: ['0004a']
+    violations: []
+PASS: deleting the losing branch (not merging) restores a strictly linear chain, matching how schema_version.py's ledger would be repaired (the dict has no branch to begin with)
+
+Done.
