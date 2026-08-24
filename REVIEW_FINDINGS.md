@@ -4,42 +4,20 @@
 
 - Repository: `/Users/jijopaul/workspace/ai_stock_trading_v2`
 - Branch: `migration/12-riskfolio-lib-evaluation`
-- Reviewed HEAD: `897ba7114ea753113ee3ab56ac250fd185da100d`
-- Subject: Record PR 29 fix round 2 findings as fixed
-- Claude commits reviewed: dc4e71b6a8497af26d027a8b446fbb9088cfcce0,b04690d9f661c601e800aa6db08a509627cdf35b,35fcd35e1a246856a9f39b56d80abd9e4764c2a2,36bfd84cf2bda0fd6a1b842baa369e71c4e47a33,897ba7114ea753113ee3ab56ac250fd185da100d
+- Reviewed HEAD: `042aa9841f6e13f41a10a323cf6fea2a79e8b97a`
+- Subject: Record PR 29 fix round 3 findings as fixed
+- Claude commits reviewed: dc4e71b6a8497af26d027a8b446fbb9088cfcce0,b04690d9f661c601e800aa6db08a509627cdf35b,35fcd35e1a246856a9f39b56d80abd9e4764c2a2,36bfd84cf2bda0fd6a1b842baa369e71c4e47a33,897ba7114ea753113ee3ab56ac250fd185da100d,15f7184157b5313243f3e3b96c22e8269fd86005,042aa9841f6e13f41a10a323cf6fea2a79e8b97a
 - Review scope: FULL_PR
 - Reviewed base: `611b3dfeb0d485d00461ee2a5c3f15e13c0b153f`
 - GitHub PR: #29
-- Fix round: 3
+- Fix round: 4
 - Trigger: local Git `post-commit`
 - Review status: FIXES_APPLIED_PENDING_REVIEW
-- Highest priority: P2
+- Highest priority: P1
 - Finding count: 0
-- Fix commit: `15f7184157b5313243f3e3b96c22e8269fd86005`
+- Fix commit: `2fc01d2037895c9a50cd5663fbaf932e0cf87994`
 
 ## Findings
-
-### [P2] Bound the documented compatible Python range
-
-Commit: `dc4e71b6a8497af26d027a8b446fbb9088cfcce0`
-
-Location: `/Users/jijopaul/workspace/ai_stock_trading_v2/docs/library-migration/pr12/EVALUATION.md:63-73`
-
-Problem: The evaluation still concludes that Riskfolio-Lib and the adopted VectorBT pin are compatible on “Python >=3.11,” even though VectorBT 1.1.0 explicitly requires Python `<3.15`.
-
-Evidence: Line 63 records VectorBT’s `Requires-Python: >=3.11,<3.15`, but lines 72-73 broaden the conclusion to every Python version `>=3.11`. The same unbounded wording remains in `COMPONENT_MATRIX.md:41`, `DEPENDENCY_MATRIX.md:52,193`, `MASTER_PLAN.md:31`, `DECISIONS.md:1200,1232`, and `STATUS.md:12,2713`. The added regression tests require only the substring `>=3.11`, so they preserve rather than detect the missing upper bound.
-
-Impact: A future adoption following these canonical records can incorrectly declare or install the extra on Python 3.15+, where the adopted `vectorbt==1.1.0` cannot resolve. This is particularly likely because the root project itself has no Python upper bound.
-
-Required fix: Qualify every compatibility and adoption statement as `Python >=3.11,<3.15`, including the requirement for either an appropriately bounded extra or a future VectorBT upgrade before supporting Python 3.15+. Update the regression tests to require both bounds in every canonical record.
-
-Validation: Run `nox -s tests -- tests/unit/test_pr12_evaluation_docs.py`, then `nox -s ci`.
-
-Tests or diagnostics run: Inspected every requested Claude-authored commit’s full diff chronologically and the relevant HEAD documentation, dependency declarations, scratch evidence, tests, and project instructions. `git diff --check 611b3dfeb0d485d00461ee2a5c3f15e13c0b153f..897ba7114ea753113ee3ab56ac250fd185da100d` reported only whitespace issues in `REVIEW_FINDINGS.md`, which are non-consequential and not findings. Focused pytest could not initialize because the read-only sandbox provides no writable temporary directory. No files were modified.
-
-Resolution: Fixed in `15f7184157b5313243f3e3b96c22e8269fd86005`. Every canonical conclusion cited above — `EVALUATION.md` Section 2 ("Hard dependency on VectorBT", the "do not conflict" confirmation, and the Section 5 recommendation), `COMPONENT_MATRIX.md`'s "Portfolio optimization" row, `DEPENDENCY_MATRIX.md`'s Riskfolio-Lib row and its Section 4 rejected/deferred summary row, `MASTER_PLAN.md` row 12, `DECISIONS.md` D10's dependency-weight paragraph and ruling, and `STATUS.md`'s current-phase summary and "Completed work (PR 12)" section — now states the range as `Python >=3.11,<3.15` and adds that Python 3.15+ would require a future VectorBT upgrade, since VectorBT 1.1.0's own `Requires-Python` ceiling is `<3.15`. `test_pr12_evaluation_docs.py`'s existing scoped-window assertions were extended to require `<3.15` (not just `>=3.11`) in every one of those locations, so a regression that drops the upper bound fails the suite.
-
-Tests or diagnostics run: `.venv/bin/python -m pytest tests/unit/test_pr12_evaluation_docs.py -q` (20 passed); `.venv/bin/python -m nox -s ci` (all five sessions passed: `tests` 3139 passed/106 skipped, `paper_tests` 160 passed, `safety_typecheck` 0 errors, `migration_smoke` OK); `scripts/check_links.sh` (189 checked, 187 OK, 0 errors, 2 excluded).
 
 ### [P2] Account for the repository's Python 3.10 floor
 
@@ -55,7 +33,7 @@ Problem: An active GitHub review thread remains unresolved:
 > 
 > AGENTS.md reference: [AGENTS.md:L68-L68](https://github.com/jijoece/ai_stock_trading_v2/blob/dc4e71b6a8497af26d027a8b446fbb9088cfcce0/AGENTS.md#L68-L68)
 > 
-> Useful? React with 👍 / 👎.
+> Useful? React with 👍 / 👎.
 
 Evidence: [chatgpt-codex-connector review thread](https://github.com/jijoece/ai_stock_trading_v2/pull/29#discussion_r3839089593) is current, unresolved, and not outdated.
 
@@ -65,6 +43,35 @@ Required fix: Verify and address the review comment in code and add the requeste
 
 Validation: Run the focused regression test and the repository's canonical validation; a subsequent full-PR review must find no remaining defect.
 
-Resolution: No further code change required. Confirmed against current `HEAD` (through fix commit `15f7184157b5313243f3e3b96c22e8269fd86005`) that this substantive finding remains fixed exactly as established in the prior fix round: `EVALUATION.md`'s "Python-floor caveat" section, `DEPENDENCY_MATRIX.md`, `MASTER_PLAN.md`, `COMPONENT_MATRIX.md`, `DECISIONS.md` D10, and `STATUS.md` all state that the adopted `vectorbt>=1.1.0,<1.2` range cannot resolve on this repository's `>=3.10` project-wide floor without also raising it to `>=3.11`, and `test_pr12_evaluation_docs.py` (`test_evaluation_states_the_3_10_floor_caveat` and the row/section-scoped `3.10` assertions) pins this into every one of those records. This finding recurred in this round because the cited GitHub review thread had not been marked resolved on GitHub itself, not because the underlying code regressed; the thread should now be marked resolved.
+Resolution: No further code change required. Re-confirmed against current `HEAD` (through fix commit `2fc01d2037895c9a50cd5663fbaf932e0cf87994`) that `EVALUATION.md`'s "Python-floor caveat" section, `DEPENDENCY_MATRIX.md`, `MASTER_PLAN.md`, `COMPONENT_MATRIX.md`, `DECISIONS.md` D10, and `STATUS.md` all still state that the adopted `vectorbt>=1.1.0,<1.2` range cannot resolve on this repository's `>=3.10` project-wide floor without also raising it to `>=3.11`, and `test_pr12_evaluation_docs.py`'s existing `3.10`-floor assertions still pin this into every one of those records. As in the prior round, this finding recurred because the cited GitHub review thread had not been marked resolved on GitHub, not because the underlying documentation regressed; the thread should now be marked resolved.
 
-Tests or diagnostics run: Read `EVALUATION.md`, `DEPENDENCY_MATRIX.md`, `MASTER_PLAN.md`, `COMPONENT_MATRIX.md`, `DECISIONS.md`, and `STATUS.md` at current `HEAD` and confirmed each still carries the required `>=3.10`-floor qualification after this round's `<3.15`-bounding edits; ran `test_pr12_evaluation_docs.py`'s existing tests for this qualification (all passed as part of the full suite recorded above).
+Tests or diagnostics run: `grep -n "3.10"` across `DEPENDENCY_MATRIX.md`, `MASTER_PLAN.md`, `COMPONENT_MATRIX.md`, `DECISIONS.md`, and `STATUS.md`, confirming the Riskfolio-Lib/VectorBT floor caveat is present in every canonical record; `.venv/bin/python -m pytest tests/unit/test_pr12_evaluation_docs.py -q` (21 passed, including the new CI-config regression test added for the P1 finding below).
+
+### [P1] Avoid requiring unavailable Git history in the test suite
+
+Commit: `897ba7114ea753113ee3ab56ac250fd185da100d`
+
+Location: `/Users/jijopaul/workspace/ai_stock_trading_v2/tests/unit/test_pr12_evaluation_docs.py:231`
+
+Problem: An active GitHub review thread remains unresolved:
+
+> **<sub><sub>![P1 Badge](https://img.shields.io/badge/P1-orange?style=flat)</sub></sub>  Avoid requiring unavailable Git history in the test suite**
+> 
+> In CI, every `actions/checkout@v4` step in `.github/workflows/ci.yml` uses the default single-commit shallow checkout, while `main-tests` and the Python-floor job run this test through the full suite. That checkout does not contain `611b3df`, so `git merge-base --is-ancestor 611b3df HEAD` terminates with “Not a valid object name” and return code 128, causing every full-suite CI run to fail even though the documented status is correct. Verify the text without consulting repository history, or explicitly fetch the required history before the canonical Nox test session.
+> 
+> AGENTS.md reference: [AGENTS.md:L28-L32](https://github.com/jijoece/ai_stock_trading_v2/blob/897ba7114ea753113ee3ab56ac250fd185da100d/AGENTS.md#L28-L32)
+> 
+> Useful? React with 👍 / 👎.
+
+Evidence: [chatgpt-codex-connector review thread](https://github.com/jijoece/ai_stock_trading_v2/pull/29#discussion_r3840495069) is current, unresolved, and not outdated.
+
+Impact: Merging would knowingly carry unresolved review feedback into main.
+
+Required fix: Verify and address the review comment in code and add the requested regression coverage.
+
+Validation: Run the focused regression test and the repository's canonical validation; a subsequent full-PR review must find no remaining defect.
+
+Resolution: Fixed in `2fc01d2037895c9a50cd5663fbaf932e0cf87994`. Confirmed the root cause: no `actions/checkout@v4` step in `.github/workflows/ci.yml` set `fetch-depth`, so every checkout used the default single-commit shallow clone, which does not contain the `611b3df` commit object that `test_pr_11_merge_commit_is_an_ancestor_of_this_branch` (`tests/unit/test_pr12_evaluation_docs.py`) resolves via `git merge-base --is-ancestor`. The `main-tests`, `python-3-10-floor`, and `research-tests` jobs each run the full offline suite (`nox -s tests` or `pytest tests/`), so all three now set `fetch-depth: 0` on their checkout step, giving `git merge-base` the history it needs. Added `test_ci_full_suite_jobs_fetch_full_git_history`, which parses `ci.yml` with `yaml.safe_load` and asserts `fetch-depth: 0` on each of those three jobs' checkout steps, so a regression that removes the setting fails the suite. Also strengthened the existing ancestor test's assertion message to name the shallow-checkout root cause directly if it ever fails again.
+
+Tests or diagnostics run: `.venv/bin/python -c "import yaml; yaml.safe_load(open('.github/workflows/ci.yml'))"` (valid YAML); `.venv/bin/python -m pytest tests/unit/test_pr12_evaluation_docs.py -q` (21 passed); `.venv/bin/python -m nox -s ci` (all five sessions passed: `tests` 3140 passed/106 skipped, `paper_tests` 160 passed, `safety_typecheck` 0 errors, `migration_smoke` OK).
+
