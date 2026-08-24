@@ -23,7 +23,7 @@
 
 Commit: `15f7184157b5313243f3e3b96c22e8269fd86005`
 
-Location: [EVALUATION.md](/Users/jijopaul/workspace/ai_stock_trading_v2/docs/library-migration/pr12/EVALUATION.md:74)
+Location: `docs/library-migration/pr12/EVALUATION.md:74`
 
 Problem: The evaluation claims Riskfolio-Lib and the adopted VectorBT pin “do not conflict on Python >=3.11,<3.15,” but the evidence covers only Python 3.11.15 and 3.14.5rc1. It does not establish dependency resolution, wheel availability, imports, or functional compatibility on Python 3.12 and 3.13.
 
