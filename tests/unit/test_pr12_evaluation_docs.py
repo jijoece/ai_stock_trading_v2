@@ -46,6 +46,8 @@ import re
 import subprocess
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parents[2]
 EVALUATION = ROOT / "docs" / "library-migration" / "pr12" / "EVALUATION.md"
 DEPENDENCY_MATRIX = ROOT / "docs" / "library-migration" / "DEPENDENCY_MATRIX.md"
@@ -245,18 +247,46 @@ def test_status_marks_pr_11_as_merged():
 
 
 def test_pr_11_merge_commit_is_an_ancestor_of_this_branch():
-    """Pins the git fact the previous test's claim depends on."""
+    """Pins the git fact the previous test's claim depends on. Skips (does
+    not fail) when the commit object is unavailable -- e.g. a shallow
+    clone (`git clone --depth 1`) or an exported source tree without git
+    history -- since that is a checkout-depth limitation, not a defect in
+    this branch or its documentation (PR 29 fix round 5)."""
+    has_object = subprocess.run(
+        ["git", "cat-file", "-e", "611b3df^{commit}"],
+        cwd=ROOT,
+        check=False,
+    )
+    if has_object.returncode != 0:
+        pytest.skip(
+            "commit 611b3df is not available in this checkout (shallow "
+            "clone or exported source tree without full git history); "
+            "ancestry cannot be verified without fetching that history"
+        )
     result = subprocess.run(
         ["git", "merge-base", "--is-ancestor", "611b3df", "HEAD"],
         cwd=ROOT,
         check=False,
     )
     assert result.returncode == 0, (
-        "git merge-base could not resolve 611b3df (exit "
-        f"{result.returncode}); this requires the full commit history, not "
-        "a single-commit shallow checkout -- see the CI workflow's "
-        "full-suite jobs, which must set `fetch-depth: 0`"
+        "git merge-base could not verify that 611b3df is an ancestor of "
+        f"HEAD (exit {result.returncode}) even though the commit object "
+        "is present locally"
     )
+
+
+def test_pr_11_ancestry_check_skips_without_commit_object(monkeypatch):
+    """PR 29 fix round 5 regression: the ancestor check above must skip,
+    not fail with exit 128, when the referenced commit object is
+    unavailable (e.g. a shallow clone or exported source tree)."""
+
+    def fake_run(cmd, cwd=None, check=False):
+        assert cmd[:3] == ["git", "cat-file", "-e"]
+        return subprocess.CompletedProcess(cmd, returncode=128)
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    with pytest.raises(pytest.skip.Exception):
+        test_pr_11_merge_commit_is_an_ancestor_of_this_branch()
 
 
 def test_ci_full_suite_jobs_fetch_full_git_history():
