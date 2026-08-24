@@ -301,25 +301,21 @@ def test_status_marks_pr_11_as_merged():
     assert "611b3df" in entry
 
 
-def test_status_marks_current_phase_not_merged():
-    """PR 29 fix round 6: while PR 12 remains the current, unmerged phase,
-    `AUTOMATION.md`'s "GitHub is authoritative for merge status" rule
-    requires STATUS.md to mark it "NOT MERGED" (the same convention already
-    used historically for PR 9, see `test_status_marks_pr_11_as_merged`'s
-    docstring) until GitHub confirms the merge and PR 13 rewrites this
-    file. Both the "Current phase" line and the PR 12 "Completed work"
-    entry must carry the marker, not just one of them."""
+def test_status_records_pr12_evaluation_outcome():
+    """PR 29 fix round 15: this test previously asserted PR 12's transient
+    current-phase/merge-status markers ("Current phase: PR 12", "NOT
+    MERGED") permanently. Once PR 13 follows the documented workflow and
+    rewrites STATUS.md to advance the current phase and mark PR 12 merged
+    (the same "NOT MERGED" -> "**merged**" rewrite already applied to PR 9
+    and PR 11, see `test_status_marks_pr_11_as_merged`'s docstring), those
+    markers legitimately disappear, so pinning them here would fail the
+    canonical full suite on expected migration advancement. Assert only
+    PR 12's enduring completed-work fact -- the evaluation outcome -- which
+    stays true regardless of the PR 12 branch's own merge status."""
     text = STATUS.read_text(encoding="utf-8")
-
-    current_phase_idx = text.index("**Current phase: PR 12")
-    current_phase_section = text[current_phase_idx : current_phase_idx + 200]
-    assert "NOT MERGED" in current_phase_section
-    assert "EVALUATED" in current_phase_section
-
-    entry_idx = text.index("PR 12 — Riskfolio-Lib evaluation only — is")
-    entry_section = text[entry_idx : entry_idx + 200]
-    assert "NOT MERGED" in entry_section
-    assert "EVALUATED" in entry_section
+    section = text.split("## Completed work (PR 12)", 1)[1]
+    assert "**Scope:** evaluation only" in section
+    assert "Outcome: defer, do not adopt" in section
 
 
 def test_pr_11_merge_commit_is_an_ancestor_of_this_branch():
