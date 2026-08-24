@@ -2763,9 +2763,9 @@ added during this PR's review fix rounds, not new application code.
   boundary verification recorded above. The scratch reproductions still run
   only inside disposable virtualenvs outside this repository's dependency
   graph, never against the project's own `.venv`.
-- `.venv/bin/python -m pytest tests/ -q --tb=short` — **3274 passed, 57
+- `.venv/bin/python -m pytest tests/ -q --tb=short` — **3275 passed, 57
   skipped, 0 failed**.
-- `nox -s ci` — all four blocking sessions passed: `tests` (3146 passed, 106
+- `nox -s ci` — all four blocking sessions passed: `tests` (3147 passed, 106
   skipped, `.[dev]` only), `paper_tests` (160 passed), `safety_typecheck`
   (pyright, 0 errors — `pr12/scratch_smoke_test.py` is outside both
   `[tool.pyright]`'s `include` and `pyright-safety.json`'s scope, same as

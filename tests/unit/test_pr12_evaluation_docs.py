@@ -291,24 +291,68 @@ def test_scratch_output_py311_file_exists_and_confirms_no_conflict():
     assert "vectorbt 1.1.0" in text
 
 
-def test_status_current_phase_records_python_3_11_verification():
-    """PR 29 fix round 2, finding 1: the current-phase summary must not
-    imply the >=3.11 claim rests on a single untested interpreter."""
+def test_status_completed_work_records_python_3_11_verification():
+    """The enduring PR 12 record must name both tested interpreters."""
     text = STATUS.read_text(encoding="utf-8")
-    idx = text.index("that Riskfolio-Lib does not conflict with the")
-    scoped = text[idx : idx + 500]
+    section = text.split("## Completed work (PR 12)", 1)[1]
+    idx = section.index("that Riskfolio-Lib does not conflict with the")
+    scoped = section[idx : idx + 500]
     assert "3.11.15" in scoped
     assert "3.14.5rc1" in scoped
 
 
-def test_status_current_phase_records_review_test_scope():
-    """The current-phase summary must distinguish unchanged production code
-    from the documentation-consistency tests added during review fixes."""
+def test_status_completed_work_scopes_review_test_provenance():
+    """PR 29 fix round 18: this test previously scoped its assertions to
+    the mutable current-phase summary (`text.split("**Next phase:", 1)[0]`),
+    which PR 13 will overwrite when it performs the documented rewrite of
+    STATUS.md's opening summary -- the same defect class already fixed for
+    `test_status_completed_work_scopes_untested_python_versions` and
+    `test_status_records_pr12_evaluation_outcome` (see their docstrings).
+    The enduring "Completed work (PR 12)" section makes the same
+    no-production-code / documentation-consistency-test claim, so this test
+    now anchors there instead."""
     text = STATUS.read_text(encoding="utf-8")
-    section = text.split("**Next phase:", 1)[0]
-    assert "no production code" in section
-    assert "documentation-consistency regression coverage" in section
-    assert "or `tests/`" not in section
+    section = text.split("## Completed work (PR 12)", 1)[1]
+    assert "No file under `src/`," in section
+    assert (
+        "`scripts/`, `paper_runtime/src/`, or `backtest_runtime/` was modified"
+        in section
+    )
+    assert "documentation-consistency" in section
+    assert "regression test, not application code" in section
+    assert "tests/unit/test_pr12_evaluation_docs.py" in section
+    idx = section.index("No file under")
+    no_file_clause = section[idx : idx + 120]
+    assert "was modified" in no_file_clause
+    assert "tests/" not in no_file_clause
+
+
+def test_status_completed_work_review_test_provenance_survives_pr13_current_phase_rewrite():
+    """Regression for PR 29 fix round 18: simulates the documented PR 13
+    workflow rewriting STATUS.md's current-phase summary -- the mutable
+    text before `**Next phase:` that the previous version of
+    `test_status_completed_work_scopes_review_test_provenance` depended on
+    disappears entirely -- and proves that test's enduring
+    "Completed work (PR 12)"-scoped anchor still resolves. Before the fix,
+    an equivalent lookup for "no production code" or "documentation-
+    consistency regression coverage" against this simulated text would find
+    nothing, since those exact phrases live only in the mutable summary."""
+    text = STATUS.read_text(encoding="utf-8")
+    current_phase_section = text.split("**Next phase:", 1)[0]
+    simulated = text.replace(
+        current_phase_section,
+        "**Current phase: PR 13 — SQLAlchemy/Alembic feasibility and ADR**\n\n",
+    )
+    assert "no production code" not in simulated
+    assert "documentation-consistency regression coverage" not in simulated
+    section = simulated.split("## Completed work (PR 12)", 1)[1]
+    assert "No file under `src/`," in section
+    assert (
+        "`scripts/`, `paper_runtime/src/`, or `backtest_runtime/` was modified"
+        in section
+    )
+    assert "documentation-consistency" in section
+    assert "regression test, not application code" in section
 
 
 def test_status_completed_work_records_the_added_test_file():
@@ -319,8 +363,8 @@ def test_status_completed_work_records_the_added_test_file():
     assert "No test file was added or modified" not in section
     assert "test_pr12_evaluation_docs.py" in section
     assert "3119" not in section
-    assert "3274 passed, 57" in section
-    assert "3146 passed, 106" in section
+    assert "3275 passed, 57" in section
+    assert "3147 passed, 106" in section
     assert "PLACEHOLDER" not in section
 
 
