@@ -203,16 +203,51 @@ def test_decisions_d10_ruling_scopes_technically_unblocked_claim():
     assert "3.10" in ruling
 
 
-def test_status_current_phase_scopes_no_conflict_claim():
+def test_status_completed_work_scopes_untested_python_versions():
+    """PR 29 fix round 16: this test previously indexed
+    `**Current phase: PR 12`, a transient heading that disappears once PR
+    13 rewrites STATUS.md's current phase (the same defect class already
+    fixed for `test_status_records_pr12_evaluation_outcome` -- see its
+    docstring). The enduring "Completed work (PR 12)" section carries the
+    same Python 3.12/3.13-untested qualification, so this test now anchors
+    there instead, alongside
+    `test_status_completed_work_section_scopes_no_conflict_claim`."""
     text = STATUS.read_text(encoding="utf-8")
-    idx = text.index("**Current phase: PR 12")
-    section = text[idx : idx + 1100]
-    assert "3.11.15" in section
-    assert "3.14.5rc1" in section
-    assert "3.12" in section
-    assert "3.13" in section
-    assert "untested" in section
-    assert "3.10" in section
+    section = text.split("## Completed work (PR 12)", 1)[1]
+    idx = section.index("that Riskfolio-Lib does not conflict with the")
+    scoped = section[idx : idx + 500]
+    assert "3.11.15" in scoped
+    assert "3.14.5rc1" in scoped
+    assert "3.12" in scoped
+    assert "3.13" in scoped
+    assert "not installed or tested" in scoped
+    assert "3.10" in scoped
+
+
+def test_status_untested_python_versions_check_survives_pr13_current_phase_rewrite():
+    """Regression for PR 29 fix round 16: simulates the documented PR 13
+    workflow rewriting STATUS.md's current-phase heading -- the transient
+    `**Current phase: PR 12` anchor the previous version of
+    `test_status_completed_work_scopes_untested_python_versions` depended on
+    disappears entirely -- and proves that test's enduring
+    "Completed work (PR 12)"-scoped anchor still resolves. Before the fix,
+    an equivalent `text.index("**Current phase: PR 12")` lookup would raise
+    `ValueError` against this simulated text."""
+    text = STATUS.read_text(encoding="utf-8")
+    simulated = text.replace(
+        "**Current phase: PR 12 — Riskfolio-Lib evaluation only — "
+        "EVALUATED, NOT MERGED**",
+        "**Current phase: PR 13 — SQLAlchemy/Alembic feasibility and ADR**",
+    )
+    assert "**Current phase: PR 12" not in simulated
+    with pytest.raises(ValueError):
+        simulated.index("**Current phase: PR 12")
+    section = simulated.split("## Completed work (PR 12)", 1)[1]
+    idx = section.index("that Riskfolio-Lib does not conflict with the")
+    scoped = section[idx : idx + 500]
+    assert "3.11.15" in scoped
+    assert "3.14.5rc1" in scoped
+    assert "not installed or tested" in scoped
 
 
 def test_status_completed_work_section_scopes_no_conflict_claim():
