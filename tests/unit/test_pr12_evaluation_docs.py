@@ -223,6 +223,16 @@ def test_status_current_phase_records_python_3_11_verification():
     assert "3.14.5rc1" in scoped
 
 
+def test_status_current_phase_records_review_test_scope():
+    """The current-phase summary must distinguish unchanged production code
+    from the documentation-consistency tests added during review fixes."""
+    text = STATUS.read_text(encoding="utf-8")
+    section = text.split("**Next phase:", 1)[0]
+    assert "no production code" in section
+    assert "documentation-consistency regression coverage" in section
+    assert "or `tests/`" not in section
+
+
 def test_status_completed_work_records_the_added_test_file():
     """PR 29 fix round 2, finding 3: STATUS.md must not claim no test file
     was added once `test_pr12_evaluation_docs.py` (this file) exists."""
@@ -231,8 +241,8 @@ def test_status_completed_work_records_the_added_test_file():
     assert "No test file was added or modified" not in section
     assert "test_pr12_evaluation_docs.py" in section
     assert "3119" not in section
-    assert "3270 passed, 57" in section
-    assert "3142 passed, 106" in section
+    assert "3271 passed, 57" in section
+    assert "3143 passed, 106" in section
     assert "PLACEHOLDER" not in section
 
 

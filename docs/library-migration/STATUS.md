@@ -4,9 +4,10 @@
 (branch `migration/12-riskfolio-lib-evaluation`; `MASTER_PLAN.md` row 12,
 `DECISIONS.md` D10). Evaluation only — documentation
 (`docs/library-migration/pr12/EVALUATION.md`) and a scratch reproduction
-(`pr12/scratch_smoke_test.py`, `pr12/scratch_output.txt`), no code under
-`src/`, `scripts/`, `paper_runtime/src/`, or `tests/`. **Outcome: defer, not
-added.** License re-verified OSI-approved (BSD-3-Clause); a live scratch
+(`pr12/scratch_smoke_test.py`, `pr12/scratch_output.txt`), no production code
+under `src/`, `scripts/`, or `paper_runtime/src/`; `tests/` gained only the
+documentation-consistency regression coverage described below. **Outcome:
+defer, not added.** License re-verified OSI-approved (BSD-3-Clause); a live scratch
 install confirmed Riskfolio-Lib's `vectorbt>=0.28.0` hard dependency
 resolves cleanly to the already-adopted `vectorbt==1.1.0` (PR 5) with no
 conflict on Python >=3.11,<3.15 (the adopted `vectorbt>=1.1.0,<1.2` range
@@ -2753,9 +2754,9 @@ added during this PR's review fix rounds, not new application code.
   boundary verification recorded above. The scratch reproductions still run
   only inside disposable virtualenvs outside this repository's dependency
   graph, never against the project's own `.venv`.
-- `.venv/bin/python -m pytest tests/ -q --tb=short` — **3270 passed, 57
+- `.venv/bin/python -m pytest tests/ -q --tb=short` — **3271 passed, 57
   skipped, 0 failed**.
-- `nox -s ci` — all four blocking sessions passed: `tests` (3142 passed, 106
+- `nox -s ci` — all four blocking sessions passed: `tests` (3143 passed, 106
   skipped, `.[dev]` only), `paper_tests` (160 passed), `safety_typecheck`
   (pyright, 0 errors — `pr12/scratch_smoke_test.py` is outside both
   `[tool.pyright]`'s `include` and `pyright-safety.json`'s scope, same as
