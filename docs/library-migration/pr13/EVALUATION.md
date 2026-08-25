@@ -164,29 +164,41 @@ the ORM session's own connection, not the same connection an in-memory
    the next time this reproduction (or its regression test) runs; it cannot
    silently regress to a stale hardcoded list the way the original
    two-table allowlist did.
-10. **Two unit-of-work write paths a single-`__table__` check cannot see,
+10. **Three unit-of-work write paths a single-`__table__` check cannot see,
     adversarially probed.** Cases 8-9 only ever add directly mapped objects
     whose own `__table__` is the protected table, so they could not expose
     that the guard's original check — `getattr(obj, "__table__", None)` for
     each object in `session.new`/`dirty`/`deleted` — misses (a) a
     `relationship(..., secondary=protected_table)` collection mutation,
     where the flush emits association-table INSERT/DELETE while neither
-    endpoint object's own `__table__` is the secondary table, and (b) a
+    endpoint object's own `__table__` is the secondary table, (b) a
     joined-table-inheritance (or other multi-table) mapper, whose flush
     writes every ancestor table in `mapper.tables`, not just the object's
-    own most-derived local table. This was a real gap, not a hypothetical
-    one: reproduced directly using
-    `research_cycle_provider_provenance_links` (a real production
-    association table with no directly mapped class) as a `secondary=`
-    table, mutating the relationship raised only silence from the original
-    check, and a synthetic joined-table-inheritance mapper over another
-    discovered protected table showed the same miss for its ancestor table.
-    The guard is now fixed to inspect `class_mapper(type(obj)).tables` (all
-    tables the mapper writes, not just the object's own `__table__`) and
-    every relationship's `secondary` table via `get_history()` on the
-    relationship attribute, and case 10 confirms both adversarial paths are
-    now rejected pre-SQL by `TriggerProtectedTableORMGuard`, not merely
-    left to reach the trigger.
+    own most-derived local table, and (c) deleting the relationship's owning
+    object without its collection ever loaded into the session — the
+    unit-of-work still deletes every existing secondary-table row for that
+    object, driven by current DB membership rather than any local Python
+    mutation, so `get_history(..., passive=PASSIVE_NO_FETCH)` reports no
+    `added`/`deleted` history even though the flush still writes the
+    protected table. This was a real gap, not a hypothetical one:
+    reproduced directly using `research_cycle_provider_provenance_links` (a
+    real production association table with no directly mapped class) as a
+    `secondary=` table — mutating the relationship raised only silence from
+    the original check, a synthetic joined-table-inheritance mapper over
+    another discovered protected table showed the same miss for its
+    ancestor table, and deleting a parent object loaded without its m2m
+    collection let the flush remove the association row with no guard
+    exception at all. The guard is now fixed to inspect
+    `class_mapper(type(obj)).tables` (all tables the mapper writes, not just
+    the object's own `__table__`) and every relationship's `secondary`
+    table via `get_history()` on the relationship attribute — for an object
+    in `session.deleted`, `get_history()` is called with `passive=
+    PASSIVE_OFF` (forcing a fetch of an unloaded collection) and its
+    `unchanged` membership is treated as relevant alongside `added`/
+    `deleted`, since a deleted object's cascade is driven by what currently
+    exists, not by a local mutation — and case 10 confirms all three
+    adversarial paths are now rejected pre-SQL by
+    `TriggerProtectedTableORMGuard`, not merely left to reach the trigger.
 
 **Finding: the masking hypothesis is not substantiated against SQLAlchemy
 2.0.52 for either representative table.** Every one of the seven masking
@@ -216,11 +228,15 @@ tables this reproduction happens to carry real DDL for, and cannot silently
 go stale as production's schema grows. Case 10 closes a gap in the guard's
 *mechanism*, not its policy: the original check inspected only each changed
 object's own `__table__`, which misses a `relationship(...,
-secondary=protected_table)` collection write and an ancestor table in a
-joined-table-inheritance mapper; the guard now also inspects
-`class_mapper(type(obj)).tables` and every relationship's `secondary`
-table, and case 10 proves both adversarial paths are rejected pre-SQL. This
-still does not cover ORM-enabled bulk `update()`/`delete()` constructs
+secondary=protected_table)` collection write, an ancestor table in a
+joined-table-inheritance mapper, and deleting a relationship's owning object
+without its collection ever loaded (where the flush's secondary-table DELETE
+is driven by current DB membership, not local history); the guard now also
+inspects `class_mapper(type(obj)).tables` and every relationship's
+`secondary` table, force-fetching and checking `unchanged` membership (not
+just `added`/`deleted` history) for objects being deleted, and case 10
+proves all three adversarial paths are rejected pre-SQL. This still does not
+cover ORM-enabled bulk `update()`/`delete()` constructs
 issued via `Session.execute()`, which bypass `before_flush` entirely (see
 "Non-blocking notes" below) — the guard's proven boundary is unit-of-work
 flush writes reachable through a mapper's tables or relationships, not

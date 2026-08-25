@@ -593,19 +593,29 @@ assert {"real_orders", "paper_book_cash_ledger"} <= TRIGGER_PROTECTED_TABLES, (
 
 def _reject_protected_table_orm_writes(session, flush_context, instances) -> None:
     """Regression for review findings "Cover unit-of-work writes without
-    mapped objects" and "Inspect relationship-generated writes in the ORM
-    guard": the original guard inspected only each changed object's own
-    `__table__`, which misses two real unit-of-work write paths — (1) a
+    mapped objects", "Inspect relationship-generated writes in the ORM
+    guard", and "Block cascades through unloaded secondary relationships":
+    the original guard inspected only each changed object's own `__table__`,
+    which misses two real unit-of-work write paths — (1) a
     joined-table-inheritance (or any multi-table) mapper, whose flush writes
     every table in `mapper.tables`, not just the object's own local table;
     and (2) a `relationship(..., secondary=...)` collection, whose flush
     emits association-table INSERT/DELETE against `secondary` while neither
-    endpoint object's own `__table__` is that secondary table. Case 10 below
-    is the adversarial regression for both paths.
+    endpoint object's own `__table__` is that secondary table. A later
+    refinement of (2) also covers deleting the relationship's owning object
+    itself: when that object is loaded without its collection (or with it
+    loaded but untouched) and then deleted, SQLAlchemy still emits a DELETE
+    against the secondary table for every existing association row, driven
+    by current membership rather than by any local Python-side mutation —
+    `get_history(..., passive=PASSIVE_NO_FETCH)` reports no `added`/
+    `deleted` history in that case, so a deleted object's relationship must
+    be force-fetched (`PASSIVE_OFF`) and its `unchanged` membership treated
+    as relevant too. Case 10 below is the adversarial regression for all
+    three paths.
     """
     from sqlalchemy.orm import class_mapper
     from sqlalchemy.orm.attributes import get_history
-    from sqlalchemy.orm.base import PASSIVE_NO_FETCH
+    from sqlalchemy.orm.base import PASSIVE_NO_FETCH, PASSIVE_OFF
 
     for obj in list(session.new) + list(session.dirty) + list(session.deleted):
         mapper = class_mapper(type(obj))
@@ -616,13 +626,23 @@ def _reject_protected_table_orm_writes(session, flush_context, instances) -> Non
                     f"{table.name!r} is a trigger-protected table mapped by "
                     f"{type(obj).__name__} — use Core statements only"
                 )
+        is_deleted = obj in session.deleted
         for prop in mapper.relationships:
             secondary = prop.secondary
             secondary_name = getattr(secondary, "name", None)
             if secondary_name is None or secondary_name not in TRIGGER_PROTECTED_TABLES:
                 continue
-            history = get_history(obj, prop.key, passive=PASSIVE_NO_FETCH)
-            if history.added or history.deleted:
+            # Deleting the owning object can cascade-delete secondary-table
+            # rows even when the collection was never mutated (or never
+            # loaded) in Python, so force a fetch and also treat existing
+            # (`unchanged`) membership as relevant in that case — not just
+            # `added`/`deleted` history, which only reflects local mutation.
+            passive = PASSIVE_OFF if is_deleted else PASSIVE_NO_FETCH
+            history = get_history(obj, prop.key, passive=passive)
+            relevant = history.added or history.deleted
+            if is_deleted:
+                relevant = relevant or history.unchanged
+            if relevant:
                 raise TriggerProtectedTableORMGuard(
                     f"ORM session flush blocked before any SQL was emitted: "
                     f"relationship {type(obj).__name__}.{prop.key} writes "
@@ -795,9 +815,10 @@ def case_9_core_only_guard_covers_every_discovered_protected_table() -> None:
 
 def case_10_guard_covers_relationship_secondary_and_multi_table_mapper() -> None:
     """Adversarial regression for review findings "Cover unit-of-work writes
-    without mapped objects" and "Inspect relationship-generated writes in the
-    ORM guard": cases 8-9 only ever add directly mapped objects whose own
-    `__table__` is the protected table, so they could not expose the two
+    without mapped objects", "Inspect relationship-generated writes in the
+    ORM guard", and "Block cascades through unloaded secondary
+    relationships": cases 8-9 only ever add directly mapped objects whose own
+    `__table__` is the protected table, so they could not expose the
     unit-of-work write paths a single-`__table__` check misses:
 
     (a) a `relationship(..., secondary=protected_table)` collection — a
@@ -807,7 +828,13 @@ def case_10_guard_covers_relationship_secondary_and_multi_table_mapper() -> None
         `dirty`/`deleted` whose own `__table__` is the secondary table;
     (b) a joined-table-inheritance mapper spanning more than one table —
         the object's own `__table__` is its most-derived local table, but
-        the flush also writes every ancestor table in `mapper.tables`.
+        the flush also writes every ancestor table in `mapper.tables`;
+    (c) deleting a relationship's owning object without its many-to-many
+        collection ever loaded into the session — `get_history(...,
+        passive=PASSIVE_NO_FETCH)` reports no local `added`/`deleted`
+        mutation, yet SQLAlchemy's unit-of-work still emits a DELETE
+        against the secondary table for every existing association row
+        once the parent is deleted.
 
     Uses `research_cycle_provider_provenance_links` — the exact
     association table this finding's evidence cited as a discovered
@@ -817,9 +844,10 @@ def case_10_guard_covers_relationship_secondary_and_multi_table_mapper() -> None
     """
     _log(
         "Case 10: does the Core-only guard block ORM writes that reach a "
-        "protected table only through a relationship's secondary table, or "
-        "only through an ancestor table in a multi-table mapper — not "
-        "through the changed object's own __table__?"
+        "protected table only through a relationship's secondary table, "
+        "only through an ancestor table in a multi-table mapper, or only "
+        "through deleting the relationship owner without its collection "
+        "ever loaded — not through the changed object's own __table__?"
     )
     from sqlalchemy.orm import Session as SASession, relationship
     from sqlalchemy.pool import StaticPool
@@ -869,6 +897,19 @@ def case_10_guard_covers_relationship_secondary_and_multi_table_mapper() -> None
         __table__ = derived_t
         __mapper_args__ = {"polymorphic_identity": "derived"}
 
+    # (c) setup: a parent/child pair linked through the protected secondary
+    # table, committed so a later session can load the parent fresh without
+    # its collection.
+    setup_session = SASession(bind=synthetic_engine)
+    setup_parent = ParentORM(id=2)
+    setup_child = ChildORM(id=2)
+    setup_session.add_all([setup_parent, setup_child])
+    setup_session.flush()
+    setup_parent.children.append(setup_child)
+    setup_session.flush()
+    setup_session.commit()
+    setup_session.close()
+
     event.listen(SASession, "before_flush", _reject_protected_table_orm_writes)
     try:
         # (a) relationship secondary write, no directly mapped object for
@@ -910,6 +951,30 @@ def case_10_guard_covers_relationship_secondary_and_multi_table_mapper() -> None
             print(f"PASS: multi-table mapper write blocked pre-SQL — {exc}")
         session2.rollback()
         session2.close()
+
+        # (c) delete the relationship owner without ever loading its m2m
+        # collection into this session — the unit-of-work still needs to
+        # remove the existing secondary-table row(s) for the deleted parent.
+        session3 = SASession(bind=synthetic_engine)
+        parent_to_delete = session3.get(ParentORM, 2)
+        assert "children" not in parent_to_delete.__dict__, (
+            "test setup bug: the collection must still be unloaded at delete "
+            "time, or this case cannot distinguish the fix from a history-"
+            "only check"
+        )
+        session3.delete(parent_to_delete)
+        try:
+            session3.flush()
+            print(
+                "FAIL: deleting a relationship owner with an unloaded "
+                "many-to-many collection was NOT blocked pre-SQL — the "
+                "secondary-table cascade bypasses the guard (bypass "
+                "substantiated)"
+            )
+        except TriggerProtectedTableORMGuard as exc:
+            print(f"PASS: unloaded-delete cascade blocked pre-SQL — {exc}")
+        session3.rollback()
+        session3.close()
     finally:
         event.remove(SASession, "before_flush", _reject_protected_table_orm_writes)
 

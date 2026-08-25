@@ -136,6 +136,38 @@ def test_trigger_scratch_output_shows_guard_covers_relationship_secondary_and_mu
     assert "FAIL:" not in text.split("Case 10:", 1)[1]
 
 
+def test_trigger_scratch_output_shows_guard_covers_unloaded_delete_cascade():
+    """Regression for review finding "Block cascades through unloaded
+    secondary relationships": the guard's relationship check only inspected
+    `get_history(..., passive=PASSIVE_NO_FETCH)` for `added`/`deleted`
+    entries, which stays empty when a relationship's owning object is
+    deleted without its many-to-many collection ever loaded (or loaded but
+    untouched) — SQLAlchemy still emits a DELETE against the secondary table
+    for every existing association row once the parent is deleted, driven
+    by current DB membership rather than any local Python mutation.
+    Reproducing that flow with `research_cycle_provider_provenance_links`
+    let the flush complete and removed the association row with no
+    `TriggerProtectedTableORMGuard` raised. Pins case 10's third adversarial
+    path: an object in `session.deleted` is force-fetched via
+    `passive=PASSIVE_OFF` and its `unchanged` membership is now also
+    treated as relevant, so the unloaded-delete cascade is rejected pre-SQL."""
+    text = TRIGGER_OUTPUT.read_text(encoding="utf-8")
+    case_10_text = text.split("Case 10:", 1)[1]
+    assert "PASS: unloaded-delete cascade blocked pre-SQL" in case_10_text
+    assert "FAIL:" not in case_10_text
+
+
+def test_evaluation_records_unloaded_delete_cascade_fix():
+    """Regression: EVALUATION.md must record the case-10(c) unloaded-delete
+    fix — the guard now force-fetches (`PASSIVE_OFF`) and checks `unchanged`
+    membership for objects being deleted, not just `added`/`deleted`
+    history — not just the earlier relationship-secondary and multi-table
+    mapper fixes."""
+    text = EVALUATION.read_text(encoding="utf-8")
+    assert "PASSIVE_OFF" in text
+    assert "unchanged" in text
+
+
 def test_evaluation_records_relationship_secondary_and_multi_table_mapper_fix():
     """Regression: EVALUATION.md must record the case-10 fix, not just claim
     universal enforcement — the guard's proven boundary is unit-of-work
