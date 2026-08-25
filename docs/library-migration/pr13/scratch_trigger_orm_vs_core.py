@@ -483,21 +483,31 @@ def case_7_orm_update_existing_row_masking(engine) -> None:
     except IntegrityError as exc:
         print(f"PASS: ORM update rejected — {exc.orig}")
         state = sa_inspect(row)
-        # Do NOT touch row.amount_usd here: SQLAlchemy expires an object's
-        # attributes after a failed UPDATE flush, and re-reading an expired
-        # attribute issues a reload query — which raises PendingRollbackError
-        # on this still-dirty session (the same fail-closed behavior Case 3
-        # pins), not a silent stale/masked read. `mutated_amount` (the value
-        # this test itself assigned, captured above) stands in for what the
-        # identity map was holding immediately before the failed flush.
         print(
             f"    object state pre-rollback: persistent={state.persistent} "
             f"expired={state.expired} (in-memory value this test assigned "
-            f"before the rejected flush: {mutated_amount!r} — reading the "
-            f"live attribute here would itself raise PendingRollbackError, "
-            f"proving the session refuses to serve a possibly-stale value "
-            f"rather than masking one)"
+            f"before the rejected flush: {mutated_amount!r})"
         )
+        # Regression for review finding "Actually execute the pre-rollback
+        # attribute read": actually access the expired attribute here,
+        # rather than only asserting what it would do. SQLAlchemy expires an
+        # object's attributes after a failed UPDATE flush, and re-reading an
+        # expired attribute issues a reload query on this still-dirty
+        # session — which must raise PendingRollbackError (the same
+        # fail-closed behavior Case 3 pins), not silently return a value.
+        try:
+            leaked_value = row.amount_usd
+            print(
+                f"FAIL: reading the expired attribute after a rejected flush "
+                f"did not raise PendingRollbackError — returned {leaked_value!r} "
+                f"instead (masking risk substantiated for ORM UPDATE)"
+            )
+        except PendingRollbackError:
+            print(
+                "PASS: reading the expired attribute pre-rollback itself "
+                "raised PendingRollbackError, proving the session refuses to "
+                "serve a possibly-stale value rather than masking one"
+            )
         with engine.connect() as check_conn:
             db_value = check_conn.execute(
                 text("SELECT amount_usd FROM paper_book_cash_ledger WHERE ledger_entry_id='le-3'")
@@ -582,14 +592,43 @@ assert {"real_orders", "paper_book_cash_ledger"} <= TRIGGER_PROTECTED_TABLES, (
 
 
 def _reject_protected_table_orm_writes(session, flush_context, instances) -> None:
-    del flush_context, instances
+    """Regression for review findings "Cover unit-of-work writes without
+    mapped objects" and "Inspect relationship-generated writes in the ORM
+    guard": the original guard inspected only each changed object's own
+    `__table__`, which misses two real unit-of-work write paths — (1) a
+    joined-table-inheritance (or any multi-table) mapper, whose flush writes
+    every table in `mapper.tables`, not just the object's own local table;
+    and (2) a `relationship(..., secondary=...)` collection, whose flush
+    emits association-table INSERT/DELETE against `secondary` while neither
+    endpoint object's own `__table__` is that secondary table. Case 10 below
+    is the adversarial regression for both paths.
+    """
+    from sqlalchemy.orm import class_mapper
+    from sqlalchemy.orm.attributes import get_history
+    from sqlalchemy.orm.base import PASSIVE_NO_FETCH
+
     for obj in list(session.new) + list(session.dirty) + list(session.deleted):
-        table = getattr(obj, "__table__", None)
-        if table is not None and table.name in TRIGGER_PROTECTED_TABLES:
-            raise TriggerProtectedTableORMGuard(
-                f"ORM session flush blocked before any SQL was emitted: "
-                f"{table.name!r} is a trigger-protected table — use Core statements only"
-            )
+        mapper = class_mapper(type(obj))
+        for table in mapper.tables:
+            if table.name in TRIGGER_PROTECTED_TABLES:
+                raise TriggerProtectedTableORMGuard(
+                    f"ORM session flush blocked before any SQL was emitted: "
+                    f"{table.name!r} is a trigger-protected table mapped by "
+                    f"{type(obj).__name__} — use Core statements only"
+                )
+        for prop in mapper.relationships:
+            secondary = prop.secondary
+            secondary_name = getattr(secondary, "name", None)
+            if secondary_name is None or secondary_name not in TRIGGER_PROTECTED_TABLES:
+                continue
+            history = get_history(obj, prop.key, passive=PASSIVE_NO_FETCH)
+            if history.added or history.deleted:
+                raise TriggerProtectedTableORMGuard(
+                    f"ORM session flush blocked before any SQL was emitted: "
+                    f"relationship {type(obj).__name__}.{prop.key} writes "
+                    f"through secondary table {secondary_name!r}, a "
+                    f"trigger-protected table — use Core statements only"
+                )
 
 
 def case_8_core_only_guard_blocks_every_orm_session_construction_path(engine) -> None:
@@ -685,8 +724,9 @@ def case_9_core_only_guard_covers_every_discovered_protected_table() -> None:
     `_reject_protected_table_orm_writes` before any SQL is emitted. Uses a
     disposable, single-column synthetic table per discovered name — full
     production DDL/triggers for 50 tables is out of scope here and
-    unnecessary, since the guard only inspects `obj.__table__.name` and
-    fires before any SQL reaches a real trigger.
+    unnecessary, since the guard inspects each mapper's tables (and any
+    relationship `secondary` table, per case 10) and fires before any SQL
+    reaches a real trigger.
     """
     _log(
         "Case 9: does the Core-only guard block ORM writes against *every* "
@@ -753,6 +793,127 @@ def case_9_core_only_guard_covers_every_discovered_protected_table() -> None:
         )
 
 
+def case_10_guard_covers_relationship_secondary_and_multi_table_mapper() -> None:
+    """Adversarial regression for review findings "Cover unit-of-work writes
+    without mapped objects" and "Inspect relationship-generated writes in the
+    ORM guard": cases 8-9 only ever add directly mapped objects whose own
+    `__table__` is the protected table, so they could not expose the two
+    unit-of-work write paths a single-`__table__` check misses:
+
+    (a) a `relationship(..., secondary=protected_table)` collection — a
+        many-to-many mutation dirties only the unprotected parent/child
+        endpoint objects, and the flush emits association-table INSERT/
+        DELETE with no corresponding mapped object in `session.new`/
+        `dirty`/`deleted` whose own `__table__` is the secondary table;
+    (b) a joined-table-inheritance mapper spanning more than one table —
+        the object's own `__table__` is its most-derived local table, but
+        the flush also writes every ancestor table in `mapper.tables`.
+
+    Uses `research_cycle_provider_provenance_links` — the exact
+    association table this finding's evidence cited as a discovered
+    protected table with no directly mapped class — as the `secondary=`
+    table, and a disposable synthetic base/child pair for the
+    joined-table-inheritance case.
+    """
+    _log(
+        "Case 10: does the Core-only guard block ORM writes that reach a "
+        "protected table only through a relationship's secondary table, or "
+        "only through an ancestor table in a multi-table mapper — not "
+        "through the changed object's own __table__?"
+    )
+    from sqlalchemy.orm import Session as SASession, relationship
+    from sqlalchemy.pool import StaticPool
+
+    secondary_protected_name = "research_cycle_provider_provenance_links"
+    assert secondary_protected_name in TRIGGER_PROTECTED_TABLES, (
+        "discovery regressed: lost the table this case's secondary= adversarial probe needs"
+    )
+    base_protected_name = sorted(TRIGGER_PROTECTED_TABLES - {secondary_protected_name})[0]
+
+    synthetic_engine = create_engine("sqlite:///:memory:", future=True, poolclass=StaticPool)
+    metadata = MetaData()
+    parent_t = Table("scratch_m2m_parent", metadata, Column("id", Integer, primary_key=True))
+    child_t = Table("scratch_m2m_child", metadata, Column("id", Integer, primary_key=True))
+    secondary_t = Table(
+        secondary_protected_name,
+        metadata,
+        Column("parent_id", Integer, ForeignKey("scratch_m2m_parent.id"), primary_key=True),
+        Column("child_id", Integer, ForeignKey("scratch_m2m_child.id"), primary_key=True),
+    )
+    base_t = Table(
+        base_protected_name, metadata, Column("id", Integer, primary_key=True), Column("type", String)
+    )
+    derived_t = Table(
+        "scratch_joined_child_unprotected",
+        metadata,
+        Column("id", Integer, ForeignKey(f"{base_protected_name}.id"), primary_key=True),
+        Column("extra", String),
+    )
+    metadata.create_all(synthetic_engine)
+
+    class Base10(DeclarativeBase):
+        pass
+
+    class ParentORM(Base10):
+        __table__ = parent_t
+        children = relationship("ChildORM", secondary=secondary_t)
+
+    class ChildORM(Base10):
+        __table__ = child_t
+
+    class BaseORM(Base10):
+        __table__ = base_t
+        __mapper_args__ = {"polymorphic_identity": "base", "polymorphic_on": "type"}
+
+    class DerivedORM(BaseORM):
+        __table__ = derived_t
+        __mapper_args__ = {"polymorphic_identity": "derived"}
+
+    event.listen(SASession, "before_flush", _reject_protected_table_orm_writes)
+    try:
+        # (a) relationship secondary write, no directly mapped object for
+        # the protected association table itself.
+        session = SASession(bind=synthetic_engine)
+        parent = ParentORM(id=1)
+        child = ChildORM(id=1)
+        session.add_all([parent, child])
+        session.flush()  # establish both endpoint rows; collection still empty
+        parent.children.append(child)  # dirties only ParentORM/ChildORM, not the secondary table
+        try:
+            session.flush()
+            print(
+                "FAIL: relationship secondary write to a protected association "
+                "table was NOT blocked pre-SQL (bypass substantiated)"
+            )
+        except TriggerProtectedTableORMGuard as exc:
+            print(f"PASS: relationship secondary write blocked pre-SQL — {exc}")
+        session.rollback()
+        session.close()
+
+        # (b) multi-table (joined-table-inheritance) mapper write, where the
+        # changed object's own __table__ is the unprotected derived table.
+        session2 = SASession(bind=synthetic_engine)
+        derived = DerivedORM(id=1, extra="x")
+        assert derived.__table__.name not in TRIGGER_PROTECTED_TABLES, (
+            "test setup bug: the object's own __table__ must NOT be the "
+            "protected table, or this case cannot distinguish the fix from "
+            "the original single-__table__ check"
+        )
+        session2.add(derived)
+        try:
+            session2.flush()
+            print(
+                "FAIL: joined-table-inheritance write to an ancestor protected "
+                "table was NOT blocked pre-SQL (bypass substantiated)"
+            )
+        except TriggerProtectedTableORMGuard as exc:
+            print(f"PASS: multi-table mapper write blocked pre-SQL — {exc}")
+        session2.rollback()
+        session2.close()
+    finally:
+        event.remove(SASession, "before_flush", _reject_protected_table_orm_writes)
+
+
 if __name__ == "__main__":
     import sqlalchemy
 
@@ -767,4 +928,5 @@ if __name__ == "__main__":
     case_7_orm_update_existing_row_masking(engine)
     case_8_core_only_guard_blocks_every_orm_session_construction_path(engine)
     case_9_core_only_guard_covers_every_discovered_protected_table()
+    case_10_guard_covers_relationship_secondary_and_multi_table_mapper()
     print("\nDone.")

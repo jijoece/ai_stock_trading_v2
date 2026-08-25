@@ -58,7 +58,7 @@ file-backed SQLite database (a temp file, not `:memory:`), also matching
 `storage/database.py`'s own `sqlite3.connect(str(db_path))` — required so
 that `engine.connect()` opens a genuinely independent DBAPI connection from
 the ORM session's own connection, not the same connection an in-memory
-`:memory:` + `StaticPool` engine would silently reuse. Nine cases:
+`:memory:` + `StaticPool` engine would silently reuse. Ten cases:
 
 1. **Core INSERT into `real_orders` (control).** Rejected —
    `sqlalchemy.exc.IntegrityError` wrapping the trigger's `RAISE(ABORT, ...)`
@@ -153,10 +153,10 @@ the ORM session's own connection, not the same connection an in-memory
    TRIGGER ... BEFORE {INSERT,UPDATE,DELETE} ON <table> ... RAISE(ABORT ...
    END;` block (unconditional or `WHEN`-conditional, e.g. `recommendations`'
    frozen-row guard) and collects `<table>` — currently **50** tables, not
-   2. The guard (unchanged logic) is then exercised against a disposable
-   synthetic single-column table for every one of the 50 discovered names
-   (full production DDL for 50 tables is unnecessary: the guard only
-   inspects `obj.__table__.name` and fires before any SQL reaches a real
+   2. The guard is then exercised against a disposable synthetic
+   single-column table for every one of the 50 discovered names (full
+   production DDL for 50 tables is unnecessary: the guard inspects each
+   changed object's mapper tables and fires before any SQL reaches a real
    trigger), and every single one is rejected pre-SQL by
    `TriggerProtectedTableORMGuard`. Because the policy is re-derived from
    the same production files on every run rather than hand-maintained, a
@@ -164,6 +164,29 @@ the ORM session's own connection, not the same connection an in-memory
    the next time this reproduction (or its regression test) runs; it cannot
    silently regress to a stale hardcoded list the way the original
    two-table allowlist did.
+10. **Two unit-of-work write paths a single-`__table__` check cannot see,
+    adversarially probed.** Cases 8-9 only ever add directly mapped objects
+    whose own `__table__` is the protected table, so they could not expose
+    that the guard's original check — `getattr(obj, "__table__", None)` for
+    each object in `session.new`/`dirty`/`deleted` — misses (a) a
+    `relationship(..., secondary=protected_table)` collection mutation,
+    where the flush emits association-table INSERT/DELETE while neither
+    endpoint object's own `__table__` is the secondary table, and (b) a
+    joined-table-inheritance (or other multi-table) mapper, whose flush
+    writes every ancestor table in `mapper.tables`, not just the object's
+    own most-derived local table. This was a real gap, not a hypothetical
+    one: reproduced directly using
+    `research_cycle_provider_provenance_links` (a real production
+    association table with no directly mapped class) as a `secondary=`
+    table, mutating the relationship raised only silence from the original
+    check, and a synthetic joined-table-inheritance mapper over another
+    discovered protected table showed the same miss for its ancestor table.
+    The guard is now fixed to inspect `class_mapper(type(obj)).tables` (all
+    tables the mapper writes, not just the object's own `__table__`) and
+    every relationship's `secondary` table via `get_history()` on the
+    relationship attribute, and case 10 confirms both adversarial paths are
+    now rejected pre-SQL by `TriggerProtectedTableORMGuard`, not merely
+    left to reach the trigger.
 
 **Finding: the masking hypothesis is not substantiated against SQLAlchemy
 2.0.52 for either representative table.** Every one of the seven masking
@@ -190,9 +213,20 @@ any SQL reaches the trigger, while Core access is unaffected. Case 9
 additionally proves that guard's *policy* — which tables it protects — is
 complete against every table production currently defines, not just the two
 tables this reproduction happens to carry real DDL for, and cannot silently
-go stale as production's schema grows. Any future adoption that wants the
+go stale as production's schema grows. Case 10 closes a gap in the guard's
+*mechanism*, not its policy: the original check inspected only each changed
+object's own `__table__`, which misses a `relationship(...,
+secondary=protected_table)` collection write and an ancestor table in a
+joined-table-inheritance mapper; the guard now also inspects
+`class_mapper(type(obj)).tables` and every relationship's `secondary`
+table, and case 10 proves both adversarial paths are rejected pre-SQL. This
+still does not cover ORM-enabled bulk `update()`/`delete()` constructs
+issued via `Session.execute()`, which bypass `before_flush` entirely (see
+"Non-blocking notes" below) — the guard's proven boundary is unit-of-work
+flush writes reachable through a mapper's tables or relationships, not
+every possible ORM-adjacent write path. Any future adoption that wants the
 Core-only boundary enforced, not merely followed by convention, has a
-proven, minimal, self-updating mechanism to enforce it — not because the
+proven, self-updating mechanism to enforce it for that boundary — not because the
 ORM is unsafe (Section 2's masking finding says it is not), but because
 Core statements map 1:1 onto the exact SQL the triggers were written
 against, which is easier to audit line-by-line for a safety-critical table
@@ -367,10 +401,17 @@ richer persistence/migration layer is later scoped:
 * Keep trigger-protected tables on Core-only statements, enforced with the
   `before_flush` guard proven in Section 2 case 8, with its table policy
   derived from the production schema per case 9 (not merely followed by
-  convention) — an auditability preference, not a correctness finding since
-  Section 2 found no masking risk, and worth re-confirming against whatever
-  SQLAlchemy version is current at that time.
+  convention) and its mechanism covering relationship-`secondary` and
+  multi-table-mapper writes per case 10 — an auditability preference, not a
+  correctness finding since Section 2 found no masking risk, and worth
+  re-confirming against whatever SQLAlchemy version is current at that time.
 * Bulk Core constructs (`sqlalchemy.dml.Insert`/`Update` used for
   multi-row bulk operations, which bypass ORM events but not Core/trigger
   execution) were not separately tested here and should be, since they were
-  named as an open question in Section 2's finding.
+  named as an open question in Section 2's finding. This includes
+  ORM-enabled bulk `update()`/`delete()` statements issued via
+  `Session.execute()`, which — unlike a unit-of-work flush — do not fire
+  `before_flush` at all, so the guard fixed in case 10 does not cover them;
+  a future adoption enforcing the Core-only boundary against that path
+  would need a separate check (e.g. a `before_execute`/`before_cursor_execute`
+  listener inspecting the statement's target table).

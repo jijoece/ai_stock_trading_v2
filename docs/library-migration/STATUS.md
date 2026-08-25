@@ -372,9 +372,12 @@ dependency; PR 3/4/11/15/16 wire the respective libraries into code.
    accepted ADR 0009 (Option B, `backtest_runtime/`). The pre-step is complete
    and PR 6 is unblocked — see "Completed work (pre-step before PR 6)" below.
    Was never a blocker for PR 1 or PR 2.
-2. **PR 13/14 feasibility outcomes** (SQLAlchemy/Alembic trigger-safety,
-   APScheduler lease-coexistence) are unknown until those PRs run — PR 1
-   does not depend on them.
+2. ~~**PR 13 feasibility outcome**~~ (SQLAlchemy/Alembic trigger-safety).
+   **Resolved 2026-08-23:** PR 13 ran and the outcome is **defer, do not
+   adopt** — see this file's "Completed work (PR 13)" section and
+   `DECISIONS.md` D11 for the full record. Was never a blocker for PR 1.
+3. **PR 14 feasibility outcome** (APScheduler lease-coexistence) is unknown
+   until that PR runs — PR 1 does not depend on it.
 
 The root `.[paper]` extra `ResolutionImpossible` finding from an earlier
 draft of this PR is resolved, not deferred: the extra was removed (see
@@ -2843,9 +2846,21 @@ guard's table policy is complete: derived by scanning production's schema
 modules for every write-rejecting trigger (50 tables, not the 2 a
 hand-maintained allowlist previously covered), the guard rejects ORM writes
 pre-SQL against every one of them, and cannot silently go stale as
-production's schema grows. Core-only for trigger-protected tables remains
-the recommendation for any future adoption regardless, as an auditability
-preference with a proven, complete enforcement mechanism available, not a
+production's schema grows. A tenth case then found and fixed a real gap in
+the guard's mechanism (not its table policy): the original check inspected
+only each changed object's own `__table__`, missing a
+`relationship(..., secondary=protected_table)` collection write and an
+ancestor table in a joined-table-inheritance mapper — reproduced
+adversarially using `research_cycle_provider_provenance_links` (a real
+production association table with no directly mapped class) and a
+synthetic multi-table mapper. The guard now also inspects each mapper's
+full table set and every relationship's `secondary` table, and both
+adversarial paths are rejected pre-SQL. Core-only for trigger-protected
+tables remains the recommendation for any future adoption regardless, as an
+auditability preference with a proven enforcement mechanism available for
+unit-of-work flush writes (not ORM-enabled bulk `update()`/`delete()`
+statements via `Session.execute()`, which bypass `before_flush` entirely —
+an open gap recorded in `pr13/EVALUATION.md`'s non-blocking notes), not a
 correctness requirement.
 
 (b) whether Alembic's branching revision graph can be constrained to
@@ -2901,16 +2916,48 @@ regression coverage described above
   marker. The scratch reproductions themselves ran only inside a disposable
   virtualenv (`/tmp/pr13_scratch_venv`, not committed) outside this
   repository's dependency graph, never against the project's own `.venv`.
-- `.venv/bin/python -m pytest tests/ -q --tb=short` — **3289 passed, 57
+- `.venv/bin/python -m pytest tests/ -q --tb=short` — **3303 passed, 57
   skipped, 0 failed**; no test outside the new file was modified.
-- `nox -s ci` — all four blocking sessions passed: `tests` (3161 passed, 106
+- `nox -s ci` — all four blocking sessions passed: `tests` (3175 passed, 106
   skipped, `.[dev]` only), `paper_tests` (160 passed), `safety_typecheck`
   (pyright, 0 errors — `pr13/scratch_trigger_orm_vs_core.py` and
   `pr13/scratch_alembic_linearity.py` are outside both `[tool.pyright]`'s
   `include` and `pyright-safety.json`'s scope, same as PR 2/PR 12's scratch
   files), `migration_smoke` (OK).
-- `scripts/check_links.sh` — 189 links checked, 187 OK, 0 errors, 2
-  excluded.
+- `scripts/check_links.sh` — clean (0 errors), re-run after this fix round.
+
+**Correction (2026-08-24, review-fix round): pre-rollback attribute read
+actually executed, and the guard's mechanism fixed for relationship-secondary
+and multi-table-mapper writes.** Two issues from the prior fix rounds were
+fixed on this same branch, without starting PR 14:
+
+1. Case 7's committed record claimed the mutated attribute was read
+   pre-rollback and raised `PendingRollbackError`, but the code deliberately
+   avoided performing that read — the regression test could pass without
+   ever verifying the claim. `scratch_trigger_orm_vs_core.py` now actually
+   reads the expired attribute pre-rollback and asserts the read itself
+   raises `PendingRollbackError`; re-run confirmed the claim empirically.
+2. `_reject_protected_table_orm_writes` originally inspected only each
+   changed object's own `__table__`, missing a
+   `relationship(..., secondary=protected_table)` collection write and an
+   ancestor table in a joined-table-inheritance mapper. A tenth case
+   (`case_10_guard_covers_relationship_secondary_and_multi_table_mapper`)
+   reproduced both gaps adversarially — using the real production
+   `research_cycle_provider_provenance_links` association table for the
+   `secondary=` case — and the guard now also inspects each mapper's full
+   table set and every relationship's `secondary` table via `get_history()`.
+   Both adversarial paths are now rejected pre-SQL. `EVALUATION.md`,
+   `DECISIONS.md` D11, and this file are corrected to describe the guard's
+   proven boundary precisely (unit-of-work flush writes reachable through a
+   mapper's tables or relationships) rather than claim universal
+   enforcement; ORM-enabled bulk `update()`/`delete()` via `Session.execute()`
+   remains an open, explicitly documented gap.
+
+Re-run after these fixes: `tests/unit/test_pr13_evaluation_docs.py` — 28
+passed (4 new regression tests added); `.venv/bin/python -m pytest tests/ -q
+--tb=short` — 3303 passed, 57 skipped, 0 failed; `nox -s ci` — all four
+blocking sessions passed (counts above). No file under `src/`, `scripts/`,
+or `paper_runtime/src/` was touched.
 
 **Safety:** no trading limit, authorization rule, `paper_books` accounting
 code, or scheduling behavior was touched; no broker, provider, or real

@@ -1297,9 +1297,19 @@ derived by scanning production schema modules for write-rejecting triggers
 ORM writes pre-SQL against every one, including `paper_book_fills`,
 `research_attempts`, `research_attempt_failures`, and
 `research_cycle_provider_provenance_links`, omitted by the prior allowlist; re-deriving from production means a future protected table
-cannot fall outside guard coverage. Core-only for trigger-protected tables
-remains the recommendation regardless, as an auditability preference with a
-proven, self-updating mechanism — not because the ORM is unsafe.
+cannot fall outside guard coverage. A tenth case then found and fixed a real
+gap in the guard's *mechanism*: checking only each changed object's own
+`__table__` misses a `relationship(..., secondary=protected_table)`
+collection write (reproduced using `research_cycle_provider_provenance_links`
+itself as the `secondary` table) and an ancestor table in a
+joined-table-inheritance mapper; the guard now also inspects each mapper's
+full table set and every relationship's `secondary` table, and both
+adversarial paths are rejected pre-SQL. This does not cover ORM-enabled
+bulk `update()`/`delete()` statements via `Session.execute()`, which bypass
+`before_flush` entirely — an open gap, not claimed as closed. Core-only for
+trigger-protected tables remains the recommendation regardless, as an
+auditability preference with a proven, self-updating mechanism for
+unit-of-work flush writes — not because the ORM is unsafe.
 
 **Question (b), empirically tested — constrainable, but only with an added
 guard.** A second scratch reproduction (`pr13/scratch_alembic_linearity.py`)

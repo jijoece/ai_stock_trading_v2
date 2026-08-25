@@ -97,6 +97,57 @@ def test_trigger_scratch_output_shows_orm_update_masking_case():
     assert "PASS: the rejected UPDATE's in-memory mutation never became durable" in text
 
 
+def test_trigger_scratch_output_shows_pre_rollback_read_actually_executed():
+    """Regression for review finding "Actually execute the pre-rollback
+    attribute read": an earlier fix round's case 7 explicitly avoided
+    reading `row.amount_usd` after the rejected UPDATE flush, merely
+    asserting in prose that doing so "would raise" — a claim EVALUATION.md
+    and D11 repeated but the code never actually exercised, so a future
+    identity-map regression that silently returned a stale value instead of
+    raising could pass unnoticed. Pins that the expired attribute is now
+    actually read pre-rollback and that the read itself raised
+    `PendingRollbackError`, not merely a claim that it would."""
+    text = TRIGGER_OUTPUT.read_text(encoding="utf-8")
+    assert (
+        "PASS: reading the expired attribute pre-rollback itself raised "
+        "PendingRollbackError" in text
+    )
+    assert "FAIL: reading the expired attribute" not in text
+
+
+def test_trigger_scratch_output_shows_guard_covers_relationship_secondary_and_multi_table_mapper():
+    """Regression for review findings "Cover unit-of-work writes without
+    mapped objects" and "Inspect relationship-generated writes in the ORM
+    guard": the guard originally inspected only each changed object's own
+    `__table__`, missing (a) a `relationship(..., secondary=protected_table)`
+    collection write, where the flush emits association-table INSERT/DELETE
+    with no directly mapped object for the secondary table itself, and (b)
+    a joined-table-inheritance mapper, whose flush also writes an ancestor
+    table beyond the object's own local table. Pins case 10's result: both
+    adversarial paths — using the real `research_cycle_provider_provenance_links`
+    association table cited by the finding's own evidence — are now rejected
+    pre-SQL by `TriggerProtectedTableORMGuard`, not left to reach a trigger
+    (or, for a synthetic table with no trigger, to pass through undetected)."""
+    text = TRIGGER_OUTPUT.read_text(encoding="utf-8")
+    assert "Case 10:" in text
+    assert "PASS: relationship secondary write blocked pre-SQL" in text
+    assert "research_cycle_provider_provenance_links" in text.split("Case 10:", 1)[1]
+    assert "PASS: multi-table mapper write blocked pre-SQL" in text
+    assert "FAIL:" not in text.split("Case 10:", 1)[1]
+
+
+def test_evaluation_records_relationship_secondary_and_multi_table_mapper_fix():
+    """Regression: EVALUATION.md must record the case-10 fix, not just claim
+    universal enforcement — the guard's proven boundary is unit-of-work
+    flush writes reachable through a mapper's tables or relationships, and
+    the record must say so rather than overclaim."""
+    text = EVALUATION.read_text(encoding="utf-8")
+    assert "class_mapper(type(obj)).tables" in text
+    assert "get_history" in text
+    assert "research_cycle_provider_provenance_links" in text
+    assert "bulk `update()`/`delete()` statements issued via" in text
+
+
 def test_trigger_scratch_output_shows_guard_covers_every_discovered_table():
     """Regression for review finding "Enforce Core-only access for every
     trigger-protected table": the guard's allowlist previously covered only
@@ -314,6 +365,28 @@ def test_status_pr13_section_survives_pr14_current_phase_rewrite():
     assert "**Current phase: PR 13" not in simulated
     section = simulated.split("## Completed work (PR 13)", 1)[1]
     assert "Outcome: defer, do not adopt" in section
+
+
+def test_status_remaining_blockers_does_not_contradict_pr13_evaluated():
+    """Regression for review finding "Resolve PR 13 in the remaining-blockers
+    list": STATUS.md's "Current phase" heading declared PR 13 evaluated and
+    the next phase advanced to PR 14, while the same file's "Remaining
+    blockers" section still listed "PR 13/14 feasibility outcomes" as
+    unknown until those PRs run — self-contradictory, and it continued to
+    present the completed SQLAlchemy/Alembic evaluation as an unresolved
+    blocker. Pins that the stale combined item is gone and PR 13's blocker
+    entry is explicitly marked resolved, leaving only PR 14 genuinely
+    unknown."""
+    text = STATUS.read_text(encoding="utf-8")
+    assert "PR 13/14 feasibility outcomes" not in text
+    blockers_section = text.split("## Remaining blockers", 1)[1].split(
+        "## Completed work (PR 2)", 1
+    )[0]
+    assert "PR 13 feasibility outcome" in blockers_section
+    assert "Resolved 2026-08-23" in blockers_section
+    assert "PR 14 feasibility outcome" in blockers_section
+    assert "is unknown" in blockers_section
+    assert "until that PR runs" in blockers_section
 
 
 def test_status_no_file_under_src_scripts_paper_runtime_was_modified():
