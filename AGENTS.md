@@ -69,3 +69,10 @@ Prioritize:
 - missing regression tests
 
 Do not report formatting, naming, or lint issues already covered by CI.
+
+Phrase each finding as a falsifiable concern to investigate, not as an
+unconditional instruction to change code. Include the evidence, the potential
+impact if the concern is confirmed, and a concrete way to verify it. Ask the
+implementer to fix the issue and add regression coverage only if that
+investigation confirms it. If the concern is invalid or already fixed, the
+implementer should record the evidence and leave the code unchanged.
