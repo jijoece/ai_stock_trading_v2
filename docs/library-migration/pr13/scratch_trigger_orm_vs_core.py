@@ -643,6 +643,19 @@ def _reject_protected_table_orm_writes(session, flush_context, instances) -> Non
             if is_deleted:
                 relevant = relevant or history.unchanged
             if relevant:
+                if is_deleted:
+                    # Narrowed per review finding "Narrow the unloaded-delete
+                    # claim to pre-DML": the PASSIVE_OFF force-fetch above
+                    # already issued a SELECT to determine `unchanged`
+                    # membership, so this rejection is not pre-SQL — only
+                    # pre-DML (no INSERT/UPDATE/DELETE reaches the database).
+                    raise TriggerProtectedTableORMGuard(
+                        f"ORM session flush blocked before any write (DML) "
+                        f"was emitted — relationship {type(obj).__name__}."
+                        f"{prop.key} writes through secondary table "
+                        f"{secondary_name!r}, a trigger-protected table — "
+                        f"use Core statements only"
+                    )
                 raise TriggerProtectedTableORMGuard(
                     f"ORM session flush blocked before any SQL was emitted: "
                     f"relationship {type(obj).__name__}.{prop.key} writes "
@@ -963,16 +976,48 @@ def case_10_guard_covers_relationship_secondary_and_multi_table_mapper() -> None
             "only check"
         )
         session3.delete(parent_to_delete)
+        # Review finding "Narrow the unloaded-delete claim to pre-DML":
+        # `PASSIVE_OFF` (used above for a deleted object's relationship
+        # history) force-fetches the collection, which issues a SELECT
+        # during `before_flush` before the guard can raise — so this is not
+        # provably a pre-SQL rejection. Instrument every statement the
+        # synthetic engine executes during the flush attempt and assert none
+        # of them is write DML (INSERT/UPDATE/DELETE) before the guard
+        # fires, which is the claim this case can actually support.
+        emitted_statements: list[str] = []
+
+        def _record_statement(conn, cursor, statement, parameters, context, executemany):
+            del conn, cursor, parameters, context, executemany
+            emitted_statements.append(statement)
+
+        event.listen(synthetic_engine, "before_cursor_execute", _record_statement)
         try:
-            session3.flush()
-            print(
-                "FAIL: deleting a relationship owner with an unloaded "
-                "many-to-many collection was NOT blocked pre-SQL — the "
-                "secondary-table cascade bypasses the guard (bypass "
-                "substantiated)"
-            )
-        except TriggerProtectedTableORMGuard as exc:
-            print(f"PASS: unloaded-delete cascade blocked pre-SQL — {exc}")
+            try:
+                session3.flush()
+                print(
+                    "FAIL: deleting a relationship owner with an unloaded "
+                    "many-to-many collection was NOT blocked pre-DML — the "
+                    "secondary-table cascade bypasses the guard (bypass "
+                    "substantiated)"
+                )
+            except TriggerProtectedTableORMGuard as exc:
+                write_statements = [
+                    s for s in emitted_statements
+                    if s.strip().split(None, 1)[0].upper() in ("INSERT", "UPDATE", "DELETE")
+                ]
+                if write_statements:
+                    print(
+                        "FAIL: unloaded-delete cascade emitted write DML "
+                        f"before the guard raised (masking risk substantiated): {write_statements!r}"
+                    )
+                else:
+                    print(
+                        "PASS: unloaded-delete cascade blocked pre-DML — "
+                        f"{len(emitted_statements)} read statement(s) emitted "
+                        f"for the forced-fetch check, zero write statements — {exc}"
+                    )
+        finally:
+            event.remove(synthetic_engine, "before_cursor_execute", _record_statement)
         session3.rollback()
         session3.close()
     finally:

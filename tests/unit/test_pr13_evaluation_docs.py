@@ -150,10 +150,19 @@ def test_trigger_scratch_output_shows_guard_covers_unloaded_delete_cascade():
     `TriggerProtectedTableORMGuard` raised. Pins case 10's third adversarial
     path: an object in `session.deleted` is force-fetched via
     `passive=PASSIVE_OFF` and its `unchanged` membership is now also
-    treated as relevant, so the unloaded-delete cascade is rejected pre-SQL."""
+    treated as relevant, so the unloaded-delete cascade is rejected.
+
+    Also regression for review finding "Narrow the unloaded-delete claim to
+    pre-DML": the `PASSIVE_OFF` force-fetch itself issues a SELECT during
+    `before_flush`, so this path is not pre-SQL — it is pre-DML. Pins that
+    the scratch script instruments emitted statements and confirms zero
+    write statements (INSERT/UPDATE/DELETE) reach the database before the
+    guard raises."""
     text = TRIGGER_OUTPUT.read_text(encoding="utf-8")
     case_10_text = text.split("Case 10:", 1)[1]
-    assert "PASS: unloaded-delete cascade blocked pre-SQL" in case_10_text
+    assert "PASS: unloaded-delete cascade blocked pre-DML" in case_10_text
+    assert "zero write statements" in case_10_text
+    assert "pre-SQL" not in case_10_text.split("PASS: unloaded-delete", 1)[1]
     assert "FAIL:" not in case_10_text
 
 
@@ -162,10 +171,16 @@ def test_evaluation_records_unloaded_delete_cascade_fix():
     fix — the guard now force-fetches (`PASSIVE_OFF`) and checks `unchanged`
     membership for objects being deleted, not just `added`/`deleted`
     history — not just the earlier relationship-secondary and multi-table
-    mapper fixes."""
+    mapper fixes.
+
+    Also regression for review finding "Narrow the unloaded-delete claim to
+    pre-DML": EVALUATION.md must not claim path (c) is rejected pre-SQL —
+    the `PASSIVE_OFF` force-fetch itself reads before the guard raises, so
+    the record must narrow that specific claim to pre-DML."""
     text = EVALUATION.read_text(encoding="utf-8")
     assert "PASSIVE_OFF" in text
     assert "unchanged" in text
+    assert "pre-DML" in text
 
 
 def test_evaluation_records_relationship_secondary_and_multi_table_mapper_fix():
@@ -201,39 +216,57 @@ def test_trigger_scratch_output_shows_guard_covers_every_discovered_table():
         assert table in text
 
 
-def test_guard_policy_matches_current_production_trigger_protected_tables():
+def test_guard_policy_matches_current_production_trigger_protected_tables(tmp_path):
     """Regression for review finding "Enforce Core-only access for every
     trigger-protected table" validation requirement: "add a regression check
     that fails whenever production gains a protected table absent from the
-    guard policy." Independently re-derives the trigger-protected table set
-    directly from the *current* production schema files (duplicating, not
-    importing, `scratch_trigger_orm_vs_core.py`'s discovery regex, so a bug
-    in that regex cannot hide from this check) and compares the count
-    against the committed scratch output. If production gains (or loses) a
-    write-rejecting trigger, this count diverges from the pinned output and
-    this test fails until the scratch script is re-run and the output/docs
-    are regenerated — the guard's policy can no longer go silently stale."""
+    guard policy."
+
+    Also regression for review finding "Use an independent oracle for
+    trigger coverage": an earlier version of this test duplicated
+    `scratch_trigger_orm_vs_core.py`'s discovery regex verbatim, so a
+    production trigger written with syntax that regex does not recognize
+    (e.g. `BEFORE UPDATE OF ... ON ...`, or a quoted table identifier) would
+    be omitted by both the guard's discovery and this check identically —
+    the two could never disagree even when both were wrong. This version is
+    structurally independent: it initializes a real production database via
+    `storage.database.connect()` (the same schema-application path
+    production uses) and reads SQLite's own parsed trigger metadata from
+    `sqlite_master.tbl_name`, which SQLite fills in correctly regardless of
+    `ON`-clause syntax — no regex is used to extract the protected table
+    name at all, only to detect the BEFORE/INSERT-UPDATE-DELETE/RAISE(ABORT
+    shape of a write-rejecting trigger already located by table. If
+    production gains (or loses) a write-rejecting trigger, this count
+    diverges from the pinned output and this test fails until the scratch
+    script is re-run and the output/docs are regenerated — the guard's
+    policy can no longer go silently stale."""
     import re as _re
 
-    schema_dir = ROOT / "src" / "trading_research" / "storage"
-    trigger_block = _re.compile(
-        r"CREATE TRIGGER.*?BEFORE\s+(?:INSERT|UPDATE|DELETE)\s+ON\s+(\w+).*?END;",
-        _re.DOTALL,
+    from trading_research.storage.database import connect
+
+    conn = connect(tmp_path / "trigger_oracle.sqlite3")
+    try:
+        rows = conn.execute(
+            "SELECT tbl_name, sql FROM sqlite_master WHERE type = 'trigger'"
+        ).fetchall()
+    finally:
+        conn.close()
+
+    write_reject_pattern = _re.compile(
+        r"\bBEFORE\b.*?\b(?:INSERT|UPDATE|DELETE)\b.*?RAISE\s*\(\s*ABORT",
+        _re.IGNORECASE | _re.DOTALL,
     )
-    current_tables: set[str] = set()
-    for schema_file in sorted(schema_dir.glob("*_schema.py")):
-        source = schema_file.read_text(encoding="utf-8")
-        for match in trigger_block.finditer(source):
-            if "RAISE(ABORT" in match.group(0):
-                current_tables.add(match.group(1))
+    current_tables: set[str] = {
+        row["tbl_name"] for row in rows if write_reject_pattern.search(row["sql"] or "")
+    }
 
     assert {"real_orders", "paper_book_cash_ledger"} <= current_tables
     output_text = TRIGGER_OUTPUT.read_text(encoding="utf-8")
     assert f"discovered {len(current_tables)} trigger-protected tables" in output_text, (
         f"production schema now defines {len(current_tables)} trigger-protected "
-        f"table(s), but the pinned scratch output/EVALUATION.md record a "
-        f"different count — re-run scratch_trigger_orm_vs_core.py and update "
-        f"the committed output and docs"
+        f"table(s) per SQLite's own trigger metadata, but the pinned scratch "
+        f"output/EVALUATION.md record a different count — re-run "
+        f"scratch_trigger_orm_vs_core.py and update the committed output and docs"
     )
 
 

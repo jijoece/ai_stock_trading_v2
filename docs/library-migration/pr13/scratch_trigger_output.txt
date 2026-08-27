@@ -48,6 +48,6 @@ PASS: guard blocked ORM writes pre-SQL for all 50 discovered trigger-protected t
 === Case 10: does the Core-only guard block ORM writes that reach a protected table only through a relationship's secondary table, only through an ancestor table in a multi-table mapper, or only through deleting the relationship owner without its collection ever loaded — not through the changed object's own __table__? ===
 PASS: relationship secondary write blocked pre-SQL — ORM session flush blocked before any SQL was emitted: relationship ParentORM.children writes through secondary table 'research_cycle_provider_provenance_links', a trigger-protected table — use Core statements only
 PASS: multi-table mapper write blocked pre-SQL — ORM session flush blocked before any SQL was emitted: 'economic_blackout_decisions' is a trigger-protected table mapped by DerivedORM — use Core statements only
-PASS: unloaded-delete cascade blocked pre-SQL — ORM session flush blocked before any SQL was emitted: relationship ParentORM.children writes through secondary table 'research_cycle_provider_provenance_links', a trigger-protected table — use Core statements only
+PASS: unloaded-delete cascade blocked pre-DML — 1 read statement(s) emitted for the forced-fetch check, zero write statements — ORM session flush blocked before any write (DML) was emitted — relationship ParentORM.children writes through secondary table 'research_cycle_provider_provenance_links', a trigger-protected table — use Core statements only
 
 Done.

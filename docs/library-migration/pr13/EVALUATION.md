@@ -197,8 +197,14 @@ the ORM session's own connection, not the same connection an in-memory
     `unchanged` membership is treated as relevant alongside `added`/
     `deleted`, since a deleted object's cascade is driven by what currently
     exists, not by a local mutation — and case 10 confirms all three
-    adversarial paths are now rejected pre-SQL by
-    `TriggerProtectedTableORMGuard`, not merely left to reach the trigger.
+    adversarial paths are now rejected by `TriggerProtectedTableORMGuard`,
+    not merely left to reach the trigger. Paths (a) and (b) are rejected
+    pre-SQL. Path (c) is narrower: the `PASSIVE_OFF` force-fetch above
+    itself issues a SELECT during `before_flush`, so that path is proven
+    only pre-DML — instrumented statement capture in case 10 confirms no
+    INSERT/UPDATE/DELETE reaches the database before the guard raises, not
+    that no SQL at all was emitted (review finding: "Narrow the
+    unloaded-delete claim to pre-DML").
 
 **Finding: the masking hypothesis is not substantiated against SQLAlchemy
 2.0.52 for either representative table.** Every one of the seven masking
@@ -235,8 +241,10 @@ is driven by current DB membership, not local history); the guard now also
 inspects `class_mapper(type(obj)).tables` and every relationship's
 `secondary` table, force-fetching and checking `unchanged` membership (not
 just `added`/`deleted` history) for objects being deleted, and case 10
-proves all three adversarial paths are rejected pre-SQL. This still does not
-cover ORM-enabled bulk `update()`/`delete()` constructs
+proves all three adversarial paths are rejected before any write reaches
+the database — pre-SQL for paths (a) and (b), and pre-DML (the force-fetch
+itself reads, but never writes, before rejection) for path (c). This still
+does not cover ORM-enabled bulk `update()`/`delete()` constructs
 issued via `Session.execute()`, which bypass `before_flush` entirely (see
 "Non-blocking notes" below) — the guard's proven boundary is unit-of-work
 flush writes reachable through a mapper's tables or relationships, not
