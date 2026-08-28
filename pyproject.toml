@@ -50,8 +50,18 @@ indicators = [
 # (documented, not silently broken) until a future PR raises the project
 # floor project-wide. Never combine with `indicators`/`analytics` extras in
 # one verification environment -- verified standalone only.
+#
+# `plotly<7` is a repository-controlled compatibility constraint, not a
+# vectorbt requirement (vectorbt 1.1.0 only declares `plotly>=4.12.0`, no
+# upper bound): Plotly 7.0.0 removed the `scattermapbox` trace type that
+# vectorbt's bundled default template still references, so `import
+# vectorbt` raises `ValueError: Invalid property specified ... 'scattermapbox'`
+# under plotly>=7 (confirmed by bisecting 6.1.0-7.0.0; every 6.x release
+# through 6.9.0 imports cleanly). Loosen once vectorbt ships a release whose
+# template no longer names the removed trace type.
 research = [
     "vectorbt>=1.1.0,<1.2",
+    "plotly<7",
 ]
 # PR 11 candidate: empyrical-reloaded is the authoritative primitive-metrics
 # library (returns/annualization/Sharpe/Sortino/drawdown/alpha-beta);

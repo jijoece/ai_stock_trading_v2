@@ -39,6 +39,24 @@ def test_no_sqlalchemy_or_alembic_dependency_was_added():
     assert "alembic" not in text.lower()
 
 
+def test_research_extra_constrains_plotly_below_scattermapbox_removal():
+    """Regression for review finding "Research CI fails on Plotly
+    `scattermapbox` template compatibility": vectorbt 1.1.0 only declares
+    `plotly>=4.12.0`, no upper bound, so an unconstrained resolve pulls
+    the newest plotly release. Plotly 7.0.0 removed the `scattermapbox`
+    trace type vectorbt's bundled default template still references, so
+    `import vectorbt` raised `ValueError: Invalid property specified ...
+    'scattermapbox'` in the `research-tests` and `dependency-extras-smoke
+    (research)` required CI jobs (confirmed by bisecting plotly 6.1.0
+    through 7.0.0: every 6.x release imports cleanly, 7.0.0 fails). Pins
+    the repository-controlled `plotly<7` compatibility constraint added to
+    the `research` extra so this can't silently regress if the extra is
+    edited without re-verifying vectorbt/plotly compatibility."""
+    text = PYPROJECT.read_text(encoding="utf-8")
+    research_block = text.split("research = [", 1)[1].split("]", 1)[0]
+    assert "plotly<7" in research_block
+
+
 def test_scratch_reproductions_exist():
     assert TRIGGER_SCRATCH.exists()
     assert ALEMBIC_SCRATCH.exists()
@@ -267,6 +285,79 @@ def test_guard_policy_matches_current_production_trigger_protected_tables(tmp_pa
         f"table(s) per SQLite's own trigger metadata, but the pinned scratch "
         f"output/EVALUATION.md record a different count — re-run "
         f"scratch_trigger_orm_vs_core.py and update the committed output and docs"
+    )
+
+
+def test_guard_discovery_set_matches_independent_sqlite_trigger_oracle_exactly(tmp_path):
+    """Regression for review finding "independent trigger oracle compares
+    only counts":
+    `test_guard_policy_matches_current_production_trigger_protected_tables`
+    only compares the independent oracle's table *count* against the
+    pinned scratch output text, never against the guard's own
+    source-derived discovery set. A production trigger rewritten in syntax
+    `discover_trigger_protected_tables_from_production_schema()`'s regex
+    does not recognize (e.g. `BEFORE UPDATE OF ... ON ...`, or a quoted
+    table identifier) would leave the oracle's *count* unchanged relative
+    to the pinned "discovered 50" text while silently dropping that table
+    from the guard's live protected-table set — a real ORM-write-safety
+    regression a count-only check cannot catch.
+
+    Extracts and executes the guard's actual
+    `discover_trigger_protected_tables_from_production_schema` function
+    straight from `scratch_trigger_orm_vs_core.py`'s source via `ast` (the
+    real compiled function, not a second hand-copied regex, which would
+    reopen the earlier "Use an independent oracle for trigger coverage"
+    finding) without needing that script's unrelated `sqlalchemy` import,
+    which the main test suite does not install — see
+    `test_no_sqlalchemy_or_alembic_dependency_was_added`. Asserts the
+    guard's live set is *exactly* the independent SQLite-metadata oracle's
+    set, not just a matching count."""
+    import ast
+    import re as _re
+    from collections.abc import Callable
+    from typing import cast
+
+    from trading_research.storage.database import connect
+
+    conn = connect(tmp_path / "trigger_oracle_set_equality.sqlite3")
+    try:
+        rows = conn.execute(
+            "SELECT tbl_name, sql FROM sqlite_master WHERE type = 'trigger'"
+        ).fetchall()
+    finally:
+        conn.close()
+
+    write_reject_pattern = _re.compile(
+        r"\bBEFORE\b.*?\b(?:INSERT|UPDATE|DELETE)\b.*?RAISE\s*\(\s*ABORT",
+        _re.IGNORECASE | _re.DOTALL,
+    )
+    oracle_tables = frozenset(
+        row["tbl_name"] for row in rows if write_reject_pattern.search(row["sql"] or "")
+    )
+
+    source = TRIGGER_SCRATCH.read_text(encoding="utf-8")
+    tree = ast.parse(source, filename=str(TRIGGER_SCRATCH))
+    function_node = next(
+        node
+        for node in tree.body
+        if isinstance(node, ast.FunctionDef)
+        and node.name == "discover_trigger_protected_tables_from_production_schema"
+    )
+    isolated_module = ast.Module(body=[function_node], type_ignores=[])
+    ast.fix_missing_locations(isolated_module)
+    namespace: dict[str, object] = {"__file__": str(TRIGGER_SCRATCH), "re": _re, "Path": Path}
+    exec(compile(isolated_module, filename=str(TRIGGER_SCRATCH), mode="exec"), namespace)
+    discover = cast(
+        Callable[[], "frozenset[str]"],
+        namespace["discover_trigger_protected_tables_from_production_schema"],
+    )
+    guard_tables = discover()
+
+    assert guard_tables == oracle_tables, (
+        f"guard discovery and the independent SQLite trigger oracle disagree on "
+        f"the protected-table set — guard-only (would go unprotected by the ORM "
+        f"guard): {sorted(guard_tables - oracle_tables)}, oracle-only (would be "
+        f"over-protected): {sorted(oracle_tables - guard_tables)}"
     )
 
 
