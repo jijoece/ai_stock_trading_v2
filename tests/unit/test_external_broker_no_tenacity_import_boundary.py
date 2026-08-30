@@ -78,6 +78,16 @@ short of where the round-5 partial-unwrap, written only for decorators,
 looked. Both the decorator check and the reassignment-callee check now share
 one `_resolved_wrapper_name` helper for this unwrap.
 
+PR 14 review round 7 closed one more: a plain module-scope name-to-name
+reassignment of an already-resolved retry-shaped name (e.g. `broker_retry =
+retry` after `from retry_utils import retry`, then `@broker_retry` on a
+protected or transitively-called helper) was invisible to the alias
+resolver, which previously tracked only `import ... as ...` aliases -- not
+same-file, non-import rebinds of a name to a new local name. `_resolved_
+import_aliases` now also chains simple `Name = Name` assignments anywhere at
+true module scope (via the new `_module_scope_statements`, matching the
+scope boundary the reassignment scan already enforces).
+
 See `_find_protected_function_offenders` for the residual gaps this file
 cannot structurally close by parsing `external_broker.py` alone: (1) a
 project-local or third-party wrapper imported under a name unrelated to
@@ -153,12 +163,53 @@ def _call_name(node: ast.expr) -> str | None:
     return None
 
 
+def _module_scope_statements(statements: list[ast.stmt]) -> list[ast.stmt]:
+    """Every statement at true module scope, recursing into
+    `if`/`try`/`with`/`async with`/`for`/`async for`/`while` blocks (none of
+    which introduce a new scope in Python) without ever descending into a
+    `def`/`class` body (which do). Used by `_resolve_import_aliases` (PR 14
+    review round 7) to find simple name-to-name reassignments anywhere at
+    real module scope, matching the same scope boundary
+    `_rebind_offenders_in_block` already enforces for protected-function
+    reassignment."""
+    collected: list[ast.stmt] = []
+    for statement in statements:
+        collected.append(statement)
+        if isinstance(statement, ast.If):
+            collected.extend(_module_scope_statements(statement.body))
+            collected.extend(_module_scope_statements(statement.orelse))
+        elif isinstance(statement, ast.Try):
+            collected.extend(_module_scope_statements(statement.body))
+            for handler in statement.handlers:
+                collected.extend(_module_scope_statements(handler.body))
+            collected.extend(_module_scope_statements(statement.orelse))
+            collected.extend(_module_scope_statements(statement.finalbody))
+        elif isinstance(statement, (ast.With, ast.AsyncWith)):
+            collected.extend(_module_scope_statements(statement.body))
+        elif isinstance(statement, (ast.For, ast.AsyncFor, ast.While)):
+            collected.extend(_module_scope_statements(statement.body))
+            collected.extend(_module_scope_statements(statement.orelse))
+    return collected
+
+
 def _resolve_import_aliases(tree: ast.Module) -> dict[str, str]:
     """Maps each locally-used name to the name it was imported as, so
     `broker_retrying` from `from tenacity import Retrying as broker_retrying`
     still resolves to `Retrying` for the retry-wrapper-call check -- closing
     the aliased-import gap a literal-spelling comparison alone missed (PR 14
-    review round 3)."""
+    review round 3).
+
+    PR 14 review round 7 closed a further gap: a plain module-scope
+    name-to-name reassignment (e.g. `broker_retry = retry` after `from
+    retry_utils import retry`, then `@broker_retry` on a protected or
+    transitively-called helper) was invisible to this resolver, which
+    previously tracked only `import ... as ...` aliases -- so a same-file,
+    non-import rebind of a retry-shaped name to a new local name bypassed
+    both the decorator and inner-call checks. Resolved via
+    `_module_scope_statements` so the chain is built in true module scope
+    (including nested `if`/`try`/`with`/`for`/`while` blocks, like the
+    existing reassignment scan), never descending into an unrelated
+    function's own body."""
     aliases: dict[str, str] = {}
     for node in ast.walk(tree):
         if isinstance(node, ast.ImportFrom):
@@ -169,6 +220,16 @@ def _resolve_import_aliases(tree: ast.Module) -> dict[str, str]:
             for alias in node.names:
                 if alias.asname:
                     aliases[alias.asname] = alias.name.split(".")[-1]
+    for statement in _module_scope_statements(tree.body):
+        if (
+            isinstance(statement, ast.Assign)
+            and len(statement.targets) == 1
+            and isinstance(statement.targets[0], ast.Name)
+            and isinstance(statement.value, ast.Name)
+        ):
+            target_name = statement.targets[0].id
+            source_name = statement.value.id
+            aliases[target_name] = aliases.get(source_name, source_name)
     return aliases
 
 
@@ -1051,6 +1112,139 @@ def test_detector_does_not_flag_an_unrelated_composed_functools_partial_call_rea
         "def unrelated_helper():\n"
         "    pass\n\n"
         "unrelated_helper = functools.partial(some_unrelated_factory, stop=3)(unrelated_helper)\n"
+    )
+
+    tree = ast.parse(module.read_text())
+
+    assert _find_protected_function_offenders(tree) == []
+
+
+def test_detector_flags_a_module_scope_name_to_name_aliased_decorator(tmp_path):
+    """PR 14 review round 7: `broker_retry = retry` after `from retry_utils
+    import retry` is a plain module-scope rebind of an already-resolved
+    retry-shaped name to a new local name -- not an `import ... as ...`
+    alias, so the round-3 alias resolver never saw it, letting `@broker_retry`
+    on a transitively-called helper bypass the decorator check."""
+    offending_module = tmp_path / "synthetic_external_broker_assignment_aliased_decorator.py"
+    offending_module.write_text(
+        "from retry_utils import retry\n\n"
+        "broker_retry = retry\n\n"
+        "@broker_retry\n"
+        "def _do_submit():\n"
+        "    pass\n\n"
+        "def retry_external_paper_order():\n"
+        "    _do_submit()\n"
+    )
+
+    tree = ast.parse(offending_module.read_text())
+
+    assert _find_tenacity_import_offenders(tree) == []
+    assert _find_protected_function_offenders(tree) == [
+        "decorator 'retry' on _do_submit at line 5",
+    ]
+
+
+def test_detector_flags_a_module_scope_name_to_name_aliased_retrying_call(tmp_path):
+    """Same assignment-aliasing gap as above, but for a `Retrying(...)`
+    context-manager call inside a protected function instead of a
+    decorator."""
+    offending_module = tmp_path / "synthetic_external_broker_assignment_aliased_call.py"
+    offending_module.write_text(
+        "from retry_utils import Retrying\n\n"
+        "broker_retrying = Retrying\n\n"
+        "def refresh_retry_preview():\n"
+        "    with broker_retrying(stop=None):\n"
+        "        pass\n"
+    )
+
+    tree = ast.parse(offending_module.read_text())
+
+    assert _find_protected_function_offenders(tree) == [
+        "call to 'Retrying' inside refresh_retry_preview at line 6",
+    ]
+
+
+def test_detector_flags_a_chained_name_to_name_aliased_decorator(tmp_path):
+    """The assignment-alias resolution chains through more than one
+    same-file rebind (`intermediate = retry` then `broker_retry =
+    intermediate`), not just a single hop."""
+    offending_module = tmp_path / "synthetic_external_broker_chained_assignment_alias.py"
+    offending_module.write_text(
+        "from retry_utils import retry\n\n"
+        "intermediate = retry\n"
+        "broker_retry = intermediate\n\n"
+        "@broker_retry\n"
+        "def _do_submit():\n"
+        "    pass\n\n"
+        "def retry_external_paper_order():\n"
+        "    _do_submit()\n"
+    )
+
+    tree = ast.parse(offending_module.read_text())
+
+    assert _find_protected_function_offenders(tree) == [
+        "decorator 'retry' on _do_submit at line 6",
+    ]
+
+
+def test_detector_flags_a_name_to_name_aliased_decorator_nested_in_an_if_block(tmp_path):
+    """The assignment-alias rebind is still visible when nested one level
+    inside a top-level `if:` block -- true module scope in Python, matching
+    the scope boundary `_rebind_offenders_in_block` already enforces for
+    protected-function reassignment."""
+    offending_module = tmp_path / "synthetic_external_broker_if_nested_assignment_alias.py"
+    offending_module.write_text(
+        "from retry_utils import retry\n\n"
+        "if True:\n"
+        "    broker_retry = retry\n\n"
+        "@broker_retry\n"
+        "def _do_submit():\n"
+        "    pass\n\n"
+        "def retry_external_paper_order():\n"
+        "    _do_submit()\n"
+    )
+
+    tree = ast.parse(offending_module.read_text())
+
+    assert _find_protected_function_offenders(tree) == [
+        "decorator 'retry' on _do_submit at line 6",
+    ]
+
+
+def test_detector_does_not_flag_an_unrelated_name_to_name_assignment_alias(tmp_path):
+    """Guards against overreach: a module-scope name-to-name rebind of a
+    name unrelated to `retry`/`Retrying`, used as a decorator on an
+    unrelated function, must not be flagged."""
+    module = tmp_path / "synthetic_external_broker_unrelated_assignment_alias.py"
+    module.write_text(
+        "from retry_utils import some_unrelated_factory\n\n"
+        "aliased_factory = some_unrelated_factory\n\n"
+        "@aliased_factory\n"
+        "def some_unrelated_helper():\n"
+        "    pass\n"
+    )
+
+    tree = ast.parse(module.read_text())
+
+    assert _find_protected_function_offenders(tree) == []
+
+
+def test_detector_does_not_flag_a_same_named_local_assignment_alias_inside_an_unrelated_function(tmp_path):
+    """Guards against overreach from the assignment-alias resolver: a
+    name-to-name rebind inside an unrelated function's own body (a real new
+    scope, unlike `if`/`try`/`with`/`for`/`while`) must not be treated as a
+    module-scope alias."""
+    module = tmp_path / "synthetic_external_broker_function_scoped_assignment_alias.py"
+    module.write_text(
+        "from retry_utils import retry\n\n"
+        "def unrelated_helper():\n"
+        "    broker_retry = retry\n"
+        "    return broker_retry\n\n"
+        "@broker_retry\n"
+        "def _do_submit():\n"
+        "    pass\n\n"
+        "def retry_external_paper_order():\n"
+        "    _do_submit()\n"
     )
 
     tree = ast.parse(module.read_text())
