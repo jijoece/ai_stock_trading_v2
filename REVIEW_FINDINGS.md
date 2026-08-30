@@ -78,7 +78,7 @@ None outstanding.
 
 **Commit:** `4f261aa81b77117c711bc77c4a4045f58863d444`
 
-**Location:** [/Users/jijopaul/workspace/ai_stock_trading_v2/tests/unit/test_external_broker_no_tenacity_import_boundary.py:84](/Users/jijopaul/workspace/ai_stock_trading_v2/tests/unit/test_external_broker_no_tenacity_import_boundary.py:84)
+**Location:** `tests/unit/test_external_broker_no_tenacity_import_boundary.py:84`
 
 **Concern:** The structural test may not prove the required absence of Tenacity-backed retry behavior around the ambiguous broker-submission path. It rejects decorators on four named functions, but inside those functions it recognizes retry wrappers only when the invoked name is literally `retry` or `Retrying`.
 
