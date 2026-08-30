@@ -36,6 +36,18 @@ tree: `COMPONENT_MATRIX.md`'s "Generic transient retries" row leaves generic
 per-provider transport retry code (`evidence_providers/http_client.py`)
 eligible for a future, separately-approved Tenacity adoption; only the
 ambiguous-broker-retry path is structurally excluded.
+
+PR 14 review round 3 closed three further bypasses of the checks above: an
+*aliased* import of `retry`/`Retrying` used as a call (e.g. `from tenacity
+import Retrying as broker_retrying`); a retry-decorated helper function
+delegated to (directly or transitively, by bare-name call) from one of the
+protected functions without itself being named in `_PROTECTED_FUNCTIONS`;
+and a dynamic `importlib.import_module("tenacity")`/`__import__("tenacity")`
+call, which the static `ast.Import`/`ast.ImportFrom` check cannot see. See
+`_find_protected_function_offenders` for the one residual, deliberately
+accepted gap this file cannot structurally close: a project-local or
+third-party wrapper imported under a name unrelated to `retry`/`Retrying`
+and never itself calling something by those names.
 """
 from __future__ import annotations
 
@@ -70,6 +82,10 @@ def _find_tenacity_import_offenders(tree: ast.Module) -> list[str]:
             offenders.append(f"import tenacity at line {node.lineno}")
         if isinstance(node, ast.ImportFrom) and node.module and node.module.split(".")[0] == "tenacity":
             offenders.append(f"from tenacity import ... at line {node.lineno}")
+        if isinstance(node, ast.Call) and _call_name(node.func) in {"import_module", "__import__"}:
+            for arg in node.args:
+                if isinstance(arg, ast.Constant) and isinstance(arg.value, str) and arg.value.split(".")[0] == "tenacity":
+                    offenders.append(f"dynamic import of tenacity at line {node.lineno}")
     return offenders
 
 
@@ -81,28 +97,142 @@ def _call_name(node: ast.expr) -> str | None:
     return None
 
 
+def _resolve_import_aliases(tree: ast.Module) -> dict[str, str]:
+    """Maps each locally-used name to the name it was imported as, so
+    `broker_retrying` from `from tenacity import Retrying as broker_retrying`
+    still resolves to `Retrying` for the retry-wrapper-call check -- closing
+    the aliased-import gap a literal-spelling comparison alone missed (PR 14
+    review round 3)."""
+    aliases: dict[str, str] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom):
+            for alias in node.names:
+                if alias.asname:
+                    aliases[alias.asname] = alias.name
+        elif isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.asname:
+                    aliases[alias.asname] = alias.name.split(".")[-1]
+    return aliases
+
+
+def _resolved_call_name(node: ast.expr, aliases: dict[str, str]) -> str | None:
+    name = _call_name(node)
+    if name is None:
+        return None
+    return aliases.get(name, name)
+
+
+def _module_level_functions(tree: ast.Module) -> dict[str, ast.FunctionDef | ast.AsyncFunctionDef]:
+    return {
+        node.name: node
+        for node in tree.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+
+
+def _direct_local_calls(
+    node: ast.FunctionDef | ast.AsyncFunctionDef,
+    local_functions: dict[str, ast.FunctionDef | ast.AsyncFunctionDef],
+) -> set[str]:
+    """Bare-name calls only (`helper(...)`), never attribute calls
+    (`repo.helper(...)`), so an unrelated method that happens to share a
+    local function's name can never fabricate a call-graph edge."""
+    called = set()
+    for inner in ast.walk(node):
+        if isinstance(inner, ast.Call) and isinstance(inner.func, ast.Name) and inner.func.id in local_functions:
+            called.add(inner.func.id)
+    return called
+
+
+def _transitively_called_local_helpers(
+    tree: ast.Module, entry_points: frozenset[str],
+) -> dict[str, ast.FunctionDef | ast.AsyncFunctionDef]:
+    """The module-level functions in this file reachable (directly or
+    indirectly, by bare-name call) from `entry_points`, excluding the entry
+    points themselves. Closes the "retry-decorated helper transitively
+    called by the broker-call boundary" gap: a wrapper need not sit on one
+    of the four named functions directly if it can instead sit on a helper
+    one of them delegates to (PR 14 review round 3)."""
+    local_functions = _module_level_functions(tree)
+    reachable: dict[str, ast.FunctionDef | ast.AsyncFunctionDef] = {}
+    seen = set(entry_points)
+    frontier = set(entry_points)
+    while frontier:
+        name = frontier.pop()
+        node = local_functions.get(name)
+        if node is None:
+            continue
+        for callee in _direct_local_calls(node, local_functions):
+            if callee in seen:
+                continue
+            seen.add(callee)
+            reachable[callee] = local_functions[callee]
+            frontier.add(callee)
+    return reachable
+
+
 def _find_protected_function_offenders(tree: ast.Module) -> list[str]:
-    """Flags any decorator, or any call named `retry`/`Retrying`, attached to
-    or used inside one of `_PROTECTED_FUNCTIONS` -- regardless of what module
-    that name was imported from. This closes the indirect-wrapper gap that
+    """Flags any decorator, or any call named `retry`/`Retrying` (after
+    resolving import aliases), attached to or used inside one of
+    `_PROTECTED_FUNCTIONS` -- regardless of what module that name was
+    imported from -- and also flags retry-shaped decorators/calls on any
+    module-level helper transitively called (by bare-name call) from one of
+    those functions. This closes the indirect-wrapper gap that
     `_find_tenacity_import_offenders` alone cannot: a project-local name that
     is itself backed by Tenacity elsewhere never triggers a literal `tenacity`
-    import node in this file.
+    import node in this file. It also closes two gaps found in PR 14 review
+    round 3: (1) an *aliased* import of `retry`/`Retrying` (e.g.
+    `from tenacity import Retrying as broker_retrying`) previously bypassed
+    the literal-spelling call-name check; (2) a retry-decorated helper never
+    named in `_PROTECTED_FUNCTIONS` but delegated to by one of them (e.g.
+    `retry_external_paper_order` calling a local `_do_submit()` that itself
+    carries `@retry`) previously went unchecked because the AST walk over a
+    protected function's own body does not descend into a sibling
+    function's definition.
+
+    Helpers reached only transitively are checked narrowly -- retry-shaped
+    decorators/calls only, not "any decorator" -- because legitimate,
+    unrelated decorators already exist on functions this path reaches (e.g.
+    `_order_lease`'s `@contextlib.contextmanager`, called directly by
+    `retry_external_paper_order` and `refresh_retry_preview`); banning any
+    decorator that far out would misfire on real code. The four functions
+    named in `_PROTECTED_FUNCTIONS` keep the stricter "any decorator"
+    rule since the master plan names them directly and none legitimately
+    carries one today.
+
+    Known, accepted residual gap: a project-local or third-party wrapper
+    imported under a name that is neither an alias of `retry`/`Retrying` nor
+    itself calls something named `retry`/`Retrying` (e.g. `from retry_utils
+    import broker_retrying` where `broker_retrying` is a same-file-invisible
+    factory defined elsewhere) cannot be distinguished, by parsing this file
+    alone, from an ordinary helper call -- the same limitation this module's
+    top docstring already documents for indirection generally. Closing it
+    would require inspecting arbitrary external modules (defeating the
+    zero-dependency, always-runs design of this test) or banning all
+    bare imported-name calls in protected code, which would misfire on
+    legitimate future helpers. See
+    `test_detector_does_not_flag_an_arbitrarily_named_external_factory_call`
+    for the documented, deliberately-accepted current behavior.
     """
+    aliases = _resolve_import_aliases(tree)
+    helpers = _transitively_called_local_helpers(tree, _PROTECTED_FUNCTIONS)
     offenders = []
     for node in ast.walk(tree):
         if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             continue
-        if node.name not in _PROTECTED_FUNCTIONS:
+        is_named_protected = node.name in _PROTECTED_FUNCTIONS
+        if not is_named_protected and node.name not in helpers:
             continue
         for decorator in node.decorator_list:
             target = decorator.func if isinstance(decorator, ast.Call) else decorator
-            name = _call_name(target) or ast.dump(target)
-            offenders.append(f"decorator {name!r} on {node.name} at line {decorator.lineno}")
+            name = _resolved_call_name(target, aliases) or ast.dump(target)
+            if is_named_protected or name in _RETRY_WRAPPER_CALL_NAMES:
+                offenders.append(f"decorator {name!r} on {node.name} at line {decorator.lineno}")
         for statement in node.body:
             for inner in ast.walk(statement):
                 if isinstance(inner, ast.Call):
-                    name = _call_name(inner.func)
+                    name = _resolved_call_name(inner.func, aliases)
                     if name in _RETRY_WRAPPER_CALL_NAMES:
                         offenders.append(f"call to {name!r} inside {node.name} at line {inner.lineno}")
     return offenders
@@ -223,4 +353,144 @@ def test_detector_allows_decorators_on_unrelated_functions(tmp_path):
 
     tree = ast.parse(module.read_text())
 
+    assert _find_protected_function_offenders(tree) == []
+
+
+def test_detector_flags_a_synthetic_dynamic_tenacity_import(tmp_path):
+    """PR 14 review round 3: a dynamic `importlib.import_module("tenacity")`
+    call bypasses the static `ast.Import`/`ast.ImportFrom` check; the
+    detector must catch it separately."""
+    offending_module = tmp_path / "synthetic_external_broker_dynamic_import.py"
+    offending_module.write_text(
+        "import importlib\n\n"
+        "tenacity = importlib.import_module('tenacity')\n"
+    )
+
+    tree = ast.parse(offending_module.read_text())
+
+    assert _find_tenacity_import_offenders(tree) == [
+        "dynamic import of tenacity at line 3",
+    ]
+
+
+def test_detector_flags_an_aliased_retrying_call(tmp_path):
+    """PR 14 review round 3: an indirectly-imported `Retrying` aliased to an
+    unrelated local name (e.g. re-exported from a project-local
+    `retry_utils` module, itself backed by Tenacity elsewhere) then calling
+    `broker_retrying(...)` bypassed the literal-spelling `retry`/`Retrying`
+    call-name check because the call site's identifier was
+    `broker_retrying`, not `Retrying`. Import-alias resolution must trace it
+    back to `Retrying`. Uses a non-`tenacity` module name so this exercises
+    `_find_protected_function_offenders` specifically, independent of
+    `_find_tenacity_import_offenders`."""
+    offending_module = tmp_path / "synthetic_external_broker_aliased_retrying.py"
+    offending_module.write_text(
+        "from retry_utils import Retrying as broker_retrying\n\n"
+        "def refresh_retry_preview():\n"
+        "    with broker_retrying(stop=None):\n"
+        "        pass\n"
+    )
+
+    tree = ast.parse(offending_module.read_text())
+
+    assert _find_tenacity_import_offenders(tree) == []
+    assert _find_protected_function_offenders(tree) == [
+        "call to 'Retrying' inside refresh_retry_preview at line 4",
+    ]
+
+
+def test_detector_flags_a_retry_decorated_helper_transitively_called_by_a_protected_function(tmp_path):
+    """PR 14 review round 3: a helper function never named in
+    `_PROTECTED_FUNCTIONS` but delegated to (by bare-name call) from one of
+    them previously went unchecked -- the AST walk over a protected
+    function's own body does not descend into a sibling function's
+    definition. `retry_external_paper_order` here calls `_do_submit()`,
+    which itself carries a retry decorator."""
+    offending_module = tmp_path / "synthetic_external_broker_transitive_helper.py"
+    offending_module.write_text(
+        "from retry_utils import retry\n\n"
+        "@retry\n"
+        "def _do_submit():\n"
+        "    pass\n\n"
+        "def retry_external_paper_order():\n"
+        "    _do_submit()\n"
+    )
+
+    tree = ast.parse(offending_module.read_text())
+
+    assert _find_tenacity_import_offenders(tree) == []
+    assert _find_protected_function_offenders(tree) == [
+        "decorator 'retry' on _do_submit at line 3",
+    ]
+
+
+def test_detector_flags_a_retry_call_inside_a_transitively_called_helper(tmp_path):
+    """Same transitive-delegation gap as above, but the helper wraps the
+    call with `Retrying(...)` instead of a decorator."""
+    offending_module = tmp_path / "synthetic_external_broker_transitive_helper_call.py"
+    offending_module.write_text(
+        "from retry_utils import Retrying\n\n"
+        "def _do_submit():\n"
+        "    with Retrying(stop=None):\n"
+        "        pass\n\n"
+        "def _submit_checkpointed_attempt():\n"
+        "    _do_submit()\n"
+    )
+
+    tree = ast.parse(offending_module.read_text())
+
+    assert _find_tenacity_import_offenders(tree) == []
+    assert _find_protected_function_offenders(tree) == [
+        "call to 'Retrying' inside _do_submit at line 4",
+    ]
+
+
+def test_detector_does_not_flag_unrelated_decorators_on_transitively_called_helpers(tmp_path):
+    """Guards the narrower rule applied to transitively-called helpers
+    (retry-shaped decorators/calls only, not "any decorator"): real code
+    already has legitimate, unrelated decorators this call graph reaches --
+    e.g. `_order_lease`'s `@contextlib.contextmanager`, called directly by
+    `retry_external_paper_order` and `refresh_retry_preview`. Banning any
+    decorator that far out would misfire on that real code, so only
+    decorators/calls resolving to `retry`/`Retrying` are flagged there."""
+    module = tmp_path / "synthetic_external_broker_unrelated_helper_decorator.py"
+    module.write_text(
+        "import contextlib\n\n"
+        "@contextlib.contextmanager\n"
+        "def _order_lease():\n"
+        "    yield\n\n"
+        "def retry_external_paper_order():\n"
+        "    with _order_lease():\n"
+        "        pass\n"
+    )
+
+    tree = ast.parse(module.read_text())
+
+    assert _find_protected_function_offenders(tree) == []
+
+
+def test_detector_does_not_flag_an_arbitrarily_named_external_factory_call(tmp_path):
+    """Documents the one residual, deliberately accepted gap (see
+    `_find_protected_function_offenders`'s docstring): a project-local or
+    third-party wrapper imported under a name unrelated to `retry`/
+    `Retrying`, and never itself calling something by those names, cannot be
+    distinguished from an ordinary helper call by parsing this file alone --
+    doing so would require inspecting `retry_utils` (an arbitrary external
+    module), which defeats this test's zero-dependency, always-runs design,
+    or banning all bare imported-name calls in protected code, which would
+    misfire on legitimate future helpers. This is the same category of
+    limitation this module's top docstring already documents for
+    indirection generally; it is not closable by this detector without a
+    different enforcement mechanism entirely."""
+    module = tmp_path / "synthetic_external_broker_arbitrary_factory.py"
+    module.write_text(
+        "from retry_utils import broker_retrying\n\n"
+        "def _submit_checkpointed_attempt():\n"
+        "    with broker_retrying():\n"
+        "        pass\n"
+    )
+
+    tree = ast.parse(module.read_text())
+
+    assert _find_tenacity_import_offenders(tree) == []
     assert _find_protected_function_offenders(tree) == []
