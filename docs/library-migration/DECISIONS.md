@@ -1441,6 +1441,20 @@ detector fires against a synthetic offending file. Scoped to
 retries" row leaves the per-provider transport backoff open to a future,
 separately-evaluated Tenacity adoption.
 
+This guard is a static, file-scoped source check, not a runtime backstop: it
+parses only `external_broker.py`'s own text, so it has no visibility into a
+wrapper applied from another module at import or call time (monkeypatching,
+`globals()`/`setattr` rebinding), and, by design, cannot distinguish an
+arbitrary externally-named wrapper from an ordinary helper call without
+inspecting that external module. PR 14 review rounds 3-5 progressively
+closed several source-level bypasses (aliased imports, transitively-called
+helpers, dynamic imports, module-level reassignment including annotated/
+nested-block/walrus forms, `functools.partial`-wrapped decorators); each
+round's fix demonstrates the technique converges on closing syntactic
+variants, not on eliminating the class of gap outside this file's own
+source. See `_find_protected_function_offenders`'s docstring in the test
+file for the residual gaps this mechanism cannot structurally close.
+
 **Ruling: defer both, do not adopt either package.** No ADR is required —
 per the single-ADR rule established in D2 and reapplied at D9/D10/D11,
 an ADR is needed only if adoption is recommended, and neither is here.
