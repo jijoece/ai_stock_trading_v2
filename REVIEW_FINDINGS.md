@@ -3,25 +3,25 @@
 ## Review Metadata
 
 - Repository: `/Users/jijopaul/workspace/ai_stock_trading_v2`
-- Branch: `migration/13-sqlalchemy-alembic-feasibility`
-- Reviewed HEAD: `23b454d8949af36fdcaad986268e02e9135953e1`
-- Subject: Record PR 13 fix round 8: Plotly scope disclosure resolved
+- Branch: `migration/14-apscheduler-tenacity-feasibility`
+- Reviewed HEAD: `4f261aa81b77117c711bc77c4a4045f58863d444`
+- Subject: Record PR 14 fix round 1: indirect Tenacity wrapper guard closed
+- Claude commits reviewed: 4f261aa81b77117c711bc77c4a4045f58863d444
 - Review scope: FULL_PR
-- Reviewed base: `641f5daee8d5ec629578f371555556a4a24b849e`
-- GitHub PR: #30
-- Fix round: 9
-- Trigger: GitHub Codex review
+- Reviewed base: `c32021ef75174bc2271971626eb928fff83d1069`
+- GitHub PR: #32
+- Fix round: 1
+- Trigger: local Git `post-commit`
 - Review status: FIXES_APPLIED_PENDING_REVIEW
 - Highest priority: none
 - Finding count: 0
-- Fix commit: `a50d01b01f78c59fcb7f2bb76a1952b5798fd3a4`
+- Fix commit: `4a375c374124112a48c564cb8a0500076d7381df`
 
 ## Resolution
 
-- Confirmed that an already-loaded UPDATE target correctly remains persistent after its mutation is rejected; only newly inserted objects must not falsely transition to persistent.
-- Narrowed the claims in `DECISIONS.md` and `STATUS.md` accordingly and retained the fail-closed identity-map conclusion.
-- Added regression coverage preventing the overbroad persistence wording from returning.
-- Resolved the earlier Plotly scope thread after `MASTER_PLAN.md`, `STATUS.md`, and regression coverage disclosed the compatibility exception.
-- Validation passed: 63 focused PR-12/PR-13 tests and `nox -s ci` with 3,182 main tests passed, 106 skipped, 160 paper-runtime tests passed, 0 safety type errors, and migration smoke OK.
+- Confirmed the P1 concern: `_find_tenacity_import_offenders()` only rejected literal `import tenacity` / `from tenacity import ...` statements, and would pass an indirect project-local wrapper (e.g. `from retry_utils import broker_retry` then `@broker_retry` on `retry_external_paper_order`) or an indirectly-imported `Retrying(...)` context manager used inside the protected functions.
+- Added `_find_protected_function_offenders()`, which structurally forbids any decorator and any call named `retry`/`Retrying` (the two exact Tenacity API forms `MASTER_PLAN.md` row 14 names) on the three functions making up the ambiguous-broker-retry path: `retry_external_paper_order`, `_prepare_external_retry_attempt`, `refresh_retry_preview`. This closes the bypass without needing to trace transitive imports.
+- Added regression coverage: proof tests for the indirect-decorator bypass and the indirect-`Retrying`-context-manager bypass, plus a control test confirming the guard does not overreach onto decorators on unrelated functions.
+- Validation passed: 7 focused tests in `tests/unit/test_external_broker_no_tenacity_import_boundary.py` and `nox -s ci` (`ci`, `tests`: 3190 passed/106 skipped, `paper_tests`: 160 passed, `safety_typecheck`: 0 errors, `migration_smoke`: OK).
 
 ## Findings
