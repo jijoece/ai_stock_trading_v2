@@ -1282,8 +1282,10 @@ operation), a `cascade="all, delete-orphan"` DELETE (still a real,
 trigger-rejected `DELETE`), and an ORM UPDATE on an already-loaded row
 through the identity map (rejected identically; re-reading the mutated
 attribute pre-rollback itself raises `PendingRollbackError`, and the value
-post-rollback matches the database exactly). All seven cases failed
-closed; no object appeared "persistent" and no attribute returned a
+post-rollback matches the database exactly). All seven cases failed closed:
+no rejected INSERT object falsely transitioned to persistent; the
+already-loaded UPDATE target correctly remained persistent while its
+rejected attribute mutation was expired, and no attribute returned a
 stale/masked value. This is **withdrawn as unsubstantiated** for
 SQLAlchemy 2.0.52 across INSERT/UPDATE/cascade DELETE — a correction to
 `DEPENDENCY_MATRIX.md` Section 5, not a reason to adopt. An eighth case

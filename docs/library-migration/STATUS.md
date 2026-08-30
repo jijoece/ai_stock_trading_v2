@@ -2840,8 +2840,10 @@ parent row (the cascade still issues a real `DELETE` the trigger still
 rejects), and an ORM UPDATE of an already-loaded row through the identity
 map (rejected identically; re-reading the mutated attribute before an
 explicit rollback itself raises `PendingRollbackError`). Every case failed
-closed; no object ever appeared "persistent" in memory before rollback, nor
-did any attribute return a stale/masked value. `DEPENDENCY_MATRIX.md`
+closed: no rejected INSERT object falsely transitioned to persistent; the
+already-loaded UPDATE target correctly remained persistent while its
+rejected attribute mutation was expired, and no attribute returned a
+stale/masked value. `DEPENDENCY_MATRIX.md`
 Section 5's PR 0 concern — "the ORM's unit-of-work flush ordering and
 identity-map caching can mask a trigger-rejected write" — is **withdrawn as
 unsubstantiated**. An eighth case then proved the Core-only boundary can be

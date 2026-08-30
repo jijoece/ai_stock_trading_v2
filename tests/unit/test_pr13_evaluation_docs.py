@@ -137,6 +137,17 @@ def test_trigger_scratch_output_shows_pre_rollback_read_actually_executed():
     assert "FAIL: reading the expired attribute" not in text
 
 
+def test_persistence_claim_is_limited_to_rejected_insert_transitions():
+    """An already-loaded UPDATE target remains persistent by definition;
+    only rejected INSERT objects must not falsely transition to persistent."""
+    for path in (DECISIONS, STATUS):
+        text = path.read_text(encoding="utf-8")
+        assert 'no object appeared "persistent"' not in text
+        assert 'no object ever appeared "persistent"' not in text
+        assert "no rejected INSERT object falsely transitioned to persistent" in text
+        assert "already-loaded UPDATE target correctly remained persistent" in text
+
+
 def test_trigger_scratch_output_shows_guard_covers_relationship_secondary_and_multi_table_mapper():
     """Regression for review findings "Cover unit-of-work writes without
     mapped objects" and "Inspect relationship-generated writes in the ORM
@@ -496,7 +507,7 @@ def test_decisions_d11_exists_and_records_ruling():
     text = DECISIONS.read_text(encoding="utf-8")
     assert "## D11 — PR 13" in text
     idx = text.index("## D11 — PR 13")
-    section = text[idx : idx + 7000]
+    section = text[idx:]
     assert "**Ruling: defer, do not adopt.**" in section
     assert "withdrawn as unsubstantiated" in section
     assert "linear-only" in section
