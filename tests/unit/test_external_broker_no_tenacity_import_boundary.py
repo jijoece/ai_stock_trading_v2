@@ -108,6 +108,9 @@ from __future__ import annotations
 
 import ast
 import pathlib
+import sys
+
+import pytest
 
 _EXTERNAL_BROKER_PATH = (
     pathlib.Path(__file__).resolve().parents[2]
@@ -128,6 +131,14 @@ _PROTECTED_FUNCTIONS = frozenset({
 })
 
 _RETRY_WRAPPER_CALL_NAMES = frozenset({"retry", "Retrying"})
+
+# `except*` (PEP 654) only parses starting with Python 3.11; this project's
+# floor is 3.10 (`python-3-10-floor` CI job), so `ast.TryStar` may not exist
+# on the interpreter running this file. Falls back to an empty tuple there,
+# leaving `ast.Try` handling (which already covers plain `except`) untouched.
+_TRY_NODE_TYPES: tuple[type, ...] = (
+    (ast.Try, ast.TryStar) if hasattr(ast, "TryStar") else (ast.Try,)
+)
 
 
 def _find_tenacity_import_offenders(tree: ast.Module) -> list[str]:
@@ -171,14 +182,19 @@ def _module_scope_statements(statements: list[ast.stmt]) -> list[ast.stmt]:
     review round 7) to find simple name-to-name reassignments anywhere at
     real module scope, matching the same scope boundary
     `_rebind_offenders_in_block` already enforces for protected-function
-    reassignment."""
+    reassignment.
+
+    PR 14 review round 8 added `match` (whose `case` bodies do not introduce
+    a new scope either) and `except*` (`ast.TryStar`, alongside plain `try`)
+    to the recursion, matching the same two additions to
+    `_rebind_offenders_in_block` below."""
     collected: list[ast.stmt] = []
     for statement in statements:
         collected.append(statement)
         if isinstance(statement, ast.If):
             collected.extend(_module_scope_statements(statement.body))
             collected.extend(_module_scope_statements(statement.orelse))
-        elif isinstance(statement, ast.Try):
+        elif isinstance(statement, _TRY_NODE_TYPES):
             collected.extend(_module_scope_statements(statement.body))
             for handler in statement.handlers:
                 collected.extend(_module_scope_statements(handler.body))
@@ -189,6 +205,9 @@ def _module_scope_statements(statements: list[ast.stmt]) -> list[ast.stmt]:
         elif isinstance(statement, (ast.For, ast.AsyncFor, ast.While)):
             collected.extend(_module_scope_statements(statement.body))
             collected.extend(_module_scope_statements(statement.orelse))
+        elif isinstance(statement, ast.Match):
+            for case in statement.cases:
+                collected.extend(_module_scope_statements(case.body))
     return collected
 
 
@@ -271,26 +290,41 @@ def _module_level_functions(tree: ast.Module) -> dict[str, ast.FunctionDef | ast
 def _direct_local_calls(
     node: ast.FunctionDef | ast.AsyncFunctionDef,
     local_functions: dict[str, ast.FunctionDef | ast.AsyncFunctionDef],
+    aliases: dict[str, str],
 ) -> set[str]:
     """Bare-name calls only (`helper(...)`), never attribute calls
     (`repo.helper(...)`), so an unrelated method that happens to share a
-    local function's name can never fabricate a call-graph edge."""
+    local function's name can never fabricate a call-graph edge.
+
+    PR 14 review round 8: the call's bare name is resolved through
+    `aliases` (the same module-scope name-to-name chain
+    `_resolve_import_aliases` already builds) before the `local_functions`
+    membership check, so `submit = _do_submit` followed by `submit()`
+    still creates a call-graph edge to `_do_submit`. Without this, a
+    protected function delegating only through such an alias made
+    `_do_submit` unreachable from `entry_points`, so its own `@retry`
+    decorator was never even inspected -- the decorator/call checks in
+    `_find_protected_function_offenders` only run on functions named
+    directly in `_PROTECTED_FUNCTIONS` or discovered as reachable here."""
     called = set()
     for inner in ast.walk(node):
-        if isinstance(inner, ast.Call) and isinstance(inner.func, ast.Name) and inner.func.id in local_functions:
-            called.add(inner.func.id)
+        if isinstance(inner, ast.Call) and isinstance(inner.func, ast.Name):
+            resolved = aliases.get(inner.func.id, inner.func.id)
+            if resolved in local_functions:
+                called.add(resolved)
     return called
 
 
 def _transitively_called_local_helpers(
-    tree: ast.Module, entry_points: frozenset[str],
+    tree: ast.Module, entry_points: frozenset[str], aliases: dict[str, str],
 ) -> dict[str, ast.FunctionDef | ast.AsyncFunctionDef]:
     """The module-level functions in this file reachable (directly or
-    indirectly, by bare-name call) from `entry_points`, excluding the entry
-    points themselves. Closes the "retry-decorated helper transitively
-    called by the broker-call boundary" gap: a wrapper need not sit on one
-    of the four named functions directly if it can instead sit on a helper
-    one of them delegates to (PR 14 review round 3)."""
+    indirectly, by bare-name call, resolving simple aliases of that name)
+    from `entry_points`, excluding the entry points themselves. Closes the
+    "retry-decorated helper transitively called by the broker-call
+    boundary" gap: a wrapper need not sit on one of the four named
+    functions directly if it can instead sit on a helper one of them
+    delegates to (PR 14 review round 3)."""
     local_functions = _module_level_functions(tree)
     reachable: dict[str, ast.FunctionDef | ast.AsyncFunctionDef] = {}
     seen = set(entry_points)
@@ -300,7 +334,7 @@ def _transitively_called_local_helpers(
         node = local_functions.get(name)
         if node is None:
             continue
-        for callee in _direct_local_calls(node, local_functions):
+        for callee in _direct_local_calls(node, local_functions, aliases):
             if callee in seen:
                 continue
             seen.add(callee)
@@ -360,6 +394,21 @@ def _find_protected_function_offenders(tree: ast.Module) -> list[str]:
     decorator"/"any reassignment" rule since the master plan names them
     directly and none legitimately carries either form today.
 
+    PR 14 review round 8 closed three more: (1) and (2) a module-level
+    reassignment of a protected or transitively-called name nested inside a
+    `match` statement's `case` body, or inside an `except*` (`ast.TryStar`)
+    handler -- both are non-scope-introducing blocks like the `if`/`try`/
+    `with`/`for`/`while` forms already handled by rounds 5-6, but neither
+    `_rebind_offenders_in_block` nor `_resolve_import_aliases`'s
+    `_module_scope_statements` helper recursed into them; (3) a protected
+    function delegating to a retry-decorated helper only through a local
+    alias of that helper's name (e.g. `submit = _do_submit` then
+    `submit()`) previously made the helper unreachable from
+    `_transitively_called_local_helpers`, so its own decorator was never
+    even inspected -- `_direct_local_calls` now resolves the call's bare
+    name through the same alias chain before checking call-graph
+    membership.
+
     Known, accepted residual gap: a project-local or third-party wrapper
     imported under a name that is neither an alias of `retry`/`Retrying` nor
     itself calls something named `retry`/`Retrying` (e.g. `from retry_utils
@@ -375,7 +424,7 @@ def _find_protected_function_offenders(tree: ast.Module) -> list[str]:
     for the documented, deliberately-accepted current behavior.
     """
     aliases = _resolve_import_aliases(tree)
-    helpers = _transitively_called_local_helpers(tree, _PROTECTED_FUNCTIONS)
+    helpers = _transitively_called_local_helpers(tree, _PROTECTED_FUNCTIONS, aliases)
     offenders = []
     for node in ast.walk(tree):
         if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
@@ -417,6 +466,13 @@ def _rebind_offenders_in_block(
     `for`/`async for`/`while` blocks, which do not introduce a new scope
     either but were omitted from the round-5 recursion (which only handled
     `if`/`try`/`with`).
+
+    PR 14 review round 8 closed a fifth and sixth: a `match` statement's
+    `case` bodies do not introduce a new scope either (like `if`/`try`/
+    `with`/`for`/`while` before them) but were never recursed into, and
+    `except*` (`ast.TryStar`, PEP 654) was omitted from the round-4 `try`
+    handling entirely -- both previously let a reassignment of a protected
+    or transitively-called name to a retry-wrapper call pass unnoticed.
     """
     offenders: list[str] = []
     for statement in statements:
@@ -450,7 +506,7 @@ def _rebind_offenders_in_block(
         if isinstance(statement, ast.If):
             offenders.extend(_rebind_offenders_in_block(statement.body, helpers, aliases))
             offenders.extend(_rebind_offenders_in_block(statement.orelse, helpers, aliases))
-        elif isinstance(statement, ast.Try):
+        elif isinstance(statement, _TRY_NODE_TYPES):
             offenders.extend(_rebind_offenders_in_block(statement.body, helpers, aliases))
             for handler in statement.handlers:
                 offenders.extend(_rebind_offenders_in_block(handler.body, helpers, aliases))
@@ -461,6 +517,9 @@ def _rebind_offenders_in_block(
         elif isinstance(statement, (ast.For, ast.AsyncFor, ast.While)):
             offenders.extend(_rebind_offenders_in_block(statement.body, helpers, aliases))
             offenders.extend(_rebind_offenders_in_block(statement.orelse, helpers, aliases))
+        elif isinstance(statement, ast.Match):
+            for case in statement.cases:
+                offenders.extend(_rebind_offenders_in_block(case.body, helpers, aliases))
     return offenders
 
 
@@ -1245,6 +1304,100 @@ def test_detector_does_not_flag_a_same_named_local_assignment_alias_inside_an_un
         "    pass\n\n"
         "def retry_external_paper_order():\n"
         "    _do_submit()\n"
+    )
+
+    tree = ast.parse(module.read_text())
+
+    assert _find_protected_function_offenders(tree) == []
+
+
+def test_detector_flags_a_module_level_reassignment_nested_in_a_match_case(tmp_path):
+    """PR 14 review round 8: a `match` statement's `case` bodies do not
+    introduce a new scope, like `if`/`try`/`with`/`for`/`while` before it,
+    but `_rebind_offenders_in_block` never recursed into them, so a
+    reassignment of a protected name to a retry-wrapper call hidden inside
+    a `case` block previously bypassed the guard entirely."""
+    offending_module = tmp_path / "synthetic_external_broker_match_case_reassignment.py"
+    offending_module.write_text(
+        "from retry_utils import broker_retry\n\n"
+        "def _submit_checkpointed_attempt():\n"
+        "    pass\n\n"
+        "match 1:\n"
+        "    case _:\n"
+        "        _submit_checkpointed_attempt = broker_retry(_submit_checkpointed_attempt)\n"
+    )
+
+    tree = ast.parse(offending_module.read_text())
+
+    assert _find_protected_function_offenders(tree) == [
+        "module-level reassignment of '_submit_checkpointed_attempt' to 'broker_retry' at line 8",
+    ]
+
+
+@pytest.mark.skipif(sys.version_info < (3, 11), reason="except* (PEP 654) requires Python 3.11+")
+def test_detector_flags_a_module_level_reassignment_nested_in_an_except_star_block(tmp_path):
+    """PR 14 review round 8: `except*` (`ast.TryStar`, PEP 654) is a
+    non-scope-introducing block distinct from `ast.Try`, which the round-4
+    reassignment scan (and the round-7 alias resolver's
+    `_module_scope_statements`) never checked for, so a reassignment of a
+    protected name to a retry-wrapper call hidden inside an `except*`
+    handler previously bypassed the guard entirely."""
+    offending_module = tmp_path / "synthetic_external_broker_except_star_reassignment.py"
+    offending_module.write_text(
+        "from retry_utils import broker_retry\n\n"
+        "def _submit_checkpointed_attempt():\n"
+        "    pass\n\n"
+        "try:\n"
+        "    pass\n"
+        "except* Exception:\n"
+        "    _submit_checkpointed_attempt = broker_retry(_submit_checkpointed_attempt)\n"
+    )
+
+    tree = ast.parse(offending_module.read_text())
+
+    assert _find_protected_function_offenders(tree) == [
+        "module-level reassignment of '_submit_checkpointed_attempt' to 'broker_retry' at line 9",
+    ]
+
+
+def test_detector_flags_a_retry_decorated_helper_called_only_through_a_local_alias(tmp_path):
+    """PR 14 review round 8: `_direct_local_calls` previously matched only
+    the callee's own bare name against `local_functions`, so aliasing a
+    retry-decorated helper to a new local name (`submit = _do_submit`) and
+    calling the alias (`submit()`) from a protected function broke the
+    call-graph edge `_transitively_called_local_helpers` relies on --
+    making `_do_submit` unreachable, so its own `@retry` decorator was
+    never even inspected despite being called, indirectly, by
+    `retry_external_paper_order`."""
+    offending_module = tmp_path / "synthetic_external_broker_aliased_helper_call.py"
+    offending_module.write_text(
+        "from retry_utils import retry\n\n"
+        "@retry\n"
+        "def _do_submit():\n"
+        "    pass\n\n"
+        "submit = _do_submit\n\n"
+        "def retry_external_paper_order():\n"
+        "    submit()\n"
+    )
+
+    tree = ast.parse(offending_module.read_text())
+
+    assert _find_protected_function_offenders(tree) == [
+        "decorator 'retry' on _do_submit at line 3",
+    ]
+
+
+def test_detector_does_not_flag_an_unrelated_local_alias_of_a_non_retry_helper(tmp_path):
+    """Guards against overreach from the round-8 alias-resolved call-graph
+    edge: aliasing and calling an ordinary, undecorated helper must not
+    fabricate an offender."""
+    module = tmp_path / "synthetic_external_broker_unrelated_aliased_helper_call.py"
+    module.write_text(
+        "def _do_submit():\n"
+        "    pass\n\n"
+        "submit = _do_submit\n\n"
+        "def retry_external_paper_order():\n"
+        "    submit()\n"
     )
 
     tree = ast.parse(module.read_text())
