@@ -20,13 +20,16 @@ originate from any module name, it cannot be closed by tracing imports alone
 without inspecting every transitively-imported module. Instead, the three
 functions the master plan's row 14 names as the ambiguous-broker-retry path
 -- `retry_external_paper_order`, `_prepare_external_retry_attempt`, and
-`refresh_retry_preview` -- are structurally forbidden from carrying *any*
-decorator and from containing *any* call named `retry` or `Retrying` (the two
-exact Tenacity API forms row 14 calls out: `@retry` and `Retrying()`),
-regardless of where that name was imported from. Since none of the three
-currently use either form, this is a zero-cost regression guard: any future
-change that wraps one of them -- directly or indirectly -- fails this test
-and must justify updating it explicitly.
+`refresh_retry_preview` -- plus `_submit_checkpointed_attempt`, the shared
+helper both `retry_external_paper_order` and the ordinary first-attempt path
+(`_submit_once`) delegate to for the actual `runtime.submit_limit_order(...)`
+call, are structurally forbidden from carrying *any* decorator and from
+containing *any* call named `retry` or `Retrying` (the two exact Tenacity API
+forms row 14 calls out: `@retry` and `Retrying()`), regardless of where that
+name was imported from. Since none of the four currently use either form,
+this is a zero-cost regression guard: any future change that wraps one of
+them -- directly or indirectly -- fails this test and must justify updating
+it explicitly.
 
 Scope is deliberately this one file, not the whole `src/trading_research`
 tree: `COMPONENT_MATRIX.md`'s "Generic transient retries" row leaves generic
@@ -48,6 +51,13 @@ _PROTECTED_FUNCTIONS = frozenset({
     "retry_external_paper_order",
     "_prepare_external_retry_attempt",
     "refresh_retry_preview",
+    # Shared broker-call boundary: both the retry path
+    # (retry_external_paper_order) and the ordinary first-attempt path
+    # (_submit_once) delegate here for the actual
+    # runtime.submit_limit_order(...) call, so a wrapper placed here alone
+    # -- bypassing the three functions above -- would still enable
+    # unauthorized automatic retries of an ambiguous submission.
+    "_submit_checkpointed_attempt",
 })
 
 _RETRY_WRAPPER_CALL_NAMES = frozenset({"retry", "Retrying"})
@@ -173,6 +183,28 @@ def test_detector_flags_an_indirect_retrying_context_manager_call(tmp_path):
     assert _find_tenacity_import_offenders(tree) == []
     assert _find_protected_function_offenders(tree) == [
         "call to 'Retrying' inside _prepare_external_retry_attempt at line 4",
+    ]
+
+
+def test_detector_flags_an_indirect_decorator_on_the_shared_submission_helper(tmp_path):
+    """The gap identified in PR 14 review: `retry_external_paper_order` and
+    the ordinary first-attempt path both delegate to
+    `_submit_checkpointed_attempt` for the actual broker call, so a wrapper
+    placed there alone -- never on the three originally named functions --
+    would bypass a guard that only protected those three."""
+    offending_module = tmp_path / "synthetic_external_broker_indirect_submit_helper.py"
+    offending_module.write_text(
+        "from retry_utils import broker_retry\n\n"
+        "@broker_retry\n"
+        "def _submit_checkpointed_attempt():\n"
+        "    pass\n"
+    )
+
+    tree = ast.parse(offending_module.read_text())
+
+    assert _find_tenacity_import_offenders(tree) == []
+    assert _find_protected_function_offenders(tree) == [
+        "decorator 'broker_retry' on _submit_checkpointed_attempt at line 3",
     ]
 
 
