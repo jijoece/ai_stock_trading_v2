@@ -546,8 +546,18 @@ def test_status_remaining_blockers_does_not_contradict_pr13_evaluated():
     unknown until those PRs run — self-contradictory, and it continued to
     present the completed SQLAlchemy/Alembic evaluation as an unresolved
     blocker. Pins that the stale combined item is gone and PR 13's blocker
-    entry is explicitly marked resolved, leaving only PR 14 genuinely
-    unknown."""
+    entry is explicitly marked resolved.
+
+    Updated by library-migration PR 14 (`DECISIONS.md` D12): PR 14 itself
+    resolved its own "APScheduler lease-coexistence" blocker item in the same
+    section, the same way PR 13 resolved its own item on this same branch
+    when it ran — so this test no longer pins "PR 14 feasibility outcome ...
+    is unknown ... until that PR runs" as enduring text; that phrasing was
+    only ever true for the PR 12->13 transition this test was originally
+    written against, not a permanent contract. See
+    `test_status_remaining_blockers_does_not_contradict_pr14_evaluated` below
+    for the PR 13->14 transition's own regression coverage, mirroring this
+    test's pattern."""
     text = STATUS.read_text(encoding="utf-8")
     assert "PR 13/14 feasibility outcomes" not in text
     blockers_section = text.split("## Remaining blockers", 1)[1].split(
@@ -555,9 +565,23 @@ def test_status_remaining_blockers_does_not_contradict_pr13_evaluated():
     )[0]
     assert "PR 13 feasibility outcome" in blockers_section
     assert "Resolved 2026-08-23" in blockers_section
+
+
+def test_status_remaining_blockers_does_not_contradict_pr14_evaluated():
+    """PR 14's own version of the check above: STATUS.md's "Current phase"
+    heading now declares PR 14 evaluated and the next phase advanced to
+    PR 15, so the "Remaining blockers" section must mark PR 14's own item
+    resolved too, rather than continuing to claim it is unknown until that
+    PR runs (which would now contradict the "Current phase"/"Completed work
+    (PR 14)" sections added by this same PR)."""
+    text = STATUS.read_text(encoding="utf-8")
+    blockers_section = text.split("## Remaining blockers", 1)[1].split(
+        "## Completed work (PR 2)", 1
+    )[0]
     assert "PR 14 feasibility outcome" in blockers_section
-    assert "is unknown" in blockers_section
-    assert "until that PR runs" in blockers_section
+    assert "Resolved 2026-08-30" in blockers_section
+    assert "is unknown" not in blockers_section
+    assert "until that PR runs" not in blockers_section
 
 
 def test_status_no_file_under_src_scripts_paper_runtime_was_modified():
