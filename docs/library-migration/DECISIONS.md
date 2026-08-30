@@ -1247,3 +1247,129 @@ also re-verify whether the `cvxpy` deprecation warning noted above has been
 resolved upstream, and design the advisory-boundary adapter (analogous to
 `vector_research/`'s import-boundary/`metric_source`-labeling pattern)
 before any dependency is added.
+
+## D11 — PR 13: SQLAlchemy/Alembic evaluated, deferred (not adopted)
+
+**Context.** `MASTER_PLAN.md` row 13 scoped PR 13 as feasibility-and-ADR
+only, requiring two questions to be *explicitly tested*, not just reasoned
+about: (a) whether trigger-protected tables (append-only tables,
+`real_orders`) can be restricted to SQLAlchemy Core statements only, on the
+theory `DEPENDENCY_MATRIX.md` Section 5 recorded at PR 0 that "the ORM's
+unit-of-work flush ordering and identity-map caching can mask a
+trigger-rejected write"; (b) whether Alembic's branching revision graph can
+be constrained to linear-only history matching
+`storage/schema_version.py`'s existing monotonic ledger. Full detail in
+`docs/library-migration/pr13/EVALUATION.md`.
+
+**License and dependency weight.** Re-verified live against the PyPI JSON
+API: SQLAlchemy 2.0.52 and Alembic 1.19.1 (a `alembic>=1.18,<1.19` scratch
+pin resolved and tested 1.18.5, one minor version behind latest) are both
+MIT, both OSI-approved, both light (SQLAlchemy's own core dependencies are
+`typing-extensions`/`greenlet`; Alembic adds only `Mako` on top of
+SQLAlchemy). `Requires-Python` for Alembic (`>=3.10`) matches this
+repository's floor exactly; SQLAlchemy's (`>=3.7`) is well inside it. No
+license or dependency-weight blocker exists for either package.
+
+**Question (a), empirically tested — masking hypothesis withdrawn.** A
+scratch reproduction (`pr13/scratch_trigger_orm_vs_core.py`) copy-pasted the
+exact production trigger DDL for `real_orders` (fully reserved) and
+`paper_book_cash_ledger` (append-only) and drove both via Core and ORM,
+against a file-backed SQLite database so independent visibility checks use
+a genuinely separate DBAPI connection, not the same connection an in-memory
+`StaticPool` engine would silently reuse. Three adversarial cases went
+beyond the original hypothesis: an unhandled failed flush (`PendingRollbackError` on the next
+operation), a `cascade="all, delete-orphan"` DELETE (still a real,
+trigger-rejected `DELETE`), and an ORM UPDATE on an already-loaded row
+through the identity map (rejected identically; re-reading the mutated
+attribute pre-rollback itself raises `PendingRollbackError`, and the value
+post-rollback matches the database exactly). All seven cases failed closed:
+no rejected INSERT object falsely transitioned to persistent; the
+already-loaded UPDATE target correctly remained persistent while its
+rejected attribute mutation was expired, and no attribute returned a
+stale/masked value. This is **withdrawn as unsubstantiated** for
+SQLAlchemy 2.0.52 across INSERT/UPDATE/cascade DELETE — a correction to
+`DEPENDENCY_MATRIX.md` Section 5, not a reason to adopt. An eighth case
+proves the Core-only boundary can be *enforced*: a `before_flush` guard on
+the ORM `Session` class rejects a flush against either table pre-SQL,
+through both a `sessionmaker()` session and `Session(bind=...)`, while Core
+still works. A ninth case proves that guard's table policy is *complete*,
+not just correct for these two tables: `TRIGGER_PROTECTED_TABLES` is
+derived by scanning production schema modules for write-rejecting triggers
+(50 tables, not 2) and the guard rejects
+ORM writes pre-SQL against every one, including `paper_book_fills`,
+`research_attempts`, `research_attempt_failures`, and
+`research_cycle_provider_provenance_links`, omitted by the prior allowlist; re-deriving from production means a future protected table
+cannot fall outside guard coverage. A tenth case then found and fixed a real
+gap in the guard's *mechanism*: checking only each changed object's own
+`__table__` misses a `relationship(..., secondary=protected_table)`
+collection write (reproduced using `research_cycle_provider_provenance_links`
+itself as the `secondary` table) and an ancestor table in a
+joined-table-inheritance mapper; the guard now also inspects each mapper's
+full table set and every relationship's `secondary` table, and both
+adversarial paths are rejected pre-SQL. This does not cover ORM-enabled
+bulk `update()`/`delete()` statements via `Session.execute()`, which bypass
+`before_flush` entirely — an open gap, not claimed as closed. Core-only for
+trigger-protected tables remains the recommendation regardless, as an
+auditability preference with a proven, self-updating mechanism for
+unit-of-work flush writes — not because the ORM is unsafe.
+
+**Question (b), empirically tested — constrainable, but only with an added
+guard.** A second scratch reproduction (`pr13/scratch_alembic_linearity.py`)
+built a real, disposable Alembic environment and found Alembic resists a
+*sequential* accidental branch by default (`CommandError: ... please
+specify --splice`; `CommandError: Multiple head revisions are present
+...`) only when the offending state is already visible in one script
+directory when the guarded command runs. A ninth case proved the default
+does *not* resist a *concurrent*-development branch: two independent
+checkouts each create a revision off the same parent, neither sees the
+other's file, both succeed without `--splice` or any error, and the
+branch surfaces only once the two checkouts' files are combined. Neither
+guard is
+absolute: `splice=True` still creates a real branch, and `alembic merge`
+converges a branch back to one head while leaving a merge revision (a tuple
+`down_revision`, i.e. two parents) that is not a linear predecessor. A
+custom gate (asserting exactly one head **and** no revision has more than
+one child **and** no revision's `down_revision` is a tuple **and** no
+revision has a non-empty `depends_on`) caught every branching and merge
+case tested, including the case where "one head" alone would have looked
+linear but was not. The `depends_on` check was added after two further
+adversarial cases showed it was necessary, not optional: `depends_on` is a
+dependency edge separate from `down_revision` that Alembic does not count
+toward `get_heads()` or down-revision fan-out, so a revision with one or
+several `depends_on` targets reports zero violations against a
+`down_revision`-only gate while still introducing a graph edge
+`schema_version.py`'s ledger has no counterpart for. **Conclusion: yes,
+constrainable to linear-only history, but only by building and permanently
+maintaining a gate that checks heads, down-revision fan-out, merge
+revisions, *and* `depends_on` as a blocking CI check** —
+`schema_version.py`'s `dict[int, ...]` ledger has no branch or dependency
+concept to guard against in the first place, so this would be new
+maintenance surface, not a like-for-like replacement.
+
+**Need.** `COMPONENT_MATRIX.md`'s "Persistence" and "Migrations" rows
+describe the existing hand-written `storage/*_schema.py` DDL modules and
+`storage/schema_version.py`'s ordered-migration ledger as available for
+evaluation, not as broken or unmaintained — unlike TA-Lib/empyrical-reloaded/
+`exchange_calendars`, there is no abandoned or hand-rolled formula this
+would replace, and no module today has a persistence or migration problem
+the existing pattern does not already solve.
+
+**Ruling: defer, do not adopt.** Applying the same bar already used for
+Pandera/PyArrow/Riskfolio-Lib ("no concrete current need exists" → Defer):
+both packages are legally unblocked and, after this PR's testing, more
+technically de-risked than the PR 0 record assumed (the trigger-masking
+concern is withdrawn), but adopting either would mean migrating roughly
+twenty existing schema/repository modules — including every safety-critical
+trigger-protected table — for no current capability gap, while adding a
+maintenance obligation (the linear-only CI gate) that does not exist today.
+**Neither `sqlalchemy` nor `alembic` is added to any dependency
+declaration.** No ADR is required — per the single-ADR rule already
+established in D2 and reapplied in D10, an ADR is needed only if adoption is
+recommended, and none is here. Re-evaluate once a concrete need for a richer
+persistence/migration layer is scoped; at that point, re-verify against
+whatever Alembic release is then current (1.19.1 or later — not directly
+tested here), build the linear-only gate before the first real revision is
+committed rather than after, and separately test bulk Core insert/update
+constructs (`sqlalchemy.dml.Insert`/`Update` used for multi-row bulk
+operations), which bypass ORM events but not Core execution and were not
+covered by this PR's ORM-session-focused testing.

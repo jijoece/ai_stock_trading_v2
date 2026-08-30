@@ -1,28 +1,33 @@
 # Migration Status
 
-**Current phase: PR 12 — Riskfolio-Lib evaluation only — EVALUATED, NOT MERGED**
-(branch `migration/12-riskfolio-lib-evaluation`; `MASTER_PLAN.md` row 12,
-`DECISIONS.md` D10). Evaluation only — documentation
-(`docs/library-migration/pr12/EVALUATION.md`) and a scratch reproduction
-(`pr12/scratch_smoke_test.py`, `pr12/scratch_output.txt`), no production code
-under `src/`, `scripts/`, or `paper_runtime/src/`; `tests/` gained only the
-documentation-consistency regression coverage described below. **Outcome:
-defer, not added.** License re-verified OSI-approved (BSD-3-Clause); a live scratch
-install confirmed Riskfolio-Lib's `vectorbt>=0.28.0` hard dependency
-resolves cleanly to the already-adopted `vectorbt==1.1.0` (PR 5) with no
-conflict at Python 3.11.15 and 3.14.5rc1 only — the two interpreters
-live-tested, both within VectorBT's declared `>=3.11,<3.15` range
-(3.12/3.13 untested; the adopted `vectorbt>=1.1.0,<1.2` range cannot
-resolve on this repository's `>=3.10` project-wide floor without also
-raising it, nor on Python 3.15+ without a future VectorBT upgrade),
-but the resulting 82-package closure has no current in-repo
-consumer (`COMPONENT_MATRIX.md`'s "Portfolio optimization" row: no existing
-implementation) — so `riskfolio-lib` is **not added** to any dependency
-declaration. See "Completed work (PR 12)" below.
+**Current phase: PR 13 — SQLAlchemy/Alembic feasibility and ADR — EVALUATED, NOT MERGED**
+(branch `migration/13-sqlalchemy-alembic-feasibility`; `MASTER_PLAN.md` row
+13, `DECISIONS.md` D11). No SQLAlchemy/Alembic implementation — documentation
+(`docs/library-migration/pr13/EVALUATION.md`) and two scratch reproductions
+(`pr13/scratch_trigger_orm_vs_core.py`, `pr13/scratch_alembic_linearity.py`,
+with raw output in `scratch_trigger_output.txt`/`scratch_alembic_output.txt`),
+no production code under `src/`, `scripts/`, or `paper_runtime/src/`;
+`tests/` gained only the documentation-consistency regression coverage
+described below. **Outcome: defer, not added.** Both packages re-verified
+live as OSI-approved MIT; empirical testing against the exact production
+trigger DDL (`real_orders`, `paper_book_cash_ledger`) found no case, across
+six scenarios including an unhandled failed flush and an ORM relationship
+cascade, where SQLAlchemy's ORM masked a trigger-rejected write — the PR 0
+theoretical concern behind this row is withdrawn as unsubstantiated; and
+Alembic's branching revision graph was confirmed constrainable to
+linear-only history matching `storage/schema_version.py`'s existing
+monotonic ledger, but only via a new, unbuilt CI gate, not by any Alembic
+default. Neither finding is a correctness blocker, but neither identifies a
+current capability gap either (`COMPONENT_MATRIX.md`'s "Persistence"/
+"Migrations" rows: the existing hand-written schema/repository layer is not
+broken or unmaintained) — so `sqlalchemy`/`alembic` are **not added** to any
+dependency declaration, and no ADR was produced (none is required when
+adoption is not recommended, per `DECISIONS.md` D2's single-ADR rule). See
+"Completed work (PR 13)" below.
 
-**Next phase: PR 13 — SQLAlchemy/Alembic feasibility and ADR**
-(`MASTER_PLAN.md` row 13), which depends only on PR 1 (already merged). PR 12
-above is now evaluated; row 13 is the next unstarted row whose dependency is
+**Next phase: PR 14 — APScheduler/Tenacity feasibility**
+(`MASTER_PLAN.md` row 14), which depends only on PR 1 (already merged). PR 13
+above is now evaluated; row 14 is the next unstarted row whose dependency is
 already satisfied (row 8a remains independent of the numbered sequence, per
 its own note below, and is not "next" in this ordering).
 
@@ -66,11 +71,19 @@ and never written, and bar availability is enforced once per run rather than
 per session. Row 8a is **not started** and remains independent of the
 numbered migration sequence — it can run at any point.
 
-PR 12 — Riskfolio-Lib evaluation only — is **EVALUATED, NOT MERGED**
-(branch `migration/12-riskfolio-lib-evaluation`; `MASTER_PLAN.md` row 12,
-`DECISIONS.md` D10). See this file's "Current phase" note above and
-"Completed work (PR 12)" below for the full record; the next phase is now
-PR 13 (see above).
+PR 12 — Riskfolio-Lib evaluation only — is **merged** (PR #29, `641f5da`,
+branch `migration/12-riskfolio-lib-evaluation`; `MASTER_PLAN.md` row 12,
+`DECISIONS.md` D10). This entry previously read "EVALUATED, NOT MERGED"
+after the merge landed — corrected here, per `AUTOMATION.md`'s "GitHub is
+authoritative for merge status" rule, the same correction pattern already
+applied to PR 9's and PR 11's entries elsewhere in this file. See
+"Completed work (PR 12)" below for the full record.
+
+PR 13 — SQLAlchemy/Alembic feasibility and ADR — is **EVALUATED, NOT
+MERGED** (branch `migration/13-sqlalchemy-alembic-feasibility`;
+`MASTER_PLAN.md` row 13, `DECISIONS.md` D11). See this file's "Current
+phase" note above and "Completed work (PR 13)" below for the full record;
+the next phase is now PR 14 (see above).
 
 PR 6 is **merged** (`bbd7a1f`, PR #18) and delivered everything ADR 0009
 Decision 4 requires:
@@ -359,9 +372,12 @@ dependency; PR 3/4/11/15/16 wire the respective libraries into code.
    accepted ADR 0009 (Option B, `backtest_runtime/`). The pre-step is complete
    and PR 6 is unblocked — see "Completed work (pre-step before PR 6)" below.
    Was never a blocker for PR 1 or PR 2.
-2. **PR 13/14 feasibility outcomes** (SQLAlchemy/Alembic trigger-safety,
-   APScheduler lease-coexistence) are unknown until those PRs run — PR 1
-   does not depend on them.
+2. ~~**PR 13 feasibility outcome**~~ (SQLAlchemy/Alembic trigger-safety).
+   **Resolved 2026-08-23:** PR 13 ran and the outcome is **defer, do not
+   adopt** — see this file's "Completed work (PR 13)" section and
+   `DECISIONS.md` D11 for the full record. Was never a blocker for PR 1.
+3. **PR 14 feasibility outcome** (APScheduler lease-coexistence) is unknown
+   until that PR runs — PR 1 does not depend on it.
 
 The root `.[paper]` extra `ResolutionImpossible` finding from an earlier
 draft of this PR is resolved, not deferred: the extra was removed (see
@@ -2782,3 +2798,222 @@ lookup, each into a disposable scratch virtualenv outside the repository —
 none of which touched the project's own dependency graph, `.venv`, or any
 application code path; the scheduler was not enabled; no external paper
 order of any kind was submitted or referenced.
+
+## Completed work (PR 13)
+
+**Scope:** no SQLAlchemy/Alembic implementation — documentation
+(`docs/library-migration/pr13/EVALUATION.md`) and two scratch reproductions
+(`docs/library-migration/pr13/scratch_trigger_orm_vs_core.py`,
+`scratch_alembic_linearity.py`, with raw output in
+`scratch_trigger_output.txt`/`scratch_alembic_output.txt` and resolved
+package versions in `scratch_pip_freeze.txt`), plus this file,
+`DEPENDENCY_MATRIX.md`, `COMPONENT_MATRIX.md`, and `DECISIONS.md` (D11).
+No file under `src/`, `scripts/`, `paper_runtime/src/`, or
+`backtest_runtime/` was modified. No SQLAlchemy/Alembic adoption change was
+made to `pyproject.toml`; a review fix round did add a narrow,
+CI-compatibility-only `plotly<7` pin to the existing `research` extra (see
+"Correction (2026-08-27, review-fix round)" below) — a dependency-policy
+change unrelated to this PR's SQLAlchemy/Alembic evaluation question, kept
+in this PR (rather than split out) to keep the required `research-tests`
+and `dependency-extras-smoke (research)` CI jobs green.
+`tests/unit/test_pr13_evaluation_docs.py` is a documentation-consistency
+regression test, not application code.
+
+**Outcome: defer, do not adopt.** SQLAlchemy 2.0.52 and Alembic 1.19.1 (a
+`alembic>=1.18,<1.19` scratch pin resolved and tested 1.18.5) were
+re-verified live against the PyPI JSON API: both MIT, both OSI-approved,
+Alembic's `Requires-Python` (`>=3.10`) matching this repository's floor
+exactly. Row 13 required two questions to be explicitly tested, not just
+reasoned about:
+
+(a) whether trigger-protected tables can be restricted to SQLAlchemy Core
+statements only. A scratch reproduction copy-pasted the exact production
+trigger DDL for `real_orders` (fully reserved) and `paper_book_cash_ledger`
+(append-only) and drove both via Core statements and an ORM `Session`,
+against a file-backed SQLite database (matching `storage/database.py`) so
+that independent visibility checks use a genuinely separate DBAPI
+connection, across seven masking cases, including three adversarial ones
+beyond the original hypothesis: a caller that forgets to roll back after a
+rejected flush (SQLAlchemy raises `PendingRollbackError` on the next
+operation rather than proceeding), an ORM relationship cascade deleting a
+parent row (the cascade still issues a real `DELETE` the trigger still
+rejects), and an ORM UPDATE of an already-loaded row through the identity
+map (rejected identically; re-reading the mutated attribute before an
+explicit rollback itself raises `PendingRollbackError`). Every case failed
+closed: no rejected INSERT object falsely transitioned to persistent; the
+already-loaded UPDATE target correctly remained persistent while its
+rejected attribute mutation was expired, and no attribute returned a
+stale/masked value. `DEPENDENCY_MATRIX.md`
+Section 5's PR 0 concern — "the ORM's unit-of-work flush ordering and
+identity-map caching can mask a trigger-rejected write" — is **withdrawn as
+unsubstantiated**. An eighth case then proved the Core-only boundary can be
+*enforced*, not just followed: a `before_flush` guard on the ORM `Session`
+class blocks every permitted session construction path tested, before any
+SQL is emitted, while Core access is unaffected. A ninth case proved that
+guard's table policy is complete: derived by scanning production's schema
+modules for every write-rejecting trigger (50 tables, not the 2 a
+hand-maintained allowlist previously covered), the guard rejects ORM writes
+pre-SQL against every one of them, and cannot silently go stale as
+production's schema grows. A tenth case then found and fixed a real gap in
+the guard's mechanism (not its table policy): the original check inspected
+only each changed object's own `__table__`, missing a
+`relationship(..., secondary=protected_table)` collection write and an
+ancestor table in a joined-table-inheritance mapper — reproduced
+adversarially using `research_cycle_provider_provenance_links` (a real
+production association table with no directly mapped class) and a
+synthetic multi-table mapper. The guard now also inspects each mapper's
+full table set and every relationship's `secondary` table, and both
+adversarial paths are rejected pre-SQL. Core-only for trigger-protected
+tables remains the recommendation for any future adoption regardless, as an
+auditability preference with a proven enforcement mechanism available for
+unit-of-work flush writes (not ORM-enabled bulk `update()`/`delete()`
+statements via `Session.execute()`, which bypass `before_flush` entirely —
+an open gap recorded in `pr13/EVALUATION.md`'s non-blocking notes), not a
+correctness requirement.
+
+(b) whether Alembic's branching revision graph can be constrained to
+linear-only history matching `storage/schema_version.py`'s existing
+monotonic ledger. A second scratch reproduction built a real, disposable
+Alembic environment and found Alembic resists a *sequential* accidental
+branch (an un-spliced second child of an existing head is refused by
+default; an ambiguous `upgrade head` with multiple heads present is
+refused) only when the offending state is already visible in one script
+directory when the guarded command runs — a ninth case proved it does
+*not* resist the common concurrent-development branch, where two
+independent checkouts each create a revision off the same parent, neither
+sees the other's file, both succeed without `--splice` or any error, and
+the branch surfaces only once the checkouts' files are combined. A
+deliberate `splice=True` still creates a real branch, and
+`alembic merge` converges to one head while leaving a merge revision (a
+tuple `down_revision`) that is not linear. A custom gate (one head, no
+revision with more than one child, no tuple `down_revision`, no non-empty
+`depends_on`) caught every case, including the merge case where "one head"
+alone would have looked linear but was not, and two further cases showing
+a single or multiple `depends_on` dependency edge — which Alembic counts
+toward neither `get_heads()` nor down-revision fan-out — evades a
+`down_revision`-only gate entirely unless checked explicitly.
+**Conclusion: constrainable to linear-only history, but only via a new,
+unbuilt, permanently-maintained CI gate that checks `depends_on` as well
+as `down_revision`** — `schema_version.py`'s `dict[int, ...]` ledger has no
+branch or dependency concept to guard against in the first place.
+
+Neither finding is a correctness blocker, but neither identifies a current
+capability gap either: `COMPONENT_MATRIX.md`'s "Persistence"/"Migrations"
+rows describe the existing hand-written `storage/*_schema.py` DDL and
+`storage/schema_version.py`'s ordered-migration ledger as available for
+evaluation, not broken or unmaintained, and no module today has a problem
+SQLAlchemy/Alembic would solve that pattern does not already solve. Applying
+the same "no concrete current need exists" bar `DECISIONS.md` already uses
+for Pandera/PyArrow/Riskfolio-Lib: **defer**, not adopt. See `DECISIONS.md`
+D11 and `pr13/EVALUATION.md` for the full record. No ADR was produced —
+none is required when adoption is not recommended, per `DECISIONS.md` D2's
+single-ADR rule, reapplied in D10.
+
+**Custom code removed:** none. This PR adds no new production capability and
+removes none — `src/` and `scripts/` are byte-for-byte unchanged from
+`main`; `pyproject.toml` is unchanged except for the `research`-extra-only
+`plotly<7` CI-compatibility pin described above (no SQLAlchemy, Alembic, or
+other adoption-related dependency was added); `tests/` gained only the
+PR 13 record-consistency regression coverage described above
+(`tests/unit/test_pr13_evaluation_docs.py`).
+
+**Tests run:**
+- `tests/unit/test_pr13_evaluation_docs.py` pins the "defer, do not adopt"
+  outcome, the withdrawn masking-hypothesis finding, and the
+  linear-only-gate finding into `EVALUATION.md`, `DEPENDENCY_MATRIX.md`,
+  `COMPONENT_MATRIX.md`, `DECISIONS.md` D11, and this file, and asserts the
+  two scratch reproductions' raw output contains no `FAIL`/`UNEXPECTED`
+  marker. The scratch reproductions themselves ran only inside a disposable
+  virtualenv (`/tmp/pr13_scratch_venv`, not committed) outside this
+  repository's dependency graph, never against the project's own `.venv`.
+- `.venv/bin/python -m pytest tests/ -q --tb=short` — **3303 passed, 57
+  skipped, 0 failed**; no test outside the new file was modified.
+- `nox -s ci` — all four blocking sessions passed: `tests` (3175 passed, 106
+  skipped, `.[dev]` only), `paper_tests` (160 passed), `safety_typecheck`
+  (pyright, 0 errors — `pr13/scratch_trigger_orm_vs_core.py` and
+  `pr13/scratch_alembic_linearity.py` are outside both `[tool.pyright]`'s
+  `include` and `pyright-safety.json`'s scope, same as PR 2/PR 12's scratch
+  files), `migration_smoke` (OK).
+- `scripts/check_links.sh` — clean (0 errors), re-run after this fix round.
+
+**Correction (2026-08-24, review-fix round): pre-rollback attribute read
+actually executed, and the guard's mechanism fixed for relationship-secondary
+and multi-table-mapper writes.** Two issues from the prior fix rounds were
+fixed on this same branch, without starting PR 14:
+
+1. Case 7's committed record claimed the mutated attribute was read
+   pre-rollback and raised `PendingRollbackError`, but the code deliberately
+   avoided performing that read — the regression test could pass without
+   ever verifying the claim. `scratch_trigger_orm_vs_core.py` now actually
+   reads the expired attribute pre-rollback and asserts the read itself
+   raises `PendingRollbackError`; re-run confirmed the claim empirically.
+2. `_reject_protected_table_orm_writes` originally inspected only each
+   changed object's own `__table__`, missing a
+   `relationship(..., secondary=protected_table)` collection write and an
+   ancestor table in a joined-table-inheritance mapper. A tenth case
+   (`case_10_guard_covers_relationship_secondary_and_multi_table_mapper`)
+   reproduced both gaps adversarially — using the real production
+   `research_cycle_provider_provenance_links` association table for the
+   `secondary=` case — and the guard now also inspects each mapper's full
+   table set and every relationship's `secondary` table via `get_history()`.
+   Both adversarial paths are now rejected pre-SQL. `EVALUATION.md`,
+   `DECISIONS.md` D11, and this file are corrected to describe the guard's
+   proven boundary precisely (unit-of-work flush writes reachable through a
+   mapper's tables or relationships) rather than claim universal
+   enforcement; ORM-enabled bulk `update()`/`delete()` via `Session.execute()`
+   remains an open, explicitly documented gap.
+
+Re-run after these fixes: `tests/unit/test_pr13_evaluation_docs.py` — 28
+passed (4 new regression tests added); `.venv/bin/python -m pytest tests/ -q
+--tb=short` — 3303 passed, 57 skipped, 0 failed; `nox -s ci` — all four
+blocking sessions passed (counts above). No file under `src/`, `scripts/`,
+or `paper_runtime/src/` was touched.
+
+**Correction (2026-08-27, review-fix round): independent oracle now checked
+by set equality, not just count, and a `pyproject.toml` compatibility pin
+added to keep required CI green.** Two issues were fixed on this same
+branch, without starting PR 14:
+
+1. `test_guard_policy_matches_current_production_trigger_protected_tables`
+   compared the independent SQLite trigger oracle's table *count* against
+   the pinned scratch output text, never against the guard's own
+   source-derived discovery set — a production trigger written in syntax
+   the guard's regex doesn't recognize (e.g. `BEFORE UPDATE OF ... ON
+   ...`) would leave the oracle's count unchanged while silently dropping
+   a table from the guard's live protected-table set. Added
+   `test_guard_discovery_set_matches_independent_sqlite_trigger_oracle_exactly`,
+   which extracts and executes the guard's actual discovery function from
+   `scratch_trigger_orm_vs_core.py`'s source via `ast` and asserts its
+   result is exactly the independent oracle's set; verified the adversarial
+   `BEFORE UPDATE OF` syntax is caught by the oracle pattern but missed by
+   the guard's discovery regex, confirming the new test catches a gap the
+   old count-only check could not.
+2. The `research` extra's unconstrained resolve started pulling Plotly
+   7.0.0, which removed the `scattermapbox` trace type vectorbt's bundled
+   default template still references, breaking `import vectorbt` in the
+   required `research-tests` and `dependency-extras-smoke (research)` CI
+   jobs. Bisecting confirmed every plotly 6.x release through 6.9.0 imports
+   cleanly and 7.0.0 is exactly where it breaks. Added a narrow,
+   repository-controlled `plotly<7` compatibility constraint to the
+   `research` extra in `pyproject.toml`, plus
+   `test_research_extra_constrains_plotly_below_scattermapbox_removal` to
+   pin it. This is the one `pyproject.toml` change on this branch: a CI
+   compatibility pin on an already-approved (PR 5) transitive dependency,
+   not a new dependency and not part of the SQLAlchemy/Alembic adoption
+   question this PR evaluates. It is kept in this evaluation-only PR
+   (rather than split into a separately scoped change) because reverting it
+   would break the two required CI jobs above; see the "Scope" and "Custom
+   code removed" notes above for the corresponding disclosure.
+
+Re-run after these fixes: `tests/unit/test_pr13_evaluation_docs.py` — 32
+passed (2 new regression tests added); `nox -s ci` — all four blocking
+sessions passed (`tests` 3179 passed/106 skipped, `paper_tests` 160 passed,
+`safety_typecheck` 0 pyright errors, `migration_smoke` OK).
+
+**Safety:** no trading limit, authorization rule, `paper_books` accounting
+code, or scheduling behavior was touched; no broker, provider, or real
+market-data service was called; the only network access was two read-only,
+wheel-only `pip install` runs into a disposable scratch virtualenv (never
+the project's own `.venv`) plus two read-only PyPI JSON metadata lookups;
+the scheduler was not enabled; no external paper order of any kind was
+submitted or referenced.

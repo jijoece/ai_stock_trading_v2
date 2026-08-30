@@ -31,8 +31,8 @@ invariants a library does not provide).
 | Configuration (YAML/env/CLI/JSONL boundary parsing) | Hand-written per-loader validation | Commodity | Pydantic v2 | Evaluate (PR 2, boundary-only) | Explicit boundary→dataclass conversion | Only if PR 2 proves reduction in custom code |
 | DataFrame validation | None | New capability | Pandera | Defer | N/A | N/A |
 | Historical dataset storage | Fixtures/SQLite only | New capability | PyArrow/Parquet | Defer | N/A | N/A |
-| Persistence (repository/DAO layer) | `storage/database.py` (raw `sqlite3`), `storage/*_repositories.py` | Evaluate (Category B) | SQLAlchemy 2.x (Core only for trigger-protected tables) | Evaluate (PR 13) | N/A until approved | No implementation until approved |
-| Migrations | `storage/migrations.py`, `storage/schema_version.py` | Evaluate (Category B) | Alembic | Evaluate (PR 13/14) | N/A until approved | No implementation until approved |
+| Persistence (repository/DAO layer) | `storage/database.py` (raw `sqlite3`), `storage/*_repositories.py` | Evaluate (Category B) | SQLAlchemy 2.x (Core only for trigger-protected tables) | Defer (PR 13, evaluated 2026-08-23 — see `pr13/EVALUATION.md`) | N/A | N/A |
+| Migrations | `storage/migrations.py`, `storage/schema_version.py` | Evaluate (Category B) | Alembic | Defer (PR 13, evaluated 2026-08-23 — see `pr13/EVALUATION.md`) | N/A | N/A |
 | Scheduling (due-time computation) | `shadow/scheduler.py`, `paper_books/recurring_scheduler.py` | Evaluate (Category B) | APScheduler v3 (coexist, not replace) | Evaluate (PR 14) | Lease/generation-fencing stays custom regardless | No |
 | Generic transient retries | Per-provider hand-rolled backoff | Evaluate (Category B) | Tenacity | Evaluate (PR 14) | Structurally excluded from ambiguous-broker-retry path | Only generic transport retry code, if approved |
 | Ambiguous-order retry/recovery | `paper_books/external_broker.py::recover_stranded_submission` | **Domain-specific** | None | Preserve | N/A | No |
