@@ -2,7 +2,7 @@
 
 **Current phase: PR 13 — SQLAlchemy/Alembic feasibility and ADR — EVALUATED, NOT MERGED**
 (branch `migration/13-sqlalchemy-alembic-feasibility`; `MASTER_PLAN.md` row
-13, `DECISIONS.md` D11). No implementation — documentation
+13, `DECISIONS.md` D11). No SQLAlchemy/Alembic implementation — documentation
 (`docs/library-migration/pr13/EVALUATION.md`) and two scratch reproductions
 (`pr13/scratch_trigger_orm_vs_core.py`, `pr13/scratch_alembic_linearity.py`,
 with raw output in `scratch_trigger_output.txt`/`scratch_alembic_output.txt`),
@@ -2801,7 +2801,7 @@ order of any kind was submitted or referenced.
 
 ## Completed work (PR 13)
 
-**Scope:** no implementation — documentation
+**Scope:** no SQLAlchemy/Alembic implementation — documentation
 (`docs/library-migration/pr13/EVALUATION.md`) and two scratch reproductions
 (`docs/library-migration/pr13/scratch_trigger_orm_vs_core.py`,
 `scratch_alembic_linearity.py`, with raw output in
@@ -2809,7 +2809,13 @@ order of any kind was submitted or referenced.
 package versions in `scratch_pip_freeze.txt`), plus this file,
 `DEPENDENCY_MATRIX.md`, `COMPONENT_MATRIX.md`, and `DECISIONS.md` (D11).
 No file under `src/`, `scripts/`, `paper_runtime/src/`, or
-`backtest_runtime/` was modified. No change to `pyproject.toml`.
+`backtest_runtime/` was modified. No SQLAlchemy/Alembic adoption change was
+made to `pyproject.toml`; a review fix round did add a narrow,
+CI-compatibility-only `plotly<7` pin to the existing `research` extra (see
+"Correction (2026-08-27, review-fix round)" below) — a dependency-policy
+change unrelated to this PR's SQLAlchemy/Alembic evaluation question, kept
+in this PR (rather than split out) to keep the required `research-tests`
+and `dependency-extras-smoke (research)` CI jobs green.
 `tests/unit/test_pr13_evaluation_docs.py` is a documentation-consistency
 regression test, not application code.
 
@@ -2902,9 +2908,11 @@ none is required when adoption is not recommended, per `DECISIONS.md` D2's
 single-ADR rule, reapplied in D10.
 
 **Custom code removed:** none. This PR adds no new production capability and
-removes none — `pyproject.toml`, `src/`, and `scripts/` are byte-for-byte
-unchanged from `main`; `tests/` gained only the documentation-consistency
-regression coverage described above
+removes none — `src/` and `scripts/` are byte-for-byte unchanged from
+`main`; `pyproject.toml` is unchanged except for the `research`-extra-only
+`plotly<7` CI-compatibility pin described above (no SQLAlchemy, Alembic, or
+other adoption-related dependency was added); `tests/` gained only the
+PR 13 record-consistency regression coverage described above
 (`tests/unit/test_pr13_evaluation_docs.py`).
 
 **Tests run:**
@@ -2958,6 +2966,47 @@ passed (4 new regression tests added); `.venv/bin/python -m pytest tests/ -q
 --tb=short` — 3303 passed, 57 skipped, 0 failed; `nox -s ci` — all four
 blocking sessions passed (counts above). No file under `src/`, `scripts/`,
 or `paper_runtime/src/` was touched.
+
+**Correction (2026-08-27, review-fix round): independent oracle now checked
+by set equality, not just count, and a `pyproject.toml` compatibility pin
+added to keep required CI green.** Two issues were fixed on this same
+branch, without starting PR 14:
+
+1. `test_guard_policy_matches_current_production_trigger_protected_tables`
+   compared the independent SQLite trigger oracle's table *count* against
+   the pinned scratch output text, never against the guard's own
+   source-derived discovery set — a production trigger written in syntax
+   the guard's regex doesn't recognize (e.g. `BEFORE UPDATE OF ... ON
+   ...`) would leave the oracle's count unchanged while silently dropping
+   a table from the guard's live protected-table set. Added
+   `test_guard_discovery_set_matches_independent_sqlite_trigger_oracle_exactly`,
+   which extracts and executes the guard's actual discovery function from
+   `scratch_trigger_orm_vs_core.py`'s source via `ast` and asserts its
+   result is exactly the independent oracle's set; verified the adversarial
+   `BEFORE UPDATE OF` syntax is caught by the oracle pattern but missed by
+   the guard's discovery regex, confirming the new test catches a gap the
+   old count-only check could not.
+2. The `research` extra's unconstrained resolve started pulling Plotly
+   7.0.0, which removed the `scattermapbox` trace type vectorbt's bundled
+   default template still references, breaking `import vectorbt` in the
+   required `research-tests` and `dependency-extras-smoke (research)` CI
+   jobs. Bisecting confirmed every plotly 6.x release through 6.9.0 imports
+   cleanly and 7.0.0 is exactly where it breaks. Added a narrow,
+   repository-controlled `plotly<7` compatibility constraint to the
+   `research` extra in `pyproject.toml`, plus
+   `test_research_extra_constrains_plotly_below_scattermapbox_removal` to
+   pin it. This is the one `pyproject.toml` change on this branch: a CI
+   compatibility pin on an already-approved (PR 5) transitive dependency,
+   not a new dependency and not part of the SQLAlchemy/Alembic adoption
+   question this PR evaluates. It is kept in this evaluation-only PR
+   (rather than split into a separately scoped change) because reverting it
+   would break the two required CI jobs above; see the "Scope" and "Custom
+   code removed" notes above for the corresponding disclosure.
+
+Re-run after these fixes: `tests/unit/test_pr13_evaluation_docs.py` — 32
+passed (2 new regression tests added); `nox -s ci` — all four blocking
+sessions passed (`tests` 3179 passed/106 skipped, `paper_tests` 160 passed,
+`safety_typecheck` 0 pyright errors, `migration_smoke` OK).
 
 **Safety:** no trading limit, authorization rule, `paper_books` accounting
 code, or scheduling behavior was touched; no broker, provider, or real

@@ -1,9 +1,12 @@
 """Documentation-consistency regression test for PR 13 (SQLAlchemy/Alembic
 feasibility and ADR — `MASTER_PLAN.md` row 13, `DECISIONS.md` D11).
 
-PR 13 is evaluation-only: no dependency is added to `pyproject.toml`, and no
-file under `src/`, `scripts/`, `paper_runtime/src/`, or `backtest_runtime/`
-is touched. This file pins the facts the evaluation's "defer, not adopt"
+PR 13 is evaluation-only for SQLAlchemy/Alembic: neither dependency is added
+to `pyproject.toml`, and no file under `src/`, `scripts/`,
+`paper_runtime/src/`, or `backtest_runtime/` is touched. A later review fix
+added a disclosed `plotly<7` compatibility constraint to the pre-existing
+`research` extra after Plotly 7 broke required VectorBT CI. This file pins the
+facts the evaluation's "defer, not adopt"
 outcome depends on into the checked-in records
 (`pr13/EVALUATION.md`, `DECISIONS.md` D11, `DEPENDENCY_MATRIX.md`,
 `COMPONENT_MATRIX.md`, `STATUS.md`) so a future edit that silently changes
@@ -26,6 +29,7 @@ DEPENDENCY_MATRIX = ROOT / "docs" / "library-migration" / "DEPENDENCY_MATRIX.md"
 COMPONENT_MATRIX = ROOT / "docs" / "library-migration" / "COMPONENT_MATRIX.md"
 DECISIONS = ROOT / "docs" / "library-migration" / "DECISIONS.md"
 STATUS = ROOT / "docs" / "library-migration" / "STATUS.md"
+MASTER_PLAN = ROOT / "docs" / "library-migration" / "MASTER_PLAN.md"
 PYPROJECT = ROOT / "pyproject.toml"
 TRIGGER_SCRATCH = ROOT / "docs" / "library-migration" / "pr13" / "scratch_trigger_orm_vs_core.py"
 ALEMBIC_SCRATCH = ROOT / "docs" / "library-migration" / "pr13" / "scratch_alembic_linearity.py"
@@ -551,3 +555,31 @@ def test_status_no_file_under_src_scripts_paper_runtime_was_modified():
     idx = section.index("No file under")
     clause = section[idx : idx + 150]
     assert "was modified" in clause
+
+
+def test_status_discloses_pyproject_plotly_compatibility_pin_not_unchanged():
+    """Regression for review finding "Keep the Plotly pin out of the
+    evaluation-only phase": fix round 7 added a `plotly<7` compatibility pin
+    to `pyproject.toml`'s `research` extra to keep the `research-tests` and
+    `dependency-extras-smoke (research)` required CI jobs green, but this
+    section previously still claimed "No change to `pyproject.toml`" and
+    that `pyproject.toml` was "byte-for-byte unchanged from `main`" — an
+    internally inconsistent audit trail an auditor following `STATUS.md`
+    would miss a real dependency-policy change from. Pins that the PR 13
+    section explicitly discloses the `plotly<7` pin and no longer claims
+    `pyproject.toml` is unchanged or byte-for-byte identical to `main`."""
+    text = STATUS.read_text(encoding="utf-8")
+    section = text.split("## Completed work (PR 13)", 1)[1]
+    assert "plotly<7" in section
+    assert "No change to `pyproject.toml`" not in section
+    assert "`pyproject.toml`, `src/`, and `scripts/` are byte-for-byte" not in section
+
+
+def test_master_plan_discloses_plotly_review_fix_without_recasting_pr13():
+    """The canonical plan must not retain an unconditional "No implementation"
+    claim after the branch acquired an unrelated dependency-policy fix."""
+    text = MASTER_PLAN.read_text(encoding="utf-8")
+    row = next(line for line in text.splitlines() if line.startswith("| 13 |"))
+    assert "no SQLAlchemy/Alembic implementation" in row
+    assert "plotly<7" in row
+    assert "unrelated to adopting SQLAlchemy/Alembic" in row
