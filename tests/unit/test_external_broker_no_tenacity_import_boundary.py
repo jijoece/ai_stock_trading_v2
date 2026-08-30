@@ -67,6 +67,17 @@ NamedExpr` wrapped in `ast.Expr`, not `ast.Assign` at all). It also closed a
 transitively-called helper, whose own call-name resolves to `partial`, not
 `retry`/`Retrying`, one level short of where the round-3/4 checks look.
 
+PR 14 review round 6 closed two more: the round-5 nested-block recursion
+handled only `if`/`try`/`with`, missing the identical reassignment nested
+one level inside a top-level `for`/`async for`/`while` block (also not a new
+scope in Python); and a reassignment whose call is *composed* through
+`functools.partial(retry, ...)` (`_do_submit = functools.partial(retry,
+stop=3)(_do_submit)`) on a transitively-called helper, where the callee
+(`value.func`) is itself the `functools.partial(...)` call -- one level
+short of where the round-5 partial-unwrap, written only for decorators,
+looked. Both the decorator check and the reassignment-callee check now share
+one `_resolved_wrapper_name` helper for this unwrap.
+
 See `_find_protected_function_offenders` for the residual gaps this file
 cannot structurally close by parsing `external_broker.py` alone: (1) a
 project-local or third-party wrapper imported under a name unrelated to
@@ -168,6 +179,26 @@ def _resolved_call_name(node: ast.expr, aliases: dict[str, str]) -> str | None:
     return aliases.get(name, name)
 
 
+def _resolved_wrapper_name(node: ast.expr, aliases: dict[str, str]) -> str:
+    """Resolves the ultimate retry-wrapper name a decorator, or the callee of
+    a module-level reassignment's call, resolves to -- unwrapping one level
+    of `functools.partial(retry, ...)` composition (PR 14 review round 5) so
+    the retry-shaped callable it wraps is not hidden behind `partial`'s own
+    name. Shared by the decorator check (`@functools.partial(retry, stop=3)`)
+    and the reassignment-callee check (PR 14 review round 6:
+    `_do_submit = functools.partial(retry, stop=3)(_do_submit)`, where the
+    callee -- `value.func` -- is itself the `functools.partial(...)` call)."""
+    target = node.func if isinstance(node, ast.Call) else node
+    name = _resolved_call_name(target, aliases) or ast.dump(target)
+    if name == "partial" and isinstance(node, ast.Call):
+        wrapped = list(node.args[:1]) + [kw.value for kw in node.keywords if kw.arg == "func"]
+        for candidate in wrapped:
+            wrapped_name = _resolved_call_name(candidate, aliases)
+            if wrapped_name in _RETRY_WRAPPER_CALL_NAMES:
+                return wrapped_name
+    return name
+
+
 def _module_level_functions(tree: ast.Module) -> dict[str, ast.FunctionDef | ast.AsyncFunctionDef]:
     return {
         node.name: node
@@ -247,6 +278,17 @@ def _find_protected_function_offenders(tree: ast.Module) -> list[str]:
     an unrelated function body is not a redefinition of the protected name
     and is deliberately not flagged.
 
+    PR 14 review round 6 closed two more: (1) a module-level reassignment
+    nested inside a top-level `for`/`async for`/`while` block -- like
+    `if`/`try`/`with` before it (round 5), these do not introduce a new
+    scope, so `_rebind_offenders_in_block` now recurses into them too; (2) a
+    reassignment whose call is *composed* through `functools.partial(retry,
+    ...)`, e.g. `_do_submit = functools.partial(retry, stop=3)(_do_submit)`
+    -- the callee (`value.func`) is itself the `functools.partial(...)` call,
+    one level short of where the round-5 decorator-only partial-unwrap
+    looked. Both the decorator check and the reassignment-callee check now
+    share `_resolved_wrapper_name` for this unwrap.
+
     Helpers reached only transitively are checked narrowly -- retry-shaped
     decorators/calls/reassignments only, not "any decorator" -- because
     legitimate, unrelated decorators already exist on functions this path
@@ -281,20 +323,7 @@ def _find_protected_function_offenders(tree: ast.Module) -> list[str]:
         if not is_named_protected and node.name not in helpers:
             continue
         for decorator in node.decorator_list:
-            target = decorator.func if isinstance(decorator, ast.Call) else decorator
-            name = _resolved_call_name(target, aliases) or ast.dump(target)
-            if name == "partial" and isinstance(decorator, ast.Call):
-                # PR 14 review round 5: `functools.partial(retry, ...)` used
-                # as a decorator resolves its own call-name to `partial`, one
-                # level short of the retry-shaped callable it wraps.
-                wrapped = list(decorator.args[:1]) + [
-                    kw.value for kw in decorator.keywords if kw.arg == "func"
-                ]
-                for candidate in wrapped:
-                    wrapped_name = _resolved_call_name(candidate, aliases)
-                    if wrapped_name in _RETRY_WRAPPER_CALL_NAMES:
-                        name = wrapped_name
-                        break
+            name = _resolved_wrapper_name(decorator, aliases)
             if is_named_protected or name in _RETRY_WRAPPER_CALL_NAMES:
                 offenders.append(f"decorator {name!r} on {node.name} at line {decorator.lineno}")
         for statement in node.body:
@@ -321,7 +350,13 @@ def _rebind_offenders_in_block(
     deliberately never recurses into -- a same-named local rebind inside an
     unrelated function or class body is not a redefinition of the module-
     level name); and a bare walrus expression statement (`ast.NamedExpr`
-    wrapped in `ast.Expr`, e.g. `(_do_submit := retry(_do_submit))`)."""
+    wrapped in `ast.Expr`, e.g. `(_do_submit := retry(_do_submit))`).
+
+    PR 14 review round 6 closed a fourth: the same nested-block gap for
+    `for`/`async for`/`while` blocks, which do not introduce a new scope
+    either but were omitted from the round-5 recursion (which only handled
+    `if`/`try`/`with`).
+    """
     offenders: list[str] = []
     for statement in statements:
         target: ast.Name | None = None
@@ -362,6 +397,9 @@ def _rebind_offenders_in_block(
             offenders.extend(_rebind_offenders_in_block(statement.finalbody, helpers, aliases))
         elif isinstance(statement, (ast.With, ast.AsyncWith)):
             offenders.extend(_rebind_offenders_in_block(statement.body, helpers, aliases))
+        elif isinstance(statement, (ast.For, ast.AsyncFor, ast.While)):
+            offenders.extend(_rebind_offenders_in_block(statement.body, helpers, aliases))
+            offenders.extend(_rebind_offenders_in_block(statement.orelse, helpers, aliases))
     return offenders
 
 
@@ -375,7 +413,7 @@ def _rebind_offender(
     is_named_protected = target.id in _PROTECTED_FUNCTIONS
     if not is_named_protected and target.id not in helpers:
         return []
-    name = _resolved_call_name(value.func, aliases) or ast.dump(value.func)
+    name = _resolved_wrapper_name(value.func, aliases)
     if is_named_protected or name in _RETRY_WRAPPER_CALL_NAMES:
         return [f"module-level reassignment of {target.id!r} to {name!r} at line {lineno}"]
     return []
@@ -907,3 +945,114 @@ def test_detector_does_not_flag_an_aliased_dynamic_import_of_an_unrelated_module
     tree = ast.parse(module.read_text())
 
     assert _find_tenacity_import_offenders(tree) == []
+
+
+def test_detector_flags_a_module_level_reassignment_nested_in_a_for_block(tmp_path):
+    """PR 14 review round 6: the round-5 nested-block recursion only handled
+    `if`/`try`/`with`, so the identical reassignment wrapped in a top-level
+    `for:` block (also not a new scope in Python) was invisible to it."""
+    offending_module = tmp_path / "synthetic_external_broker_for_nested_reassignment.py"
+    offending_module.write_text(
+        "from retry_utils import broker_retry\n\n"
+        "def _submit_checkpointed_attempt():\n"
+        "    pass\n\n"
+        "for _ in range(1):\n"
+        "    _submit_checkpointed_attempt = broker_retry(_submit_checkpointed_attempt)\n"
+    )
+
+    tree = ast.parse(offending_module.read_text())
+
+    assert _find_protected_function_offenders(tree) == [
+        "module-level reassignment of '_submit_checkpointed_attempt' to 'broker_retry' at line 7",
+    ]
+
+
+def test_detector_flags_a_module_level_reassignment_nested_in_a_while_block(tmp_path):
+    """Same nested-block gap as the `for` case above, for `while`."""
+    offending_module = tmp_path / "synthetic_external_broker_while_nested_reassignment.py"
+    offending_module.write_text(
+        "from retry_utils import broker_retry\n\n"
+        "def _submit_checkpointed_attempt():\n"
+        "    pass\n\n"
+        "_ready = True\n"
+        "while _ready:\n"
+        "    _submit_checkpointed_attempt = broker_retry(_submit_checkpointed_attempt)\n"
+        "    _ready = False\n"
+    )
+
+    tree = ast.parse(offending_module.read_text())
+
+    assert _find_protected_function_offenders(tree) == [
+        "module-level reassignment of '_submit_checkpointed_attempt' to 'broker_retry' at line 8",
+    ]
+
+
+def test_detector_flags_a_module_level_reassignment_nested_in_an_async_for_block(tmp_path):
+    """Same nested-block gap as the `for` case above, for `async for` -- not
+    executable at true module scope, but still parseable source `ast.parse`
+    must not silently pass over, matching this detector's parse-only,
+    zero-dependency design (it never executes the file it inspects)."""
+    offending_module = tmp_path / "synthetic_external_broker_async_for_nested_reassignment.py"
+    offending_module.write_text(
+        "from retry_utils import broker_retry\n\n"
+        "def _submit_checkpointed_attempt():\n"
+        "    pass\n\n"
+        "async for _ in _aiter():\n"
+        "    _submit_checkpointed_attempt = broker_retry(_submit_checkpointed_attempt)\n"
+    )
+
+    tree = ast.parse(offending_module.read_text())
+
+    assert _find_protected_function_offenders(tree) == [
+        "module-level reassignment of '_submit_checkpointed_attempt' to 'broker_retry' at line 7",
+    ]
+
+
+def test_detector_flags_a_composed_functools_partial_call_reassignment_of_a_transitively_called_helper(
+    tmp_path,
+):
+    """PR 14 review round 6: `_do_submit = functools.partial(retry, stop=3)
+    (_do_submit)` composes the retry wrapper through `functools.partial(...)`
+    on the reassignment's right-hand side, rather than decorating. The callee
+    of the outer call (`value.func`) is itself the `functools.partial(retry,
+    stop=3)` call, so the round-4/5 reassignment check -- which only resolved
+    `value.func`'s own name (`partial`'s callable, not what it wraps) --
+    missed it. Uses a transitively-called helper (the narrower "retry-shaped
+    only" rule) so this exercises the reassignment-callee unwrap
+    specifically, independent of the `is_named_protected` shortcut that
+    already covers the four named functions regardless of call shape."""
+    offending_module = tmp_path / "synthetic_external_broker_partial_call_reassignment.py"
+    offending_module.write_text(
+        "import functools\n"
+        "from retry_utils import retry\n\n"
+        "def _do_submit():\n"
+        "    pass\n\n"
+        "_do_submit = functools.partial(retry, stop=3)(_do_submit)\n\n"
+        "def retry_external_paper_order():\n"
+        "    _do_submit()\n"
+    )
+
+    tree = ast.parse(offending_module.read_text())
+
+    assert _find_protected_function_offenders(tree) == [
+        "module-level reassignment of '_do_submit' to 'retry' at line 7",
+    ]
+
+
+def test_detector_does_not_flag_an_unrelated_composed_functools_partial_call_reassignment(tmp_path):
+    """Guards against overreach: a reassignment composed through
+    `functools.partial` wrapping something other than `retry`/`Retrying`,
+    on a name outside `_PROTECTED_FUNCTIONS` and not transitively called by
+    one, must not be flagged."""
+    module = tmp_path / "synthetic_external_broker_unrelated_partial_call_reassignment.py"
+    module.write_text(
+        "import functools\n"
+        "from retry_utils import some_unrelated_factory\n\n"
+        "def unrelated_helper():\n"
+        "    pass\n\n"
+        "unrelated_helper = functools.partial(some_unrelated_factory, stop=3)(unrelated_helper)\n"
+    )
+
+    tree = ast.parse(module.read_text())
+
+    assert _find_protected_function_offenders(tree) == []
