@@ -4,69 +4,57 @@
 
 - Repository: `/Users/jijopaul/workspace/ai_stock_trading_v2`
 - Branch: `migration/14-apscheduler-tenacity-feasibility`
-- Reviewed HEAD: `ffdefb0c2e494ae3ef22f2b8c314e146b6e3b0c4`
-- Subject: Record PR 14 fix round 2: transitive submission-helper guard closed
-- Claude commits reviewed: 4f261aa81b77117c711bc77c4a4045f58863d444,76b399d1a270388425fb28884962b8a4c852ddf6
+- Reviewed HEAD: `b388928cee56dcbb0f1f3d5f6a5c69bc7c76e64c`
+- Subject: Record PR 14 fix round 4: module-level-reassignment and aliased/keyword dynamic-import bypasses closed
+- Claude commits reviewed: 82860bcb28f730d983f1100cc3639fb092883f68
 - Review scope: FULL_PR
 - Reviewed base: `c32021ef75174bc2271971626eb928fff83d1069`
 - GitHub PR: #32
-- Fix round: 2
+- Fix round: 4
 - Trigger: local Git `post-commit`
 - Review status: FIXES_APPLIED_PENDING_REVIEW
 - Highest priority: none
 - Finding count: 0
-- Fix commit: `82860bcb28f730d983f1100cc3639fb092883f68`
+- Fix commit: `409244cf42dfe0d4980a923c9b0dd60a95f5b3e1`
 
 ## Resolution
 
-- Confirmed the shared root cause behind all three findings: `_find_protected_function_offenders`
-  matched call names by literal spelling (`retry`/`Retrying`) only, so (1) an import-aliased name
-  (e.g. `from retry_utils import Retrying as broker_retrying` then `broker_retrying(...)`) and
-  (2) a retry-decorated or retry-calling helper function that a protected function delegates to by
-  bare-name call, without itself being named in `_PROTECTED_FUNCTIONS`, both passed with zero
-  offenders. Separately, `_find_tenacity_import_offenders` only recognized static
-  `ast.Import`/`ast.ImportFrom` nodes, missing a dynamic
-  `importlib.import_module("tenacity")`/`__import__("tenacity")` call (the third form named in the
-  P2 GitHub thread). Reproduced all three with synthetic modules before changing any code.
-- `_submit_checkpointed_attempt` (the P1 finding) was already added to `_PROTECTED_FUNCTIONS` in
-  fix round 2 (`76b399d1a270388425fb28884962b8a4c852ddf6`) and remains covered; no further change
-  was needed for that specific function.
+- Confirmed both round-4 findings by reproducing each with a synthetic module against the reviewed
+  detectors before changing any code (same protocol as rounds 1-3):
+  - `_find_protected_function_offenders` never inspected a *module-level reassignment* of a
+    protected or transitively-called name, e.g. `_submit_checkpointed_attempt = broker_retry(
+    _submit_checkpointed_attempt)` immediately after the `def`. That statement touches neither the
+    function's own `decorator_list` nor its body, so both the decorator check and the inner-call
+    check walked right past it, returning `[]`.
+  - `_find_tenacity_import_offenders` compared a dynamic-import call's resolved name against
+    `{"import_module", "__import__"}` using the literal call spelling only, missing an *aliased*
+    local name (`from importlib import import_module as load` then `load("tenacity")`), and scanned
+    only positional `node.args` for the target module name, missing the `name=` *keyword-argument*
+    form both `import_module` and `__import__` accept (`import_module(name="tenacity")`).
 - Fixed in `tests/unit/test_external_broker_no_tenacity_import_boundary.py`:
-  - Added `_resolve_import_aliases`/`_resolved_call_name` to resolve import aliases before
-    comparing a call's name against `{"retry", "Retrying"}`, closing the aliased-import bypass.
-  - Added `_module_level_functions`/`_direct_local_calls`/`_transitively_called_local_helpers` to
-    compute the local, bare-name call graph and apply a narrower check (retry-shaped
-    decorators/calls only, not "any decorator") to every module-level helper transitively reached
-    from the four protected functions. The check is deliberately narrower than the "any decorator"
-    rule kept for the four named functions, because real code already has a legitimate, unrelated
-    decorator that far out (`_order_lease`'s `@contextlib.contextmanager`, called directly by
-    `retry_external_paper_order` and `refresh_retry_preview`) — verified this before implementing,
-    to avoid a false positive against existing code.
-  - Extended `_find_tenacity_import_offenders` to flag `importlib.import_module("tenacity")` and
-    `__import__("tenacity")` calls alongside static imports.
-- Documented one residual, deliberately accepted gap in both the module docstring and
-  `_find_protected_function_offenders`'s docstring: a project-local or third-party wrapper
-  imported under a name unrelated to `retry`/`Retrying`, and never itself calling something by
-  those names (e.g. `from retry_utils import broker_retrying` where `broker_retrying` is an
-  arbitrary-named factory defined in that external module), cannot be distinguished from an
-  ordinary helper call by parsing this one file alone. Closing it would require inspecting an
-  arbitrary external module's source (defeating this test's zero-dependency, always-runs design)
-  or banning all bare imported-name calls in protected code (which would misfire on legitimate
-  future helpers). This is the same category of limitation the module's top docstring already
-  accepted for indirection generally. Recorded as `test_detector_does_not_flag_an_arbitrarily_named_external_factory_call`.
-- Added regression coverage (6 new tests, 14 total in the file):
-  `test_detector_flags_a_synthetic_dynamic_tenacity_import`,
-  `test_detector_flags_an_aliased_retrying_call`,
-  `test_detector_flags_a_retry_decorated_helper_transitively_called_by_a_protected_function`,
-  `test_detector_flags_a_retry_call_inside_a_transitively_called_helper`,
-  `test_detector_does_not_flag_unrelated_decorators_on_transitively_called_helpers` (guards against
-  the `_order_lease` false-positive), and
-  `test_detector_does_not_flag_an_arbitrarily_named_external_factory_call` (documents the accepted
-  gap).
-- Validation passed: 14/14 focused tests in
-  `tests/unit/test_external_broker_no_tenacity_import_boundary.py`, and `nox -s ci` in full
-  (`ci`: success; `tests`: 3197 passed/106 skipped; `paper_tests`: 160 passed;
-  `safety_typecheck`: 0 errors/0 warnings; `migration_smoke`: OK).
+  - `_find_protected_function_offenders` now additionally scans top-level (module-body) `ast.Assign`
+    statements whose value is a call, applying the same strict/narrow split already used for
+    decorators: any call for the four names in `_PROTECTED_FUNCTIONS`, retry-shaped calls only
+    (`{"retry", "Retrying"}`, alias-resolved) for a transitively-called helper. Only top-level
+    assignments are inspected — a same-named local variable inside an unrelated function body is not
+    a redefinition of the protected name and is deliberately not flagged.
+  - `_find_tenacity_import_offenders` now resolves the call's name through the existing
+    `_resolve_import_aliases`/`_resolved_call_name` helpers (already used elsewhere in this file for
+    the `retry`/`Retrying` alias check) before comparing against `{"import_module", "__import__"}`,
+    and checks `name=` keyword arguments alongside positional ones.
+- Added regression coverage (6 new tests, 20 total in the file):
+  `test_detector_flags_a_module_level_reassignment_of_a_protected_function`,
+  `test_detector_flags_a_module_level_reassignment_of_a_transitively_called_helper`,
+  `test_detector_does_not_flag_an_unrelated_module_level_reassignment` (negative case),
+  `test_detector_flags_an_aliased_dynamic_import_of_tenacity`,
+  `test_detector_flags_a_dynamic_import_of_tenacity_via_keyword_argument`, and
+  `test_detector_does_not_flag_an_aliased_dynamic_import_of_an_unrelated_module` (negative case).
+- Validation passed: 20/20 focused tests in
+  `tests/unit/test_external_broker_no_tenacity_import_boundary.py`; 86/86 across that file plus
+  `test_lumibot_import_boundary.py`, `test_pr12_evaluation_docs.py`, `test_pr13_evaluation_docs.py`;
+  and `nox -s ci` in full (`ci`: success; `tests`: 3203 passed/106 skipped; `paper_tests`: 160
+  passed; `safety_typecheck`: 0 errors/0 warnings; `migration_smoke`: OK); `scripts/check_links.sh`:
+  0 errors.
 
 ## Findings
 
@@ -147,3 +135,51 @@ Investigation and conditional remediation: Verify the comment against the curren
 
 Validation: Run the focused regression test and the repository's canonical validation; a subsequent full-PR review must find no remaining defect.
 
+
+### [P2] Investigate post-definition retry wrappers
+
+Commit: `ffdefb0c2e494ae3ef22f2b8c314e146b6e3b0c4`
+
+Location: `tests/unit/test_external_broker_no_tenacity_import_boundary.py:223`
+
+Concern: An active GitHub review thread raises the following potentially valid issue:
+
+> **<sub><sub>![P2 Badge](https://img.shields.io/badge/P2-yellow?style=flat)</sub></sub>  Investigate post-definition retry wrappers**
+> 
+> Fresh evidence after the two earlier fixes is that this detector examines only `FunctionDef` nodes, so a module-level assignment such as `_submit_checkpointed_attempt = broker_retry(_submit_checkpointed_attempt)`—using an indirectly Tenacity-backed helper—leaves both detectors returning `[]` while automatically retrying the actual broker-submission sink. This could produce duplicate paper orders after an ambiguous response. Verify with that synthetic module-level reassignment; if confirmed, detect assignments that replace protected functions and add regression coverage, otherwise record the enforced boundary that prevents such wrapping.
+> 
+> AGENTS.md reference: [AGENTS.md:L60-L62](https://github.com/jijoece/ai_stock_trading_v2/blob/ffdefb0c2e494ae3ef22f2b8c314e146b6e3b0c4/AGENTS.md#L60-L62)
+> 
+> Useful? React with 👍 / 👎.
+
+Evidence: [chatgpt-codex-connector review thread](https://github.com/jijoece/ai_stock_trading_v2/pull/32#discussion_r3889755680) is current, unresolved, and not outdated. Reproduced with a synthetic `_submit_checkpointed_attempt = broker_retry(_submit_checkpointed_attempt)` module-level reassignment: `_find_protected_function_offenders` returned `[]` before the fix.
+
+Potential impact if confirmed: Merging would carry the reported defect into main.
+
+Investigation and conditional remediation: Verified the comment against the current code and reproduced the behavior. Confirmed: fixed by scanning top-level `ast.Assign` statements in `_find_protected_function_offenders` for the same strict/narrow rule split already applied to decorators. See "Resolution" above.
+
+Validation: `test_detector_flags_a_module_level_reassignment_of_a_protected_function`, `test_detector_flags_a_module_level_reassignment_of_a_transitively_called_helper`, and `test_detector_does_not_flag_an_unrelated_module_level_reassignment` (negative case); full `nox -s ci`.
+
+### [P2] Investigate aliased dynamic imports bypassing the guard
+
+Commit: `7b9d88eb4e2d56f354f3d60e84fc8eb898ebeb2d`
+
+Location: `tests/unit/test_external_broker_no_tenacity_import_boundary.py:87`
+
+Concern: An active GitHub review thread raises the following potentially valid issue:
+
+> **<sub><sub>![P2 Badge](https://img.shields.io/badge/P2-yellow?style=flat)</sub></sub>  Investigate aliased dynamic imports bypassing the guard**
+> 
+> Fresh evidence after the claimed dynamic-import fix is that the detector recognizes only calls whose local spelling is exactly `import_module` or `__import__`, and inspects only positional arguments: parsing `from importlib import import_module as load; load("tenacity")` or `importlib.import_module(name="tenacity")` still returns `[]`. If Tenacity is later loaded through either valid form, this structural boundary will pass despite the prohibited dependency being available to wrap the ambiguous broker-submission path. Verify these two synthetic cases; if confirmed, resolve import aliases and keyword arguments here and add regression coverage, otherwise record the separate enforced boundary that rejects them.
+> 
+> AGENTS.md reference: [AGENTS.md:L60-L62](https://github.com/jijoece/ai_stock_trading_v2/blob/7b9d88eb4e2d56f354f3d60e84fc8eb898ebeb2d/AGENTS.md#L60-L62)
+> 
+> Useful? React with 👍 / 👎.
+
+Evidence: [chatgpt-codex-connector review thread](https://github.com/jijoece/ai_stock_trading_v2/pull/32#discussion_r3889784307) is current, unresolved, and not outdated. Reproduced both synthetic cases: `_find_tenacity_import_offenders` returned `[]` for both `load("tenacity")` (aliased `import_module`) and `importlib.import_module(name="tenacity")` (keyword argument) before the fix.
+
+Potential impact if confirmed: Merging would carry the reported defect into main.
+
+Investigation and conditional remediation: Verified the comment against the current code and reproduced both cases. Confirmed: fixed by reusing the existing `_resolve_import_aliases`/`_resolved_call_name` helpers to resolve the call's name before comparison, and checking `name=` keyword arguments alongside positional ones. See "Resolution" above.
+
+Validation: `test_detector_flags_an_aliased_dynamic_import_of_tenacity`, `test_detector_flags_a_dynamic_import_of_tenacity_via_keyword_argument`, and `test_detector_does_not_flag_an_aliased_dynamic_import_of_an_unrelated_module` (negative case); full `nox -s ci`.
