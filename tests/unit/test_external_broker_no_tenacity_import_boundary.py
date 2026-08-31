@@ -88,6 +88,21 @@ import_aliases` now also chains simple `Name = Name` assignments anywhere at
 true module scope (via the new `_module_scope_statements`, matching the
 scope boundary the reassignment scan already enforces).
 
+PR 14 review round 9 closed two more: (1) `_module_level_functions` only
+examined direct children of `tree.body`, so a retry-decorated helper defined
+one level inside a top-level `if`/`try`/`with`/`for`/`while`/`match`/
+`except*` block (still module scope in Python) was invisible to the
+call-graph reachability analysis -- a protected function delegating to it
+went unchecked even though the helper's own decorator was never inspected.
+It now walks the same `_module_scope_statements` traversal already used for
+aliases and reassignments. (2) `_direct_local_calls` resolved a call's bare
+name through the module-scope `aliases` chain (round 8) but not through a
+same-named alias assigned inside the *calling function's own body* (e.g.
+`def retry_external_paper_order(): submit = _do_submit; submit()`), which
+broke the call-graph edge the same way round 8's module-scope gap did. The
+new `_local_aliases_in_block` layers the caller's own simple `Name = Name`
+rebinds on top of `aliases` before that resolution.
+
 See `_find_protected_function_offenders` for the residual gaps this file
 cannot structurally close by parsing `external_broker.py` alone: (1) a
 project-local or third-party wrapper imported under a name unrelated to
@@ -280,11 +295,45 @@ def _resolved_wrapper_name(node: ast.expr, aliases: dict[str, str]) -> str:
 
 
 def _module_level_functions(tree: ast.Module) -> dict[str, ast.FunctionDef | ast.AsyncFunctionDef]:
+    """Every function defined at true module scope, recursing into the same
+    non-scope-introducing `if`/`try`/`with`/`for`/`while`/`match`/`except*`
+    blocks `_module_scope_statements` already recurses into for aliases and
+    reassignments (PR 14 review round 9): a `def` nested one level inside a
+    top-level `if:` block is still a module-level function in Python -- `if`
+    does not introduce a new scope -- but a bare scan of `tree.body`'s direct
+    children missed it, making such a helper (and any retry decorator it
+    carries) invisible to the call-graph reachability analysis below,
+    regardless of whether a protected function calls it."""
     return {
         node.name: node
-        for node in tree.body
+        for node in _module_scope_statements(tree.body)
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
     }
+
+
+def _local_aliases_in_block(
+    statements: list[ast.stmt], aliases: dict[str, str]
+) -> dict[str, str]:
+    """Same simple `Name = Name` chaining `_resolve_import_aliases` performs
+    at module scope, but applied to one function's own statements (via
+    `_module_scope_statements`, so it still never descends into a nested
+    `def`/`class` body). Closes a function-local counterpart of the round-7
+    module-scope assignment-aliasing gap (PR 14 review round 9): `submit =
+    _do_submit` followed by `submit()`, both written inside the calling
+    function's own body rather than at module scope, previously left
+    `submit` unresolved by `_direct_local_calls`."""
+    local_aliases = dict(aliases)
+    for statement in _module_scope_statements(statements):
+        if (
+            isinstance(statement, ast.Assign)
+            and len(statement.targets) == 1
+            and isinstance(statement.targets[0], ast.Name)
+            and isinstance(statement.value, ast.Name)
+        ):
+            target_name = statement.targets[0].id
+            source_name = statement.value.id
+            local_aliases[target_name] = local_aliases.get(source_name, source_name)
+    return local_aliases
 
 
 def _direct_local_calls(
@@ -305,11 +354,20 @@ def _direct_local_calls(
     `_do_submit` unreachable from `entry_points`, so its own `@retry`
     decorator was never even inspected -- the decorator/call checks in
     `_find_protected_function_offenders` only run on functions named
-    directly in `_PROTECTED_FUNCTIONS` or discovered as reachable here."""
+    directly in `_PROTECTED_FUNCTIONS` or discovered as reachable here.
+
+    PR 14 review round 9: the round-8 fix only resolved *module-scope*
+    aliases. A same-named alias assigned inside the calling function's own
+    body (e.g. `def retry_external_paper_order(): submit = _do_submit;
+    submit()`) was invisible to it, breaking the call-graph edge the same
+    way. `_local_aliases_in_block` layers the caller's own simple
+    `Name = Name` rebinds on top of the module-scope `aliases` before
+    resolving each call's bare name."""
+    local_aliases = _local_aliases_in_block(node.body, aliases)
     called = set()
     for inner in ast.walk(node):
         if isinstance(inner, ast.Call) and isinstance(inner.func, ast.Name):
-            resolved = aliases.get(inner.func.id, inner.func.id)
+            resolved = local_aliases.get(inner.func.id, inner.func.id)
             if resolved in local_functions:
                 called.add(resolved)
     return called
@@ -1397,6 +1455,124 @@ def test_detector_does_not_flag_an_unrelated_local_alias_of_a_non_retry_helper(t
         "    pass\n\n"
         "submit = _do_submit\n\n"
         "def retry_external_paper_order():\n"
+        "    submit()\n"
+    )
+
+    tree = ast.parse(module.read_text())
+
+    assert _find_protected_function_offenders(tree) == []
+
+
+def test_detector_flags_a_retry_decorated_helper_defined_inside_an_if_block(tmp_path):
+    """PR 14 review round 9: `_module_level_functions` previously scanned
+    only direct children of `tree.body`, so a retry-decorated helper defined
+    one level inside a top-level `if:` block (still module scope in Python --
+    `if` does not introduce a new scope) was absent from the function catalog
+    `_transitively_called_local_helpers` builds its call graph from. A
+    protected function delegating to such a helper therefore never made it
+    reachable, so the helper's own `@retry` decorator was never inspected."""
+    offending_module = tmp_path / "synthetic_external_broker_if_nested_helper_def.py"
+    offending_module.write_text(
+        "from retry_utils import retry\n\n"
+        "if True:\n"
+        "    @retry\n"
+        "    def _do_submit():\n"
+        "        pass\n\n"
+        "def _submit_checkpointed_attempt():\n"
+        "    _do_submit()\n"
+    )
+
+    tree = ast.parse(offending_module.read_text())
+
+    assert _find_tenacity_import_offenders(tree) == []
+    assert _find_protected_function_offenders(tree) == [
+        "decorator 'retry' on _do_submit at line 4",
+    ]
+
+
+def test_detector_flags_a_retry_decorated_helper_defined_inside_a_match_case(tmp_path):
+    """Same nested-definition gap as the `if` case above, for a `match`
+    statement's `case` body -- also not a new scope in Python, and already
+    recursed into by `_module_scope_statements` for aliases and
+    reassignments, but `_module_level_functions` did not share that
+    traversal before this fix."""
+    offending_module = tmp_path / "synthetic_external_broker_match_case_helper_def.py"
+    offending_module.write_text(
+        "from retry_utils import retry\n\n"
+        "match 1:\n"
+        "    case _:\n"
+        "        @retry\n"
+        "        def _do_submit():\n"
+        "            pass\n\n"
+        "def retry_external_paper_order():\n"
+        "    _do_submit()\n"
+    )
+
+    tree = ast.parse(offending_module.read_text())
+
+    assert _find_protected_function_offenders(tree) == [
+        "decorator 'retry' on _do_submit at line 5",
+    ]
+
+
+def test_detector_does_not_treat_a_closure_as_a_module_level_function(tmp_path):
+    """Guards against overreach from the round-9 `_module_level_functions`
+    recursion: a function nested inside another function's own body is a
+    real new scope, unlike `if`/`try`/`with`/`for`/`while`/`match`, and must
+    never be treated as a module-level definition -- matching the
+    already-documented residual gap that closures nested inside a protected
+    function's own body are outside this call-graph analysis entirely."""
+    module = tmp_path / "synthetic_external_broker_closure_not_module_level.py"
+    module.write_text(
+        "from retry_utils import retry\n\n"
+        "def retry_external_paper_order():\n"
+        "    @retry\n"
+        "    def _inner():\n"
+        "        pass\n"
+        "    _inner()\n"
+    )
+
+    tree = ast.parse(module.read_text())
+
+    assert _find_protected_function_offenders(tree) == []
+
+
+def test_detector_flags_a_retry_decorated_helper_called_only_through_a_function_local_alias(tmp_path):
+    """PR 14 review round 9: the round-8 fix resolved a call's bare name
+    through *module-scope* aliases only. A same-named alias assigned inside
+    the calling function's own body (`submit = _do_submit` followed by
+    `submit()`, both inside `retry_external_paper_order`) broke the
+    call-graph edge to `_do_submit` the same way the round-8 module-scope
+    gap did, leaving its `@retry` decorator uninspected despite being called,
+    indirectly, by a protected function."""
+    offending_module = tmp_path / "synthetic_external_broker_function_local_aliased_helper_call.py"
+    offending_module.write_text(
+        "from retry_utils import retry\n\n"
+        "@retry\n"
+        "def _do_submit():\n"
+        "    pass\n\n"
+        "def retry_external_paper_order():\n"
+        "    submit = _do_submit\n"
+        "    submit()\n"
+    )
+
+    tree = ast.parse(offending_module.read_text())
+
+    assert _find_protected_function_offenders(tree) == [
+        "decorator 'retry' on _do_submit at line 3",
+    ]
+
+
+def test_detector_does_not_flag_an_unrelated_function_local_alias_of_a_non_retry_helper(tmp_path):
+    """Guards against overreach from the round-9 function-local alias
+    resolution: aliasing and calling an ordinary, undecorated helper inside a
+    protected function's own body must not fabricate an offender."""
+    module = tmp_path / "synthetic_external_broker_unrelated_function_local_aliased_call.py"
+    module.write_text(
+        "def _do_submit():\n"
+        "    pass\n\n"
+        "def retry_external_paper_order():\n"
+        "    submit = _do_submit\n"
         "    submit()\n"
     )
 
