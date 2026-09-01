@@ -141,6 +141,37 @@ like a branch merge, since either could be the runtime value) and returns
 as before); and binds every target of a multi-target `ast.Assign` to that
 same resolved value, matching Python's own chained-assignment semantics.
 
+PR 14 review round 12 closed three more: (1) `_local_aliases_in_block` fed
+`_direct_local_calls` a single *end-of-function* alias state, so a harmless
+straight-line reassignment of a local alias *after* the call that actually
+used its earlier, retry-decorated binding (`submit = _do_submit; submit();
+submit = ordinary`) discarded that earlier binding before any call was
+resolved against it, making the already-executed retry-decorated helper
+unreachable. `_accumulate_name_bindings` now takes a `monotonic` flag that
+`_local_aliases_in_block` passes; in monotonic mode a straight-line
+reassignment *unions* with, rather than replaces, a name's prior binding --
+matching the branch-merge behavior round 10 already gave mutually exclusive
+paths -- so every value a local alias feasibly held at any point in the
+function remains resolvable at every call site, regardless of a later
+rebind. (2) `_resolved_wrapper_names`'s `functools.partial(...)` unwrap only
+ever peeled one level, and the inner-call scan in
+`_find_protected_function_offenders` resolved a call's callee through the
+non-partial-aware `_resolved_call_names` besides, so a composed call like
+`functools.partial(retry, stop=3)(_do_submit)()` -- where the *outer* call's
+own callee is itself a `Call` node -- resolved to neither `retry` nor
+`Retrying` no matter how it was inspected. `_resolved_wrapper_names` now
+recurses when a call's callee is itself an `ast.Call`, unwrapping arbitrarily
+deep partial-composition chains, and the inner-call scan now calls it
+directly (passing the whole `ast.Call`, not just its `.func`) instead of
+`_resolved_call_names`. (3) that same inner-call scan resolved every callee
+through the *module-scope* `aliases` chain only, never through a same-named
+alias assigned inside the calling function's own body (e.g. `broker_retrying
+= Retrying` then `with broker_retrying(): ...`, both inside
+`retry_external_paper_order`) -- the exact function-local-alias gap round 9
+closed for `_direct_local_calls`, but never shared with this scan. It now
+resolves against `_local_aliases_in_block`'s per-function state instead of
+the bare module-scope `aliases`, matching `_direct_local_calls`.
+
 See `_find_protected_function_offenders` for the residual gaps this file
 cannot structurally close by parsing `external_broker.py` alone: (1) a
 project-local or third-party wrapper imported under a name unrelated to
@@ -301,7 +332,10 @@ def _resolve_value_names(
 
 
 def _accumulate_name_bindings(
-    statements: list[ast.stmt], state: dict[str, frozenset[str]]
+    statements: list[ast.stmt],
+    state: dict[str, frozenset[str]],
+    *,
+    monotonic: bool = False,
 ) -> dict[str, frozenset[str]]:
     """Threads a name -> {possible resolved names} binding state through a
     block of module- (or function-) scope statements, used to build the
@@ -332,14 +366,36 @@ def _accumulate_name_bindings(
     the new `_resolve_value_names`: a multi-target `ast.Assign` (`first =
     submit = _do_submit`) now binds every target, not just a single one, and
     an `ast.IfExp` value (`submit = _do_submit if enabled else ordinary`) now
-    resolves to the union of both arms instead of being ignored entirely."""
+    resolves to the union of both arms instead of being ignored entirely.
+
+    PR 14 review round 12 added the `monotonic` flag: when set, a
+    straight-line reassignment *unions* the newly resolved value with the
+    name's prior binding instead of replacing it, exactly like
+    `_merge_binding_states` already treats mutually exclusive branches as
+    alternatives that must both survive. `_local_aliases_in_block` passes
+    `monotonic=True` (propagated unchanged to every recursive call below): a
+    call site inside the same function may have already executed against an
+    earlier local-alias binding before a later, unrelated reassignment of
+    that same name, so the earlier value must stay resolvable everywhere in
+    the function, not just up to the point of the overwrite. The default
+    (`monotonic=False`, real overwrite on straight-line reassignment) is
+    unchanged for `_resolve_import_aliases`, where only a name's final
+    module-scope binding is ever consulted -- decorators and reassignment
+    callees both resolve at module-def time, not at some earlier call
+    site."""
     for statement in statements:
         if isinstance(statement, ast.Assign):
             name_targets = [t for t in statement.targets if isinstance(t, ast.Name)]
             if len(name_targets) == len(statement.targets):
                 resolved = _resolve_value_names(statement.value, state)
                 if resolved is not None:
-                    state = {**state, **{t.id: resolved for t in name_targets}}
+                    if monotonic:
+                        state = {
+                            **state,
+                            **{t.id: state.get(t.id, frozenset()) | resolved for t in name_targets},
+                        }
+                    else:
+                        state = {**state, **{t.id: resolved for t in name_targets}}
         elif (
             isinstance(statement, ast.AnnAssign)
             and isinstance(statement.target, ast.Name)
@@ -347,31 +403,40 @@ def _accumulate_name_bindings(
         ):
             resolved = _resolve_value_names(statement.value, state)
             if resolved is not None:
-                state = {**state, statement.target.id: resolved}
+                if monotonic:
+                    target_id = statement.target.id
+                    state = {**state, target_id: state.get(target_id, frozenset()) | resolved}
+                else:
+                    state = {**state, statement.target.id: resolved}
         elif isinstance(statement, ast.If):
             state = _merge_binding_states([
-                _accumulate_name_bindings(statement.body, state),
-                _accumulate_name_bindings(statement.orelse, state),
+                _accumulate_name_bindings(statement.body, state, monotonic=monotonic),
+                _accumulate_name_bindings(statement.orelse, state, monotonic=monotonic),
             ])
         elif isinstance(statement, _TRY_NODE_TYPES):
-            branch_states = [_accumulate_name_bindings(statement.body, state)]
+            branch_states = [_accumulate_name_bindings(statement.body, state, monotonic=monotonic)]
             for handler in statement.handlers:
-                branch_states.append(_accumulate_name_bindings(handler.body, state))
-            branch_states.append(_accumulate_name_bindings(statement.orelse, state))
+                branch_states.append(
+                    _accumulate_name_bindings(handler.body, state, monotonic=monotonic)
+                )
+            branch_states.append(
+                _accumulate_name_bindings(statement.orelse, state, monotonic=monotonic)
+            )
             state = _accumulate_name_bindings(
-                statement.finalbody, _merge_binding_states(branch_states)
+                statement.finalbody, _merge_binding_states(branch_states), monotonic=monotonic
             )
         elif isinstance(statement, (ast.With, ast.AsyncWith)):
-            state = _accumulate_name_bindings(statement.body, state)
+            state = _accumulate_name_bindings(statement.body, state, monotonic=monotonic)
         elif isinstance(statement, (ast.For, ast.AsyncFor, ast.While)):
             state = _merge_binding_states([
                 state,
-                _accumulate_name_bindings(statement.body, state),
-                _accumulate_name_bindings(statement.orelse, state),
+                _accumulate_name_bindings(statement.body, state, monotonic=monotonic),
+                _accumulate_name_bindings(statement.orelse, state, monotonic=monotonic),
             ])
         elif isinstance(statement, ast.Match):
             branch_states = [state] + [
-                _accumulate_name_bindings(case.body, state) for case in statement.cases
+                _accumulate_name_bindings(case.body, state, monotonic=monotonic)
+                for case in statement.cases
             ]
             state = _merge_binding_states(branch_states)
     return state
@@ -431,9 +496,25 @@ def _resolved_wrapper_names(node: ast.expr, aliases: dict[str, frozenset[str]]) 
     `_do_submit = functools.partial(retry, stop=3)(_do_submit)`, where the
     callee -- `value.func` -- is itself the `functools.partial(...)` call).
     Returns a `frozenset` (PR 14 review round 10) since `aliases` may now map
-    a single name to more than one feasible branch-dependent binding."""
+    a single name to more than one feasible branch-dependent binding.
+
+    PR 14 review round 12: the one-level unwrap above only handles a callee
+    (`node.func`) that is a bare `Name`/`Attribute`, e.g. `functools.partial`
+    itself. A *composed* invocation of that partial's result -- e.g.
+    `functools.partial(retry, stop=3)(_do_submit)()`, where the outer call's
+    own callee is itself an `ast.Call` (`functools.partial(retry,
+    stop=3)(_do_submit)`) -- left `target` as that inner `Call` node, which
+    `_resolved_call_names` cannot resolve (it only understands `Name`/
+    `Attribute`), so the composition silently resolved to neither `retry` nor
+    `Retrying`. This now recurses whenever `target` is itself an `ast.Call`,
+    resolving it the same way first, so arbitrarily deep partial-composition
+    chains unwrap one call at a time until a `Name`/`Attribute` callee is
+    reached."""
     target = node.func if isinstance(node, ast.Call) else node
-    names = _resolved_call_names(target, aliases) or frozenset({ast.dump(target)})
+    if isinstance(target, ast.Call):
+        names = _resolved_wrapper_names(target, aliases)
+    else:
+        names = _resolved_call_names(target, aliases) or frozenset({ast.dump(target)})
     if "partial" in names and isinstance(node, ast.Call):
         wrapped = list(node.args[:1]) + [kw.value for kw in node.keywords if kw.arg == "func"]
         wrapped_names: set[str] = set()
@@ -481,8 +562,22 @@ def _local_aliases_in_block(
     branches (`if enabled: submit = _do_submit / else: submit = ordinary`),
     which the round-9 version's single-value dict collapsed to whichever
     branch was visited last, discarding a still-feasible retry-decorated
-    binding."""
-    return _accumulate_name_bindings(statements, aliases)
+    binding.
+
+    PR 14 review round 12: `_accumulate_name_bindings`'s straight-line
+    overwrite semantics -- correct for `_resolve_import_aliases`, where only
+    a name's final binding matters -- were wrong here: a call site inside
+    this same function may already have executed against an *earlier* local
+    alias binding before a later, unrelated straight-line reassignment of
+    that name (`submit = _do_submit; submit(); submit = ordinary`), and the
+    single end-of-function state this used to return had already discarded
+    the earlier, retry-decorated binding before any call was ever resolved
+    against it. Passing `monotonic=True` makes every straight-line
+    reassignment *union* with the name's prior binding instead of replacing
+    it, so every value a local alias feasibly held at any point in the
+    function remains resolvable at every call site in it, regardless of
+    where in program order a later rebind occurs."""
+    return _accumulate_name_bindings(statements, aliases, monotonic=True)
 
 
 def _direct_local_calls(
@@ -623,6 +718,27 @@ def _find_protected_function_offenders(tree: ast.Module) -> list[str]:
     name through the same alias chain before checking call-graph
     membership.
 
+    PR 14 review round 12 closed two more in the inner-call scan below (the
+    decorator scan above, which only ever resolves against module-scope
+    `aliases`, is unaffected -- a decorator always evaluates in the enclosing
+    module scope, never the decorated function's own local scope): (1) it
+    resolved a call's callee through the non-partial-aware
+    `_resolved_call_names` instead of `_resolved_wrapper_names`, so a
+    composed invocation like `functools.partial(retry, stop=3)(_do_submit)()`
+    -- whose own callee is itself an `ast.Call` -- matched neither `retry`
+    nor `Retrying`; it now calls `_resolved_wrapper_names` (extended, PR 14
+    review round 12, to unwrap that composition) on the whole `ast.Call`
+    node instead. (2) it resolved every callee through the *module-scope*
+    `aliases` chain only, so a same-named alias assigned inside the
+    protected/transitively-called function's own body (e.g. `broker_retrying
+    = Retrying` then `with broker_retrying(): ...`) was invisible to it --
+    the identical function-local-alias gap round 9 closed for
+    `_direct_local_calls`'s call-graph edges, but never shared with this
+    scan of a function's own executable calls. It now resolves against
+    `_local_aliases_in_block`'s per-function state (which already layers
+    local rebinds on top of `aliases`) instead of the bare module-scope
+    `aliases`.
+
     Known, accepted residual gap: a project-local or third-party wrapper
     imported under a name that is neither an alias of `retry`/`Retrying` nor
     itself calls something named `retry`/`Retrying` (e.g. `from retry_utils
@@ -652,10 +768,11 @@ def _find_protected_function_offenders(tree: ast.Module) -> list[str]:
             if is_named_protected or matched:
                 name = sorted(matched)[0] if matched else sorted(names)[0]
                 offenders.append(f"decorator {name!r} on {node.name} at line {decorator.lineno}")
+        local_aliases = _local_aliases_in_block(node.body, aliases)
         for statement in node.body:
             for inner in ast.walk(statement):
                 if isinstance(inner, ast.Call):
-                    matched = _resolved_call_names(inner.func, aliases) & _RETRY_WRAPPER_CALL_NAMES
+                    matched = _resolved_wrapper_names(inner, local_aliases) & _RETRY_WRAPPER_CALL_NAMES
                     if matched:
                         offenders.append(
                             f"call to {sorted(matched)[0]!r} inside {node.name} at line {inner.lineno}"
@@ -2092,6 +2209,158 @@ def test_detector_does_not_flag_a_chained_module_scope_alias_of_a_non_retry_name
         "    pass\n\n"
         "def retry_external_paper_order():\n"
         "    _do_submit()\n"
+    )
+
+    tree = ast.parse(module.read_text())
+
+    assert _find_protected_function_offenders(tree) == []
+
+
+def test_detector_flags_a_retry_decorated_helper_called_before_a_later_local_alias_overwrite(tmp_path):
+    """PR 14 review round 12: `_local_aliases_in_block` previously fed
+    `_direct_local_calls` a single *end-of-function* alias state (`_accumulate_
+    name_bindings`'s straight-line overwrite semantics, correct for the
+    module-scope resolver but wrong here), so a harmless local reassignment
+    of `submit` *after* the call that actually invoked the earlier,
+    retry-decorated binding discarded that binding before any call in the
+    function was resolved against it -- making `_do_submit` unreachable from
+    `retry_external_paper_order` even though `submit()` executes it on every
+    call."""
+    offending_module = tmp_path / "synthetic_external_broker_local_alias_overwritten_after_call.py"
+    offending_module.write_text(
+        "from retry_utils import retry\n\n"
+        "@retry\n"
+        "def _do_submit():\n"
+        "    pass\n\n"
+        "def ordinary():\n"
+        "    pass\n\n"
+        "def retry_external_paper_order():\n"
+        "    submit = _do_submit\n"
+        "    submit()\n"
+        "    submit = ordinary\n"
+    )
+
+    tree = ast.parse(offending_module.read_text())
+
+    assert _find_protected_function_offenders(tree) == [
+        "decorator 'retry' on _do_submit at line 3",
+    ]
+
+
+def test_detector_does_not_flag_a_local_alias_overwrite_when_neither_binding_is_retry_decorated(tmp_path):
+    """Guards against overreach from the round-12 monotonic local-alias fix:
+    a local alias reassigned, before or after its call, only ever between two
+    ordinary undecorated helpers must not fabricate an offender."""
+    module = tmp_path / "synthetic_external_broker_unrelated_local_alias_overwrite.py"
+    module.write_text(
+        "def _do_submit():\n"
+        "    pass\n\n"
+        "def ordinary():\n"
+        "    pass\n\n"
+        "def retry_external_paper_order():\n"
+        "    submit = _do_submit\n"
+        "    submit()\n"
+        "    submit = ordinary\n"
+    )
+
+    tree = ast.parse(module.read_text())
+
+    assert _find_protected_function_offenders(tree) == []
+
+
+def test_detector_flags_a_composed_functools_partial_call_invocation_inside_a_protected_function(tmp_path):
+    """PR 14 review round 12: the inner-call scan resolved a call's callee
+    through `_resolved_call_names`, which cannot see through a composed
+    `functools.partial(retry, ...)` invocation whose own callee is itself an
+    `ast.Call` (`functools.partial(retry, stop=3)(_do_submit)`, then invoking
+    that result with `()`). `_resolved_wrapper_names`'s partial-unwrap now
+    recurses through each nested `Call` layer, so this executable
+    composition -- which real Tenacity-style code could use to build a
+    retry-wrapped callable inline, with no decorator and no plain `retry(...)`
+    call for the literal-spelling check to see -- is caught. Every nested
+    `ast.Call` node in the composition independently resolves to `retry`
+    (each layer already carries the unwrapped name once the innermost
+    `functools.partial(retry, ...)` layer resolves), so three offender
+    entries for the one composed expression is the correct, conservative
+    output, not a defect."""
+    offending_module = tmp_path / "synthetic_external_broker_composed_partial_call_invocation.py"
+    offending_module.write_text(
+        "import functools\n"
+        "from retry_utils import retry\n\n"
+        "def _do_submit():\n"
+        "    pass\n\n"
+        "def retry_external_paper_order():\n"
+        "    functools.partial(retry, stop=3)(_do_submit)()\n"
+    )
+
+    tree = ast.parse(offending_module.read_text())
+
+    assert _find_protected_function_offenders(tree) == [
+        "call to 'retry' inside retry_external_paper_order at line 8",
+        "call to 'retry' inside retry_external_paper_order at line 8",
+        "call to 'retry' inside retry_external_paper_order at line 8",
+    ]
+
+
+def test_detector_does_not_flag_an_unrelated_composed_functools_partial_call_invocation(tmp_path):
+    """Guards against overreach from the round-12 recursive partial-unwrap:
+    a composed `functools.partial(...)` invocation wrapping an ordinary,
+    non-retry-shaped callable must not fabricate an offender."""
+    module = tmp_path / "synthetic_external_broker_unrelated_composed_partial_call_invocation.py"
+    module.write_text(
+        "import functools\n\n"
+        "def some_unrelated_factory(*args, **kwargs):\n"
+        "    pass\n\n"
+        "def _do_submit():\n"
+        "    pass\n\n"
+        "def retry_external_paper_order():\n"
+        "    functools.partial(some_unrelated_factory, stop=3)(_do_submit)()\n"
+    )
+
+    tree = ast.parse(module.read_text())
+
+    assert _find_protected_function_offenders(tree) == []
+
+
+def test_detector_flags_a_retrying_context_manager_call_through_a_function_local_alias(tmp_path):
+    """PR 14 review round 12: the inner-call scan resolved every callee
+    through the *module-scope* `aliases` chain only, never through a
+    same-named alias assigned inside the calling function's own body -- the
+    identical function-local-alias gap round 9 closed for
+    `_direct_local_calls`'s call-graph edges, but never shared with this scan
+    of a function's own executable calls. `broker_retrying = Retrying`
+    followed by `with broker_retrying(): ...`, both inside
+    `retry_external_paper_order` itself, previously resolved `broker_retrying`
+    to nothing but its own bare name, missing the `Retrying` context-manager
+    call entirely."""
+    offending_module = tmp_path / "synthetic_external_broker_function_local_retrying_alias_call.py"
+    offending_module.write_text(
+        "from retry_utils import Retrying\n\n"
+        "def retry_external_paper_order():\n"
+        "    broker_retrying = Retrying\n"
+        "    with broker_retrying():\n"
+        "        pass\n"
+    )
+
+    tree = ast.parse(offending_module.read_text())
+
+    assert _find_protected_function_offenders(tree) == [
+        "call to 'Retrying' inside retry_external_paper_order at line 5",
+    ]
+
+
+def test_detector_does_not_flag_a_function_local_alias_call_of_a_non_retry_context_manager(tmp_path):
+    """Guards against overreach from the round-12 fix: a function-local alias
+    of an ordinary, non-retry-shaped callable, called from inside a protected
+    function's own body, must not fabricate an offender."""
+    module = tmp_path / "synthetic_external_broker_unrelated_function_local_alias_call.py"
+    module.write_text(
+        "def _do_submit():\n"
+        "    pass\n\n"
+        "def retry_external_paper_order():\n"
+        "    broker_retrying = _do_submit\n"
+        "    with broker_retrying():\n"
+        "        pass\n"
     )
 
     tree = ast.parse(module.read_text())
