@@ -125,6 +125,22 @@ it the same way the round-7 module-scope resolver missed `ast.AnnAssign`
 before this fix (`_accumulate_name_bindings` now handles both scopes'
 `ast.AnnAssign` uniformly).
 
+PR 14 review round 11 closed two more forms of the same assignment-chaining
+gap `_accumulate_name_bindings` resolves: (1) a *conditional-expression*
+alias (`submit = _do_submit if enabled else ordinary`, an `ast.IfExp` value)
+was invisible because the assignment branch only matched a bare `ast.Name`
+value, so neither feasible arm of the ternary was recorded and the name
+resolved to itself; and (2) a *chained* assignment (`first = submit =
+_do_submit`, one `ast.Assign` with more than one target) was invisible
+because the assignment branch only matched a single-target `ast.Assign`, so
+none of the chained targets were bound at all. `_accumulate_name_bindings`
+now resolves an assignment's value through the new `_resolve_value_names`,
+which recurses through `ast.Name` and `ast.IfExp` (joining both arms exactly
+like a branch merge, since either could be the runtime value) and returns
+`None` for any other expression shape (leaving that assignment unresolved,
+as before); and binds every target of a multi-target `ast.Assign` to that
+same resolved value, matching Python's own chained-assignment semantics.
+
 See `_find_protected_function_offenders` for the residual gaps this file
 cannot structurally close by parsing `external_broker.py` alone: (1) a
 project-local or third-party wrapper imported under a name unrelated to
@@ -262,6 +278,28 @@ def _merge_binding_states(
     return merged
 
 
+def _resolve_value_names(
+    value: ast.expr, state: dict[str, frozenset[str]]
+) -> frozenset[str] | None:
+    """Resolves an assignment's right-hand side to every name it could
+    feasibly evaluate to, or `None` if its shape is not one this dataflow
+    pass understands (leaving the assignment unresolved, as before PR 14
+    review round 11). A bare `ast.Name` resolves through `state` exactly as
+    `_accumulate_name_bindings` always has. An `ast.IfExp` (`a if cond else
+    b`) recurses into both arms and unions them -- like `_merge_binding_
+    states`, since only one arm runs at runtime but either is feasible --
+    closing the round-11 conditional-expression-alias gap."""
+    if isinstance(value, ast.Name):
+        return state.get(value.id, frozenset({value.id}))
+    if isinstance(value, ast.IfExp):
+        body_names = _resolve_value_names(value.body, state)
+        orelse_names = _resolve_value_names(value.orelse, state)
+        if body_names is None or orelse_names is None:
+            return None
+        return body_names | orelse_names
+    return None
+
+
 def _accumulate_name_bindings(
     statements: list[ast.stmt], state: dict[str, frozenset[str]]
 ) -> dict[str, frozenset[str]]:
@@ -288,25 +326,28 @@ def _accumulate_name_bindings(
     alternative is computed independently from the same incoming state and
     then joined via `_merge_binding_states`, so a name flows out bound to
     every value any one reachable path could have given it. Never descends
-    into a nested `def`/`class` body, which do introduce a new scope."""
+    into a nested `def`/`class` body, which do introduce a new scope.
+
+    PR 14 review round 11 widened the assignment forms this recognizes via
+    the new `_resolve_value_names`: a multi-target `ast.Assign` (`first =
+    submit = _do_submit`) now binds every target, not just a single one, and
+    an `ast.IfExp` value (`submit = _do_submit if enabled else ordinary`) now
+    resolves to the union of both arms instead of being ignored entirely."""
     for statement in statements:
-        if (
-            isinstance(statement, ast.Assign)
-            and len(statement.targets) == 1
-            and isinstance(statement.targets[0], ast.Name)
-            and isinstance(statement.value, ast.Name)
-        ):
-            target_name = statement.targets[0].id
-            source_name = statement.value.id
-            state = {**state, target_name: state.get(source_name, frozenset({source_name}))}
+        if isinstance(statement, ast.Assign):
+            name_targets = [t for t in statement.targets if isinstance(t, ast.Name)]
+            if len(name_targets) == len(statement.targets):
+                resolved = _resolve_value_names(statement.value, state)
+                if resolved is not None:
+                    state = {**state, **{t.id: resolved for t in name_targets}}
         elif (
             isinstance(statement, ast.AnnAssign)
             and isinstance(statement.target, ast.Name)
-            and isinstance(statement.value, ast.Name)
+            and statement.value is not None
         ):
-            target_name = statement.target.id
-            source_name = statement.value.id
-            state = {**state, target_name: state.get(source_name, frozenset({source_name}))}
+            resolved = _resolve_value_names(statement.value, state)
+            if resolved is not None:
+                state = {**state, statement.target.id: resolved}
         elif isinstance(statement, ast.If):
             state = _merge_binding_states([
                 _accumulate_name_bindings(statement.body, state),
@@ -1865,6 +1906,192 @@ def test_detector_does_not_flag_a_branch_dependent_local_alias_when_no_branch_is
         "    else:\n"
         "        submit = ordinary\n"
         "    submit()\n"
+    )
+
+    tree = ast.parse(module.read_text())
+
+    assert _find_protected_function_offenders(tree) == []
+
+
+def test_detector_flags_a_retry_decorated_helper_called_through_a_conditional_expression_local_alias(
+    tmp_path,
+):
+    """PR 14 review round 11: `_local_aliases_in_block` (via
+    `_accumulate_name_bindings`) previously matched only a bare `ast.Name`
+    assignment value, so a conditional-expression local alias (`submit =
+    _do_submit if enabled else ordinary`) was invisible to it -- neither arm
+    was recorded -- leaving `_do_submit` unreachable from the protected
+    function that called it only through `submit()`."""
+    offending_module = tmp_path / "synthetic_external_broker_conditional_expression_local_alias.py"
+    offending_module.write_text(
+        "from retry_utils import retry\n\n"
+        "@retry\n"
+        "def _do_submit():\n"
+        "    pass\n\n"
+        "def ordinary():\n"
+        "    pass\n\n"
+        "def retry_external_paper_order():\n"
+        "    submit = _do_submit if enabled else ordinary\n"
+        "    submit()\n"
+    )
+
+    tree = ast.parse(offending_module.read_text())
+
+    assert _find_protected_function_offenders(tree) == [
+        "decorator 'retry' on _do_submit at line 3",
+    ]
+
+
+def test_detector_does_not_flag_a_conditional_expression_local_alias_when_neither_arm_is_retry_decorated(
+    tmp_path,
+):
+    """Guards against overreach from the new conditional-expression alias
+    resolution: when neither feasible arm of a ternary local alias resolves
+    to a retry-decorated helper, calling through that alias must not
+    fabricate an offender."""
+    module = tmp_path / "synthetic_external_broker_conditional_expression_local_alias_negative.py"
+    module.write_text(
+        "def _do_submit():\n"
+        "    pass\n\n"
+        "def ordinary():\n"
+        "    pass\n\n"
+        "def retry_external_paper_order():\n"
+        "    submit = _do_submit if enabled else ordinary\n"
+        "    submit()\n"
+    )
+
+    tree = ast.parse(module.read_text())
+
+    assert _find_protected_function_offenders(tree) == []
+
+
+def test_detector_flags_a_retry_decorated_helper_called_through_a_chained_local_alias(tmp_path):
+    """PR 14 review round 11: `_local_aliases_in_block` previously matched
+    only a single-target `ast.Assign`, so a chained assignment (`first =
+    submit = _do_submit`) left every target -- including `submit` -- entirely
+    unbound, hiding the call-graph edge to `_do_submit` reached only through
+    `submit()`."""
+    offending_module = tmp_path / "synthetic_external_broker_chained_local_alias.py"
+    offending_module.write_text(
+        "from retry_utils import retry\n\n"
+        "@retry\n"
+        "def _do_submit():\n"
+        "    pass\n\n"
+        "def retry_external_paper_order():\n"
+        "    first = submit = _do_submit\n"
+        "    submit()\n"
+    )
+
+    tree = ast.parse(offending_module.read_text())
+
+    assert _find_protected_function_offenders(tree) == [
+        "decorator 'retry' on _do_submit at line 3",
+    ]
+
+
+def test_detector_does_not_flag_a_chained_local_alias_of_a_non_retry_helper(tmp_path):
+    """Guards against overreach from the new multi-target assignment
+    resolution: chaining and calling an ordinary, undecorated helper inside a
+    protected function's own body must not fabricate an offender."""
+    module = tmp_path / "synthetic_external_broker_chained_local_alias_negative.py"
+    module.write_text(
+        "def _do_submit():\n"
+        "    pass\n\n"
+        "def retry_external_paper_order():\n"
+        "    first = submit = _do_submit\n"
+        "    submit()\n"
+    )
+
+    tree = ast.parse(module.read_text())
+
+    assert _find_protected_function_offenders(tree) == []
+
+
+def test_detector_flags_a_module_scope_conditional_expression_aliased_decorator(tmp_path):
+    """Same conditional-expression alias gap as the function-local case
+    above, but at module scope (`_resolve_import_aliases`): `wrapper = retry
+    if enabled else ordinary` followed by `@wrapper` on a transitively-called
+    helper must still be flagged."""
+    offending_module = tmp_path / "synthetic_external_broker_conditional_expression_module_alias.py"
+    offending_module.write_text(
+        "from retry_utils import retry\n\n"
+        "def ordinary(func):\n"
+        "    return func\n\n"
+        "wrapper = retry if enabled else ordinary\n\n"
+        "@wrapper\n"
+        "def _do_submit():\n"
+        "    pass\n\n"
+        "def retry_external_paper_order():\n"
+        "    _do_submit()\n"
+    )
+
+    tree = ast.parse(offending_module.read_text())
+
+    assert _find_protected_function_offenders(tree) == [
+        "decorator 'retry' on _do_submit at line 8",
+    ]
+
+
+def test_detector_does_not_flag_a_module_scope_conditional_expression_alias_when_neither_arm_is_retry_shaped(
+    tmp_path,
+):
+    """Guards against overreach: when neither arm of a module-scope
+    conditional-expression alias resolves to a retry-shaped name, the
+    decorator it feeds must not be flagged."""
+    module = tmp_path / "synthetic_external_broker_conditional_expression_module_alias_negative.py"
+    module.write_text(
+        "def ordinary(func):\n"
+        "    return func\n\n"
+        "def other(func):\n"
+        "    return func\n\n"
+        "wrapper = ordinary if enabled else other\n\n"
+        "@wrapper\n"
+        "def _do_submit():\n"
+        "    pass\n\n"
+        "def retry_external_paper_order():\n"
+        "    _do_submit()\n"
+    )
+
+    tree = ast.parse(module.read_text())
+
+    assert _find_protected_function_offenders(tree) == []
+
+
+def test_detector_flags_a_chained_module_scope_aliased_decorator(tmp_path):
+    """Same chained-assignment gap as the function-local case above, but at
+    module scope: `first = wrapper = retry` must still resolve `wrapper` to
+    `retry` for the `@wrapper` decorator check."""
+    offending_module = tmp_path / "synthetic_external_broker_chained_module_alias.py"
+    offending_module.write_text(
+        "from retry_utils import retry\n\n"
+        "first = wrapper = retry\n\n"
+        "@wrapper\n"
+        "def _do_submit():\n"
+        "    pass\n\n"
+        "def retry_external_paper_order():\n"
+        "    _do_submit()\n"
+    )
+
+    tree = ast.parse(offending_module.read_text())
+
+    assert _find_protected_function_offenders(tree) == [
+        "decorator 'retry' on _do_submit at line 5",
+    ]
+
+
+def test_detector_does_not_flag_a_chained_module_scope_alias_of_a_non_retry_name(tmp_path):
+    """Guards against overreach: chaining an ordinary, non-retry-shaped
+    module-scope name must not fabricate an offender."""
+    module = tmp_path / "synthetic_external_broker_chained_module_alias_negative.py"
+    module.write_text(
+        "def ordinary(func):\n"
+        "    return func\n\n"
+        "first = wrapper = ordinary\n\n"
+        "@wrapper\n"
+        "def _do_submit():\n"
+        "    pass\n\n"
+        "def retry_external_paper_order():\n"
+        "    _do_submit()\n"
     )
 
     tree = ast.parse(module.read_text())
