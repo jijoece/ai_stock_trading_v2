@@ -1,0 +1,4 @@
+stateless next_fire (Friday 09:00 -> next 09:30 weekday slot): 2026-08-28 09:30:00-04:00
+next fire after 2026-09-04 09:31 (expect it to (wrongly) pick Labor Day Monday): 2026-09-07 09:30:00-04:00
+is that date actually a NYSE trading day? No -- 2026-09-07 is Labor Day. CronTrigger has no exchange-calendar awareness; this would require a custom Trigger subclass consulting exchange_calendars, i.e. the same custom code this repository already has in market_calendar.py, not a reduction.
+IntervalTrigger has no persisted-state / catch-up-window API at all -- confirmed via apscheduler.triggers.interval.IntervalTrigger's public surface: ['end_date', 'get_next_fire_time', 'interval', 'interval_length', 'jitter', 'start_date', 'timezone']

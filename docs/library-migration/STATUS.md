@@ -1,35 +1,35 @@
 # Migration Status
 
-**Current phase: PR 13 — SQLAlchemy/Alembic feasibility and ADR — EVALUATED, NOT MERGED**
-(branch `migration/13-sqlalchemy-alembic-feasibility`; `MASTER_PLAN.md` row
-13, `DECISIONS.md` D11). No SQLAlchemy/Alembic implementation — documentation
-(`docs/library-migration/pr13/EVALUATION.md`) and two scratch reproductions
-(`pr13/scratch_trigger_orm_vs_core.py`, `pr13/scratch_alembic_linearity.py`,
-with raw output in `scratch_trigger_output.txt`/`scratch_alembic_output.txt`),
-no production code under `src/`, `scripts/`, or `paper_runtime/src/`;
-`tests/` gained only the documentation-consistency regression coverage
-described below. **Outcome: defer, not added.** Both packages re-verified
-live as OSI-approved MIT; empirical testing against the exact production
-trigger DDL (`real_orders`, `paper_book_cash_ledger`) found no case, across
-six scenarios including an unhandled failed flush and an ORM relationship
-cascade, where SQLAlchemy's ORM masked a trigger-rejected write — the PR 0
-theoretical concern behind this row is withdrawn as unsubstantiated; and
-Alembic's branching revision graph was confirmed constrainable to
-linear-only history matching `storage/schema_version.py`'s existing
-monotonic ledger, but only via a new, unbuilt CI gate, not by any Alembic
-default. Neither finding is a correctness blocker, but neither identifies a
-current capability gap either (`COMPONENT_MATRIX.md`'s "Persistence"/
-"Migrations" rows: the existing hand-written schema/repository layer is not
-broken or unmaintained) — so `sqlalchemy`/`alembic` are **not added** to any
-dependency declaration, and no ADR was produced (none is required when
-adoption is not recommended, per `DECISIONS.md` D2's single-ADR rule). See
-"Completed work (PR 13)" below.
+**Current phase: PR 14 — APScheduler/Tenacity feasibility — EVALUATED, NOT MERGED**
+(branch `migration/14-apscheduler-tenacity-feasibility`; `MASTER_PLAN.md` row
+14, `DECISIONS.md` D12). Both packages re-verified live (APScheduler 3.11.3
+stable, v4 still alpha-only; Tenacity 9.1.4). **Outcome: defer both, not
+added.** APScheduler conflicts with ADR 0005 Decision 1's no-daemon
+architecture in its normal mode of use, and its stateless trigger classes
+alone (tested directly, `pr14/scratch_apscheduler_trigger_gaps.py`) solve
+none of this repository's actual scheduling complexity — a bare
+`CronTrigger` fired on 2026-09-07, a real NYSE Labor Day closure it has no
+concept of, and its trigger classes have no catch-up/idempotency concept at
+all; the existing lease/generation-fencing logic (`paper_recurring_
+scheduler_leases`, `shadow_run_leases`) stays custom regardless, as
+`MASTER_PLAN.md` row 14 already anticipated. Tenacity has no concrete
+current capability gap (`evidence_providers/http_client.py`'s hand-rolled
+backoff already covers `Retry-After`/rate-limiter/injectable-sleep
+behavior), so it is not added either, but — per row 14's explicit
+requirement, independent of the adoption decision —
+`tests/unit/test_external_broker_no_tenacity_import_boundary.py` was added:
+an AST-based structural guard, modeled on the existing
+`test_lumibot_import_boundary.py` precedent, proving `external_broker.py`
+never imports `tenacity`. No production code under `src/`, `scripts/`, or
+`paper_runtime/src/` besides that one new test file was modified; no
+dependency was added to any `pyproject.toml`. See "Completed work (PR 14)"
+below for the full record.
 
-**Next phase: PR 14 — APScheduler/Tenacity feasibility**
-(`MASTER_PLAN.md` row 14), which depends only on PR 1 (already merged). PR 13
-above is now evaluated; row 14 is the next unstarted row whose dependency is
-already satisfied (row 8a remains independent of the numbered sequence, per
-its own note below, and is not "next" in this ordering).
+**Next phase: PR 15 — Structlog migration** (`MASTER_PLAN.md` row 15), which
+depends only on PR 1 (already merged). PR 14 above is now evaluated; row 15
+is the next unstarted row whose dependency is already satisfied (row 8a
+remains independent of the numbered sequence, per its own note below, and is
+not "next" in this ordering).
 
 PR 11 — QuantStats/analytics migration — is **merged** (PR #28, `611b3df`,
 branch `migration/11-quantstats-analytics-parity`; `MASTER_PLAN.md` row
@@ -81,9 +81,14 @@ applied to PR 9's and PR 11's entries elsewhere in this file. See
 
 PR 13 — SQLAlchemy/Alembic feasibility and ADR — is **EVALUATED, NOT
 MERGED** (branch `migration/13-sqlalchemy-alembic-feasibility`;
-`MASTER_PLAN.md` row 13, `DECISIONS.md` D11). See this file's "Current
-phase" note above and "Completed work (PR 13)" below for the full record;
-the next phase is now PR 14 (see above).
+`MASTER_PLAN.md` row 13, `DECISIONS.md` D11). See "Completed work (PR 13)"
+below for the full record.
+
+PR 14 — APScheduler/Tenacity feasibility — is **EVALUATED, NOT MERGED**
+(branch `migration/14-apscheduler-tenacity-feasibility`; `MASTER_PLAN.md`
+row 14, `DECISIONS.md` D12). See this file's "Current phase" note above and
+"Completed work (PR 14)" below for the full record; the next phase is now
+PR 15 (see above).
 
 PR 6 is **merged** (`bbd7a1f`, PR #18) and delivered everything ADR 0009
 Decision 4 requires:
@@ -376,8 +381,11 @@ dependency; PR 3/4/11/15/16 wire the respective libraries into code.
    **Resolved 2026-08-23:** PR 13 ran and the outcome is **defer, do not
    adopt** — see this file's "Completed work (PR 13)" section and
    `DECISIONS.md` D11 for the full record. Was never a blocker for PR 1.
-3. **PR 14 feasibility outcome** (APScheduler lease-coexistence) is unknown
-   until that PR runs — PR 1 does not depend on it.
+3. ~~**PR 14 feasibility outcome**~~ (APScheduler lease-coexistence).
+   **Resolved 2026-08-30:** PR 14 ran and the outcome is **defer, do not
+   adopt** for both APScheduler and Tenacity — see this file's "Completed
+   work (PR 14)" section and `DECISIONS.md` D12 for the full record. Was
+   never a blocker for PR 1.
 
 The root `.[paper]` extra `ResolutionImpossible` finding from an earlier
 draft of this PR is resolved, not deferred: the extra was removed (see
@@ -3017,3 +3025,107 @@ wheel-only `pip install` runs into a disposable scratch virtualenv (never
 the project's own `.venv`) plus two read-only PyPI JSON metadata lookups;
 the scheduler was not enabled; no external paper order of any kind was
 submitted or referenced.
+
+## Completed work (PR 14)
+
+**Scope:** no APScheduler/Tenacity implementation and no dependency added to
+either `pyproject.toml` — documentation
+(`docs/library-migration/pr14/EVALUATION.md`) and one scratch reproduction
+(`docs/library-migration/pr14/scratch_apscheduler_trigger_gaps.py`, raw
+output in `scratch_apscheduler_output.txt`, resolved package versions in
+`scratch_pip_freeze.txt`), plus this file, `DEPENDENCY_MATRIX.md`,
+`COMPONENT_MATRIX.md`, and `DECISIONS.md` (D12). One new test file,
+`tests/unit/test_external_broker_no_tenacity_import_boundary.py` — real
+code, added regardless of the adoption decision per `MASTER_PLAN.md` row
+14's explicit requirement. `tests/unit/test_pr13_evaluation_docs.py` was
+also edited — not to weaken PR 13's own evaluation record, but to fix two
+now-stale assertions that assumed PR 14 was still unresolved (see
+"Correction" below). No other file under `src/`, `scripts/`, or
+`paper_runtime/src/` was modified.
+
+**Outcome: defer both, do not adopt.** APScheduler 3.11.3 (stable; v4
+remains alpha-only) and Tenacity 9.1.4 were re-verified live against the
+PyPI JSON API — both unchanged from the PR 0 record. **APScheduler:** its
+normal mode of use (an in-process `BlockingScheduler`/`AsyncIOScheduler`
+loop) directly conflicts with ADR 0005 Decision 1, an Accepted, unamended
+decision that this repository has "no `while True` loop, no background
+thread, and no self-installing OS schedule anywhere," with recurring
+behavior entirely the external invoker's responsibility — reopening that
+architecture is out of this feasibility PR's bounded scope. The narrower
+"coexist" reading (using only APScheduler's stateless trigger classes for
+due-time computation, never running the scheduler loop) was tested directly:
+a `CronTrigger(hour=9, minute=30, day_of_week="mon-fri")` computed its next
+fire time as 2026-09-07 09:30 ET, a real NYSE Labor Day closure the trigger
+has no concept of — the same market-holiday gap `evaluation/
+market_calendar.py`'s `exchange_calendars` integration (PR 3) already
+solves — and its trigger classes have no catch-up/idempotency concept at
+all, confirmed by inspecting the public API directly. The jobstore/lease
+limitation already recorded at PR 0 was independently re-confirmed at the
+source level: `BaseScheduler`'s internal locks are plain in-process locks,
+not a cross-process distributed lease. **Not added to any dependency
+declaration.** **Tenacity:** no concrete current capability gap —
+`evidence_providers/http_client.py`'s existing hand-rolled backoff already
+covers `Retry-After` parsing, rate-limiter coordination, and a deterministic
+injectable sleep function, with no defect motivating replacement. **Not
+added to any dependency declaration.** However, per row 14's explicit
+requirement, a structural regression test was added regardless:
+`tests/unit/test_external_broker_no_tenacity_import_boundary.py`, an
+AST-based guard modeled on the existing `test_lumibot_import_boundary.py`
+precedent, proving `paper_books/external_broker.py` never imports
+`tenacity` — it runs unconditionally (no `importorskip`, no dependency on
+`tenacity` being installed) and includes a proof test confirming the
+detector fires against a synthetic offending file. No ADR was produced —
+per `DECISIONS.md` D2's single-ADR rule, reapplied at D9/D10/D11/D12, an ADR
+is required only when adoption is recommended, and neither is here.
+
+**Custom code removed:** none. Neither `shadow/scheduler.py`,
+`paper_books/recurring_scheduler.py`, nor `evidence_providers/
+http_client.py` was modified — no existing due-time-computation or retry
+logic changed.
+
+**Correction (2026-08-30, fix round 1): two stale PR 13-transition doc
+tests fixed, no scope change.** `nox -s ci`'s full `tests` session initially
+failed two documentation-consistency regressions, both artifacts of this
+same PR's own edits, not defects in the underlying evaluation:
+
+1. `test_pr12_evaluation_docs.py::test_status_completed_work_review_test_provenance_survives_pr13_current_phase_rewrite`
+   failed because an initial draft of this PR's `STATUS.md` edit inserted a
+   full-detail "Previous phase: PR 13" paragraph at the top of the file,
+   duplicating wording that test pins as living *only* in the single
+   mutable "Current phase" paragraph (the one this test simulates being
+   overwritten on each new phase). Fixed by removing that duplicate
+   paragraph — PR 13's own detail already lives in this file's enduring
+   "## Completed work (PR 13)" section and its own short "PR 13 — ... — is
+   **EVALUATED, NOT MERGED**" recap paragraph elsewhere in this file; no
+   third copy is needed.
+2. `test_pr13_evaluation_docs.py::test_status_remaining_blockers_does_not_contradict_pr13_evaluated`
+   pinned "PR 14 feasibility outcome ... is unknown ... until that PR runs"
+   as expected text in the "Remaining blockers" section — true only for the
+   PR 12->13 transition it was written against. Now that PR 14 has actually
+   resolved its own blocker item in that same section (this PR), that
+   phrasing is gone by design, not by regression. Fixed by narrowing that
+   test to the assertions that remain enduring (PR 13's own resolved marker,
+   no reintroduced self-contradiction) and adding a new
+   `test_status_remaining_blockers_does_not_contradict_pr14_evaluated`,
+   mirroring the same pattern for PR 14's own resolved marker — so a future
+   PR 15 that stales *this* PR's blocker item will fail the same way, not
+   silently pass.
+
+Neither fix touched `pr13/EVALUATION.md`, `DECISIONS.md` D11, or any
+non-STATUS.md PR 13 record; PR 13's own evaluation outcome, defer/not-adopt
+ruling, and every fact `test_pr13_evaluation_docs.py`'s other tests pin are
+unchanged.
+
+**Tests run:**
+- `.venv/bin/python -m pytest tests/unit/test_external_broker_no_tenacity_import_boundary.py tests/unit/test_lumibot_import_boundary.py tests/unit/test_pr12_evaluation_docs.py tests/unit/test_pr13_evaluation_docs.py -q --tb=short` — **69 passed** (post-fix-round-1 re-run).
+- `nox -s ci` (foreground, full suite, post-fix-round-1) — all five sessions passed: `ci` success; `tests` **3186 passed, 106 skipped**; `paper_tests` **160 passed**; `safety_typecheck` **0 errors, 0 warnings**; `migration_smoke` OK.
+- `scripts/check_links.sh` — **186 total, 150 unique, 184 OK, 0 errors, 2 excluded**.
+
+**Safety:** no trading limit, authorization rule, `paper_books` accounting
+code, or scheduling behavior was touched; no broker, provider, or real
+market-data service was called; the only network access was one read-only,
+wheel-only `pip install apscheduler==3.11.3` (plus `sqlalchemy`, to import
+its optional `SQLAlchemyJobStore` docstring) into a disposable scratch
+virtualenv outside the repository (never the project's own `.venv`) and two
+read-only PyPI JSON metadata lookups; the scheduler was not enabled; no
+external paper order of any kind was submitted or referenced.
