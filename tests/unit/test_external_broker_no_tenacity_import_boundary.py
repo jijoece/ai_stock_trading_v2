@@ -172,6 +172,36 @@ closed for `_direct_local_calls`, but never shared with this scan. It now
 resolves against `_local_aliases_in_block`'s per-function state instead of
 the bare module-scope `aliases`, matching `_direct_local_calls`.
 
+PR 14 review round 13 closed three more: (1) the module-scope decorator scan
+resolved every decorator against `_resolve_import_aliases`'s single, *final*
+alias state -- correct for a call inside a function body (Python resolves
+that free variable at call time, after the whole module has finished
+loading), but wrong for a decorator, which evaluates immediately when its
+`def` statement executes: `wrapper = retry; @wrapper def _do_submit(): ...;
+wrapper = ordinary` decorates `_do_submit` with `retry`, and a later,
+unrelated reassignment of `wrapper` cannot retroactively undo that -- yet the
+final-state resolver saw only `ordinary` and missed it. `_decorator_alias_
+states` now records, for every module-scope function definition, the alias
+state accumulated from only the statements that textually precede it, and
+the decorator scan resolves each function's decorators (and, per (3) below,
+default arguments) against that per-definition state instead of the
+whole-module final one. (2) `_resolve_import_aliases`'s import-alias seed
+walked the *entire* tree (`ast.walk(tree)`), so an `import`/`from ... import`
+statement inside an unrelated function or class body -- a real, separate
+scope this file's other alias/rebind scans have always excluded -- was
+recorded as if it were a module-scope binding, letting a same-named nested
+import silently overwrite (or fabricate) a module-level alias any decorator
+or call elsewhere in the file resolves against. The seed is now built from
+`_module_scope_statements` only, the same scope boundary already enforced
+for assignment aliases. (3) a `Retrying(...)`/`retry(...)` call hidden inside
+a protected function's own positional or keyword-argument default (e.g.
+`def retry_external_paper_order(runner=Retrying()): ...`) evaluates
+immediately at `def` time exactly like a decorator, but neither the
+decorator scan (which only inspects `decorator_list`) nor the inner-call scan
+(which only walks `node.body`) ever looked at `node.args.defaults`/
+`kw_defaults`. The decorator scan's call-resolution logic now also walks
+each default value, resolved against the same per-definition alias state.
+
 See `_find_protected_function_offenders` for the residual gaps this file
 cannot structurally close by parsing `external_broker.py` alone: (1) a
 project-local or third-party wrapper imported under a name unrelated to
@@ -336,6 +366,7 @@ def _accumulate_name_bindings(
     state: dict[str, frozenset[str]],
     *,
     monotonic: bool = False,
+    capture: dict[int, dict[str, frozenset[str]]] | None = None,
 ) -> dict[str, frozenset[str]]:
     """Threads a name -> {possible resolved names} binding state through a
     block of module- (or function-) scope statements, used to build the
@@ -382,8 +413,22 @@ def _accumulate_name_bindings(
     unchanged for `_resolve_import_aliases`, where only a name's final
     module-scope binding is ever consulted -- decorators and reassignment
     callees both resolve at module-def time, not at some earlier call
-    site."""
+    site.
+
+    PR 14 review round 13 added the `capture` parameter (propagated
+    unchanged to every recursive call below, like `monotonic`): when given a
+    dict, every `FunctionDef`/`AsyncFunctionDef` statement visited records
+    the incoming `state` -- i.e. the binding state accumulated from only the
+    statements that textually precede it -- keyed by `id(statement)`, before
+    that state is potentially advanced by any later statement. `_decorator_
+    alias_states` uses this to resolve a function's decorators and default
+    arguments (both evaluated immediately, at `def`-time) against the
+    program-order-correct state, instead of `_resolve_import_aliases`'s
+    single whole-module final state, which a later, unrelated reassignment
+    could otherwise have already overwritten by the time it's consulted."""
     for statement in statements:
+        if capture is not None and isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            capture[id(statement)] = state
         if isinstance(statement, ast.Assign):
             name_targets = [t for t in statement.targets if isinstance(t, ast.Name)]
             if len(name_targets) == len(statement.targets):
@@ -410,36 +455,76 @@ def _accumulate_name_bindings(
                     state = {**state, statement.target.id: resolved}
         elif isinstance(statement, ast.If):
             state = _merge_binding_states([
-                _accumulate_name_bindings(statement.body, state, monotonic=monotonic),
-                _accumulate_name_bindings(statement.orelse, state, monotonic=monotonic),
+                _accumulate_name_bindings(statement.body, state, monotonic=monotonic, capture=capture),
+                _accumulate_name_bindings(statement.orelse, state, monotonic=monotonic, capture=capture),
             ])
         elif isinstance(statement, _TRY_NODE_TYPES):
-            branch_states = [_accumulate_name_bindings(statement.body, state, monotonic=monotonic)]
+            branch_states = [
+                _accumulate_name_bindings(statement.body, state, monotonic=monotonic, capture=capture)
+            ]
             for handler in statement.handlers:
                 branch_states.append(
-                    _accumulate_name_bindings(handler.body, state, monotonic=monotonic)
+                    _accumulate_name_bindings(handler.body, state, monotonic=monotonic, capture=capture)
                 )
             branch_states.append(
-                _accumulate_name_bindings(statement.orelse, state, monotonic=monotonic)
+                _accumulate_name_bindings(statement.orelse, state, monotonic=monotonic, capture=capture)
             )
             state = _accumulate_name_bindings(
-                statement.finalbody, _merge_binding_states(branch_states), monotonic=monotonic
+                statement.finalbody,
+                _merge_binding_states(branch_states),
+                monotonic=monotonic,
+                capture=capture,
             )
         elif isinstance(statement, (ast.With, ast.AsyncWith)):
-            state = _accumulate_name_bindings(statement.body, state, monotonic=monotonic)
+            state = _accumulate_name_bindings(
+                statement.body, state, monotonic=monotonic, capture=capture
+            )
         elif isinstance(statement, (ast.For, ast.AsyncFor, ast.While)):
             state = _merge_binding_states([
                 state,
-                _accumulate_name_bindings(statement.body, state, monotonic=monotonic),
-                _accumulate_name_bindings(statement.orelse, state, monotonic=monotonic),
+                _accumulate_name_bindings(statement.body, state, monotonic=monotonic, capture=capture),
+                _accumulate_name_bindings(statement.orelse, state, monotonic=monotonic, capture=capture),
             ])
         elif isinstance(statement, ast.Match):
             branch_states = [state] + [
-                _accumulate_name_bindings(case.body, state, monotonic=monotonic)
+                _accumulate_name_bindings(case.body, state, monotonic=monotonic, capture=capture)
                 for case in statement.cases
             ]
             state = _merge_binding_states(branch_states)
     return state
+
+
+def _import_only_aliases(tree: ast.Module) -> dict[str, frozenset[str]]:
+    """Collects every `import ... as ...` / `from ... import ... as ...`
+    alias declared at true module scope (via `_module_scope_statements`).
+    Used as the seed both `_resolve_import_aliases` and
+    `_decorator_alias_states` (PR 14 review round 13) accumulate assignment
+    aliases on top of.
+
+    PR 14 review round 13: this collection previously walked the *entire*
+    tree (`ast.walk(tree)`), so an import inside an unrelated function or
+    class body -- a real, separate Python scope this file's other alias and
+    rebind scans have always excluded -- was recorded as if it were a
+    module-scope binding. A same-named nested import could therefore
+    silently overwrite (or fabricate) a module-level alias that a decorator
+    or call elsewhere in the file resolves against, e.g. `from retry_utils
+    import retry` at module scope, then `from ordinary_utils import ordinary
+    as retry` inside an unrelated function, masking a genuine `@retry` on a
+    reachable helper. Restricted to `_module_scope_statements`, the same
+    scope boundary `_accumulate_name_bindings`'s assignment handling,
+    `_module_level_functions`, and `_rebind_offenders_in_block` already
+    enforce."""
+    aliases: dict[str, frozenset[str]] = {}
+    for node in _module_scope_statements(tree.body):
+        if isinstance(node, ast.ImportFrom):
+            for alias in node.names:
+                if alias.asname:
+                    aliases[alias.asname] = frozenset({alias.name})
+        elif isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.asname:
+                    aliases[alias.asname] = frozenset({alias.name.split(".")[-1]})
+    return aliases
 
 
 def _resolve_import_aliases(tree: ast.Module) -> dict[str, frozenset[str]]:
@@ -465,18 +550,50 @@ def _resolve_import_aliases(tree: ast.Module) -> dict[str, frozenset[str]]:
     same name's binding on the other branch. Every locally-used name now
     resolves to a `frozenset` of every value it could feasibly hold, built by
     `_accumulate_name_bindings`, which joins branch alternatives instead of
-    letting one overwrite another."""
-    aliases: dict[str, frozenset[str]] = {}
-    for node in ast.walk(tree):
-        if isinstance(node, ast.ImportFrom):
-            for alias in node.names:
-                if alias.asname:
-                    aliases[alias.asname] = frozenset({alias.name})
-        elif isinstance(node, ast.Import):
-            for alias in node.names:
-                if alias.asname:
-                    aliases[alias.asname] = frozenset({alias.name.split(".")[-1]})
-    return _accumulate_name_bindings(tree.body, aliases)
+    letting one overwrite another.
+
+    PR 14 review round 13: the `import ... as ...` seed this accumulates on
+    top of is now built by `_import_only_aliases`, which restricts
+    collection to true module scope (see that function for the nested-import
+    gap this closes). The final-state semantics below are otherwise
+    unchanged and remain correct for their one remaining use -- resolving a
+    bare-name *call* inside a function body, which Python evaluates at call
+    time against the module's fully-loaded final bindings, since a protected
+    function is only ever called after the whole module has finished
+    loading. Decorators and default-argument expressions evaluate at a
+    different time (immediately, at `def`-statement execution) and now use
+    `_decorator_alias_states`'s per-definition state instead."""
+    return _accumulate_name_bindings(tree.body, _import_only_aliases(tree))
+
+
+def _decorator_alias_states(tree: ast.Module) -> dict[int, dict[str, frozenset[str]]]:
+    """Maps each module-scope function definition (by `id(node)`) to the
+    module-scope alias state accumulated from only the statements that
+    textually precede it -- used to resolve that function's own decorators
+    and default-argument expressions, both of which evaluate immediately,
+    when the `def` statement itself executes, not later when the function is
+    called.
+
+    PR 14 review round 13: `_find_protected_function_offenders`'s decorator
+    scan previously resolved every decorator against `_resolve_import_
+    aliases`'s single, whole-module *final* alias state, which reflects only
+    each name's last assignment anywhere in the file. That is the right
+    semantics for a call inside a function body (Python resolves a free
+    variable there against the enclosing module's value at call time, which
+    -- for a name imported or reassigned at module scope -- is whatever the
+    module's last-executed assignment left it as, since a protected function
+    is only ever called after the whole module has finished loading). It is
+    the *wrong* semantics for a decorator: `wrapper = retry; @wrapper def
+    _do_submit(): ...; wrapper = ordinary` decorates `_do_submit` with
+    whatever `wrapper` was bound to at that program point (`retry`), which a
+    later, unrelated reassignment of `wrapper` cannot retroactively undo --
+    yet the final-state resolver saw only `ordinary` and missed it. This
+    walks the same module-scope statement sequence `_resolve_import_aliases`
+    does, but records the alias state *as of* each function definition
+    instead of discarding it once later statements are processed."""
+    capture: dict[int, dict[str, frozenset[str]]] = {}
+    _accumulate_name_bindings(tree.body, _import_only_aliases(tree), capture=capture)
+    return capture
 
 
 def _resolved_call_names(node: ast.expr, aliases: dict[str, frozenset[str]]) -> frozenset[str]:
@@ -739,6 +856,24 @@ def _find_protected_function_offenders(tree: ast.Module) -> list[str]:
     local rebinds on top of `aliases`) instead of the bare module-scope
     `aliases`.
 
+    PR 14 review round 13 closed three more: (1) the decorator scan above
+    previously resolved every decorator against the whole-module *final*
+    alias state from `_resolve_import_aliases`, so a retry-shaped alias used
+    as a decorator before a later, unrelated reassignment of that same name
+    was missed. It now resolves against `_decorator_alias_states`'s
+    per-definition state, which reflects only the statements that precede
+    the function's own `def`. (2) `_resolve_import_aliases`'s import-alias
+    seed is now scope-restricted (see `_import_only_aliases`), so a
+    function-local import can no longer overwrite a module-scope alias this
+    scan or the reachability analysis below depends on. (3) a retry-shaped
+    call hidden in one of the four protected functions' own default
+    arguments (e.g. `def retry_external_paper_order(runner=Retrying()):
+    ...`) evaluates immediately at `def`-time, exactly like a decorator, but
+    neither this scan (which only inspected `decorator_list`) nor the
+    inner-call scan below (which only walks `node.body`) ever looked at
+    `node.args.defaults`/`kw_defaults`. It now does, resolved against the
+    same per-definition state as decorators.
+
     Known, accepted residual gap: a project-local or third-party wrapper
     imported under a name that is neither an alias of `retry`/`Retrying` nor
     itself calls something named `retry`/`Retrying` (e.g. `from retry_utils
@@ -754,6 +889,7 @@ def _find_protected_function_offenders(tree: ast.Module) -> list[str]:
     for the documented, deliberately-accepted current behavior.
     """
     aliases = _resolve_import_aliases(tree)
+    decorator_states = _decorator_alias_states(tree)
     helpers = _transitively_called_local_helpers(tree, _PROTECTED_FUNCTIONS, aliases)
     offenders = []
     for node in ast.walk(tree):
@@ -762,12 +898,25 @@ def _find_protected_function_offenders(tree: ast.Module) -> list[str]:
         is_named_protected = node.name in _PROTECTED_FUNCTIONS
         if not is_named_protected and node.name not in helpers:
             continue
+        definition_aliases = decorator_states.get(id(node), aliases)
         for decorator in node.decorator_list:
-            names = _resolved_wrapper_names(decorator, aliases)
+            names = _resolved_wrapper_names(decorator, definition_aliases)
             matched = names & _RETRY_WRAPPER_CALL_NAMES
             if is_named_protected or matched:
                 name = sorted(matched)[0] if matched else sorted(names)[0]
                 offenders.append(f"decorator {name!r} on {node.name} at line {decorator.lineno}")
+        default_values = list(node.args.defaults) + [
+            value for value in node.args.kw_defaults if value is not None
+        ]
+        for default in default_values:
+            for inner in ast.walk(default):
+                if isinstance(inner, ast.Call):
+                    matched = _resolved_wrapper_names(inner, definition_aliases) & _RETRY_WRAPPER_CALL_NAMES
+                    if matched:
+                        offenders.append(
+                            f"call to {sorted(matched)[0]!r} in a default argument of "
+                            f"{node.name} at line {inner.lineno}"
+                        )
         local_aliases = _local_aliases_in_block(node.body, aliases)
         for statement in node.body:
             for inner in ast.walk(statement):
@@ -2361,6 +2510,159 @@ def test_detector_does_not_flag_a_function_local_alias_call_of_a_non_retry_conte
         "    broker_retrying = _do_submit\n"
         "    with broker_retrying():\n"
         "        pass\n"
+    )
+
+    tree = ast.parse(module.read_text())
+
+    assert _find_protected_function_offenders(tree) == []
+
+
+def test_detector_flags_a_retry_decorated_helper_despite_a_later_module_scope_alias_rebind(tmp_path):
+    """PR 14 review round 13: a decorator evaluates immediately, when its
+    `def` statement executes -- `@wrapper` on `_do_submit` binds whatever
+    `wrapper` resolved to at that program point (`retry`). A later, unrelated
+    reassignment of `wrapper` to an ordinary callable cannot retroactively
+    undo that. The whole-module *final*-state alias resolver previously used
+    for decorator resolution saw only the final `ordinary` binding and missed
+    this entirely."""
+    offending_module = tmp_path / "synthetic_external_broker_program_order_module_alias.py"
+    offending_module.write_text(
+        "from retry_utils import retry\n\n"
+        "wrapper = retry\n\n"
+        "@wrapper\n"
+        "def _do_submit():\n"
+        "    pass\n\n"
+        "wrapper = ordinary\n\n"
+        "def retry_external_paper_order():\n"
+        "    _do_submit()\n"
+    )
+
+    tree = ast.parse(offending_module.read_text())
+
+    assert _find_protected_function_offenders(tree) == [
+        "decorator 'retry' on _do_submit at line 5",
+    ]
+
+
+def test_detector_does_not_flag_a_decorator_fed_by_an_alias_rebound_before_it(tmp_path):
+    """Guards against overreach from the round-13 program-order fix: when a
+    module-scope alias is rebound to an ordinary callable *before* the
+    decorator that uses it, the decorator genuinely receives only that
+    ordinary callable at runtime and must not be flagged."""
+    module = tmp_path / "synthetic_external_broker_program_order_module_alias_negative.py"
+    module.write_text(
+        "from retry_utils import retry\n\n"
+        "wrapper = retry\n"
+        "wrapper = ordinary\n\n"
+        "@wrapper\n"
+        "def _do_submit():\n"
+        "    pass\n\n"
+        "def retry_external_paper_order():\n"
+        "    _do_submit()\n"
+    )
+
+    tree = ast.parse(module.read_text())
+
+    assert _find_protected_function_offenders(tree) == []
+
+
+def test_detector_flags_a_retry_decorated_helper_despite_an_unrelated_function_local_import_alias(tmp_path):
+    """PR 14 review round 13: `_resolve_import_aliases`'s import-alias seed
+    previously walked the entire tree, so a same-named `import ... as ...`
+    inside an unrelated function's own body -- a real, separate scope --
+    overwrote the module-scope `retry` alias in this file's flat alias map,
+    masking the genuine `@retry` decorator on a helper reachable from
+    `retry_external_paper_order`."""
+    offending_module = tmp_path / "synthetic_external_broker_function_local_import_alias.py"
+    offending_module.write_text(
+        "from retry_utils import retry\n\n"
+        "def unrelated():\n"
+        "    from ordinary_utils import ordinary as retry\n\n"
+        "@retry\n"
+        "def _do_submit():\n"
+        "    pass\n\n"
+        "def retry_external_paper_order():\n"
+        "    _do_submit()\n"
+    )
+
+    tree = ast.parse(offending_module.read_text())
+
+    assert _find_protected_function_offenders(tree) == [
+        "decorator 'retry' on _do_submit at line 6",
+    ]
+
+
+def test_detector_does_not_flag_a_module_scope_alias_shadowed_only_by_a_function_local_import(tmp_path):
+    """Guards against overreach from the round-13 import-scoping fix: a
+    function-local import that shadows an unrelated, non-retry-shaped
+    module-scope alias name must not leak out and fabricate a retry-shaped
+    resolution for a decorator that uses the real module-scope binding."""
+    module = tmp_path / "synthetic_external_broker_function_local_import_alias_negative.py"
+    module.write_text(
+        "from ordinary_utils import ordinary as wrapper\n\n"
+        "def unrelated():\n"
+        "    from retry_utils import retry as wrapper\n\n"
+        "@wrapper\n"
+        "def _do_submit():\n"
+        "    pass\n\n"
+        "def retry_external_paper_order():\n"
+        "    _do_submit()\n"
+    )
+
+    tree = ast.parse(module.read_text())
+
+    assert _find_protected_function_offenders(tree) == []
+
+
+def test_detector_flags_a_retry_constructor_in_a_protected_functions_positional_default(tmp_path):
+    """PR 14 review round 13: a `Retrying(...)` call hidden in one of the
+    four protected functions' own positional default argument (e.g. `def
+    retry_external_paper_order(runner=Retrying()): ...`) evaluates
+    immediately at `def`-time, exactly like a decorator, but neither the
+    decorator scan (which only inspects `decorator_list`) nor the inner-call
+    scan (which only walks `node.body`) previously looked at
+    `node.args.defaults`."""
+    offending_module = tmp_path / "synthetic_external_broker_positional_default_retrying.py"
+    offending_module.write_text(
+        "from retry_utils import Retrying\n\n"
+        "def retry_external_paper_order(runner=Retrying()):\n"
+        "    return runner(_submit_checkpointed_attempt)\n"
+    )
+
+    tree = ast.parse(offending_module.read_text())
+
+    assert _find_protected_function_offenders(tree) == [
+        "call to 'Retrying' in a default argument of retry_external_paper_order at line 3",
+    ]
+
+
+def test_detector_flags_a_retry_constructor_in_a_protected_functions_keyword_only_default(tmp_path):
+    """Same default-argument gap as above, but for a keyword-only parameter
+    (`node.args.kw_defaults`, a separate list from `node.args.defaults`)."""
+    offending_module = tmp_path / "synthetic_external_broker_keyword_only_default_retrying.py"
+    offending_module.write_text(
+        "from retry_utils import Retrying\n\n"
+        "def retry_external_paper_order(*, runner=Retrying()):\n"
+        "    return runner(_submit_checkpointed_attempt)\n"
+    )
+
+    tree = ast.parse(offending_module.read_text())
+
+    assert _find_protected_function_offenders(tree) == [
+        "call to 'Retrying' in a default argument of retry_external_paper_order at line 3",
+    ]
+
+
+def test_detector_does_not_flag_an_ordinary_factory_call_in_a_protected_functions_default(tmp_path):
+    """Guards against overreach from the round-13 default-argument scan: a
+    default argument built from an ordinary, non-retry-shaped factory call
+    must not fabricate an offender."""
+    module = tmp_path / "synthetic_external_broker_ordinary_default_negative.py"
+    module.write_text(
+        "def ordinary_factory():\n"
+        "    return None\n\n"
+        "def retry_external_paper_order(runner=ordinary_factory()):\n"
+        "    return runner(_submit_checkpointed_attempt)\n"
     )
 
     tree = ast.parse(module.read_text())
