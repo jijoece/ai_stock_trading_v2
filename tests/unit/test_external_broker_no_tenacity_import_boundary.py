@@ -728,6 +728,7 @@ def _direct_local_calls(
     node: ast.FunctionDef | ast.AsyncFunctionDef,
     local_functions: dict[str, ast.FunctionDef | ast.AsyncFunctionDef],
     aliases: dict[str, frozenset[str]],
+    definition_aliases: dict[str, frozenset[str]],
 ) -> set[str]:
     """Bare-name calls only (`helper(...)`), never attribute calls
     (`repo.helper(...)`), so an unrelated method that happens to share a
@@ -768,9 +769,26 @@ def _direct_local_calls(
     resolves those the same way, and its bindings are merged in before
     resolving each call's bare name, so a retry-decorated helper injected
     through a default argument and then invoked is just as reachable as one
-    assigned to a local alias."""
+    assigned to a local alias.
+
+    PR 15 review round 2 (finding 5): a default value evaluates once, at
+    `def`-time, in the module scope *as of that `def` statement* -- exactly
+    like a decorator, and unlike a call inside the body, which Python only
+    resolves once the function is later called, after the whole module has
+    finished loading. `_parameter_default_aliases` previously resolved
+    against `aliases`, the same whole-module *final* state `_local_aliases_
+    in_block` correctly uses for body calls, so `alias = helper` immediately
+    followed by `def retry_external_paper_order(fn=alias): fn()` and then a
+    later, unrelated `alias = ordinary` reported no offender: the final
+    state saw only `ordinary`. `definition_aliases` -- the caller's
+    per-definition snapshot from `_decorator_alias_states`, the same one
+    `_find_protected_function_offenders` already uses for this function's
+    own decorators and default-argument retry-shaped calls -- is now passed
+    to `_parameter_default_aliases` instead, so a default-bound helper
+    resolves against the alias state that existed when Python actually
+    bound it."""
     local_aliases = _merge_binding_states(
-        [_local_aliases_in_block(node.body, aliases), _parameter_default_aliases(node, aliases)]
+        [_local_aliases_in_block(node.body, aliases), _parameter_default_aliases(node, definition_aliases)]
     )
     called = set()
     for inner in ast.walk(node):
@@ -781,7 +799,10 @@ def _direct_local_calls(
 
 
 def _transitively_called_local_helpers(
-    tree: ast.Module, entry_points: frozenset[str], aliases: dict[str, frozenset[str]],
+    tree: ast.Module,
+    entry_points: frozenset[str],
+    aliases: dict[str, frozenset[str]],
+    decorator_states: dict[int, dict[str, frozenset[str]]],
 ) -> dict[str, ast.FunctionDef | ast.AsyncFunctionDef]:
     """The module-level functions in this file reachable (directly or
     indirectly, by bare-name call, resolving simple aliases of that name)
@@ -789,7 +810,14 @@ def _transitively_called_local_helpers(
     "retry-decorated helper transitively called by the broker-call
     boundary" gap: a wrapper need not sit on one of the four named
     functions directly if it can instead sit on a helper one of them
-    delegates to (PR 14 review round 3)."""
+    delegates to (PR 14 review round 3).
+
+    PR 15 review round 2 (finding 5): `decorator_states` -- the same
+    per-definition alias snapshot `_find_protected_function_offenders`
+    already builds via `_decorator_alias_states` -- is looked up per node
+    and threaded into `_direct_local_calls` so a callee's own default
+    arguments resolve against the alias state as of that callee's `def`,
+    not the whole-module final state (see `_direct_local_calls`)."""
     local_functions = _module_level_functions(tree)
     reachable: dict[str, ast.FunctionDef | ast.AsyncFunctionDef] = {}
     seen = set(entry_points)
@@ -799,7 +827,8 @@ def _transitively_called_local_helpers(
         node = local_functions.get(name)
         if node is None:
             continue
-        for callee in _direct_local_calls(node, local_functions, aliases):
+        definition_aliases = decorator_states.get(id(node), aliases)
+        for callee in _direct_local_calls(node, local_functions, aliases, definition_aliases):
             if callee in seen:
                 continue
             seen.add(callee)
@@ -929,7 +958,7 @@ def _find_protected_function_offenders(tree: ast.Module) -> list[str]:
     """
     aliases = _resolve_import_aliases(tree)
     decorator_states = _decorator_alias_states(tree)
-    helpers = _transitively_called_local_helpers(tree, _PROTECTED_FUNCTIONS, aliases)
+    helpers = _transitively_called_local_helpers(tree, _PROTECTED_FUNCTIONS, aliases, decorator_states)
     offenders = []
     for node in ast.walk(tree):
         if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
@@ -1358,6 +1387,39 @@ def test_detector_does_not_flag_an_ordinary_helper_invoked_through_a_default_arg
     tree = ast.parse(module.read_text())
 
     assert _find_protected_function_offenders(tree) == []
+
+
+def test_detector_flags_a_default_bound_helper_via_an_alias_reassigned_after_definition(tmp_path):
+    """PR 15 review round 2 (finding 5): `alias` is bound to the
+    retry-decorated `helper` *before* `retry_external_paper_order`'s `def`
+    executes, so `fn=alias` binds `fn` to `helper` at that program point --
+    exactly like a decorator, Python resolves a default value once, at
+    `def`-time, against whatever the name held then, not against the
+    module's later, unrelated `alias = ordinary` reassignment. Resolving
+    `_parameter_default_aliases` against the whole-module *final* alias
+    state instead of the caller's own per-definition snapshot made this
+    reachable helper -- and its `@retry` decorator -- invisible to both
+    detectors."""
+    module = tmp_path / "synthetic_external_broker_reassigned_default_alias.py"
+    module.write_text(
+        "from retry_utils import retry\n\n"
+        "@retry\n"
+        "def helper():\n"
+        "    pass\n\n"
+        "def ordinary():\n"
+        "    pass\n\n"
+        "alias = helper\n\n"
+        "def retry_external_paper_order(fn=alias):\n"
+        "    fn()\n\n"
+        "alias = ordinary\n"
+    )
+
+    tree = ast.parse(module.read_text())
+
+    assert _find_tenacity_import_offenders(tree) == []
+    assert _find_protected_function_offenders(tree) == [
+        "decorator 'retry' on helper at line 3",
+    ]
 
 
 def test_detector_does_not_flag_an_arbitrarily_named_external_factory_call(tmp_path):

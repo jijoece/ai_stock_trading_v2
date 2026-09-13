@@ -197,3 +197,85 @@ def test_json_output_never_leaks_bearer_token_end_to_end():
     assert "abcdefghij1234567890XYZ" not in raw
     payload = json.loads(raw.strip())
     assert "[REDACTED]" in payload["message"]
+
+
+@pytest.mark.parametrize(
+    "secret",
+    [
+        'nested"secret-with-quote',
+        "nested\\secret-with-backslash",
+        "nested\nsecret-with-newline",
+    ],
+)
+def test_json_output_redacts_registered_secret_in_nested_extra_field_with_json_escaped_characters(secret):
+    """PR 15 review round 2 (findings 1, 2, 4): a registered secret
+    containing a character JSON must escape (a quote, backslash, or
+    control character) no longer survives verbatim as a contiguous
+    substring once `JSONRenderer` serializes it, so the old post-render
+    `redact()` pass over the fully rendered line could never find it.
+    Redaction must now happen on the raw nested value before serialization
+    escapes it."""
+    logging_config.register_secret(secret)
+    buffer = _configure_capturing(json_output=True)
+    log = logging_config.get_logger("unit_test")
+    log.info("event", extra={"context": {"value": secret}})
+    raw = buffer.getvalue()
+    payload = json.loads(raw.strip())
+    assert payload["context"]["value"] == "[REDACTED]"
+    assert "nested" not in raw or "REDACTED" in raw
+
+
+def test_json_output_redacts_account_number_extra_field_by_key():
+    """PR 15 review round 2 (finding 3): the pre-migration formatter only
+    ever surfaced eight allowlisted `extra` fields, so an account number
+    passed via `extra={"account_number": ...}` never reached the JSON
+    payload. `ExtraAdder` now surfaces every extra field, and an account
+    number matches none of `_SECRET_PATTERNS`' key names, so it must be
+    redacted by key alone to preserve this module's documented "no ...
+    account number ... may reach a log line" contract."""
+    buffer = _configure_capturing(json_output=True)
+    log = logging_config.get_logger("unit_test")
+    log.info("order filled", extra={"account_number": "123456789"})
+    raw = buffer.getvalue()
+    assert "123456789" not in raw
+    payload = json.loads(raw.strip())
+    assert payload["account_number"] == "[REDACTED]"
+
+
+def test_json_output_redacts_nested_non_string_sensitive_field_by_key():
+    """A sensitive key's value must be redacted regardless of its type
+    (e.g. an account number logged as an int), and regardless of nesting
+    depth."""
+    buffer = _configure_capturing(json_output=True)
+    log = logging_config.get_logger("unit_test")
+    log.info("order filled", extra={"context": {"account_number": 123456789}})
+    raw = buffer.getvalue()
+    assert "123456789" not in raw
+    payload = json.loads(raw.strip())
+    assert payload["context"]["account_number"] == "[REDACTED]"
+
+
+def test_json_output_redacts_sensitive_keys_inside_list_extra_field():
+    buffer = _configure_capturing(json_output=True)
+    log = logging_config.get_logger("unit_test")
+    log.info("event", extra={"items": [{"token": "abcd1234efgh"}, "harmless"]})
+    raw = buffer.getvalue()
+    assert "abcd1234efgh" not in raw
+    payload = json.loads(raw.strip())
+    assert payload["items"][0]["token"] == "[REDACTED]"
+    assert payload["items"][1] == "harmless"
+
+
+def test_json_output_does_not_redact_unrelated_extra_fields():
+    """Guards against overbroad key-name matching: ordinary operational
+    fields must survive unredacted."""
+    buffer = _configure_capturing(json_output=True)
+    log = logging_config.get_logger("unit_test")
+    log.info(
+        "event",
+        extra={"operation": "list_repos", "duration_ms": 42, "status": "ok"},
+    )
+    payload = json.loads(buffer.getvalue().strip())
+    assert payload["operation"] == "list_repos"
+    assert payload["duration_ms"] == 42
+    assert payload["status"] == "ok"

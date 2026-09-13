@@ -7,9 +7,14 @@ header may reach a log line. `redact()` is applied to every rendered field.
 caller uses stdlib idioms (`%s` positional args, `extra={...}`) and none of
 that changes. Structlog is wired in purely as the formatting layer, via
 `structlog.stdlib.ProcessorFormatter`: it turns every stdlib `LogRecord`
-into a structlog event dict, runs the redaction logic (unchanged from the
-pre-migration implementation, just relocated into a processor) over every
-top-level string field and the final rendered line, then renders it. No
+into a structlog event dict, then runs `redact()` over every string field --
+recursing into nested mappings and sequences so an `extra` value's own
+structure cannot hide a secret from it -- plus, by key name alone, over any
+field whose key looks sensitive (see `_SENSITIVE_KEY_SUBSTRINGS`) even when
+its value matches no secret-shaped pattern. This runs before serialization,
+so a registered secret containing a JSON-escaped character (a quote,
+backslash, or control character) is still redacted; `redact()` also runs a
+second time over the fully rendered line as a final boundary. No
 structlog-native logger
 (`structlog.get_logger()`/`structlog.configure()`) is created anywhere in
 this module.
@@ -19,6 +24,7 @@ from __future__ import annotations
 import logging
 import re
 import sys
+from collections.abc import Mapping
 from typing import Any, MutableMapping
 
 import structlog
@@ -26,8 +32,13 @@ import structlog
 _SECRET_PATTERNS = [
     re.compile(r"(sk-ant-[A-Za-z0-9\-_]{10,})"),
     re.compile(r"(Bearer\s+[A-Za-z0-9\-_.]{10,})", re.IGNORECASE),
-    re.compile(r"(\"?(?:api[_-]?key|token|secret|password|authorization)\"?\s*[:=]\s*\"?)([^\s\"',}]{4,})", re.IGNORECASE),
+    re.compile(r"(\"?(?:api[_-]?key|token|secret|password|authorization|account)\"?\s*[:=]\s*\"?)([^\s\"',}]{4,})", re.IGNORECASE),
 ]
+
+# Field names redacted by key regardless of value shape, because their
+# content (e.g. an account number) does not match any secret-shaped
+# pattern above but is still forbidden by this module's no-leak contract.
+_SENSITIVE_KEY_SUBSTRINGS = ("key", "token", "secret", "password", "authorization", "account")
 
 _RUNTIME_SECRETS: list[str] = []
 
@@ -67,10 +78,34 @@ def _uppercase_level(logger: Any, method_name: str, event_dict: MutableMapping[s
     return event_dict
 
 
+def _is_sensitive_key(key: object) -> bool:
+    return isinstance(key, str) and any(marker in key.lower() for marker in _SENSITIVE_KEY_SUBSTRINGS)
+
+
+def _redact_value(value: Any) -> Any:
+    """Redacts strings and recurses into mappings/sequences, so a secret or
+    sensitive field nested inside an `extra` value is redacted on the raw
+    Python object -- before `JSONRenderer` escapes it -- rather than on the
+    serialized line, where escaping can break the verbatim substring match
+    `redact()` depends on. A mapping key matching a sensitive-field name
+    (e.g. `account_number`) is redacted by key alone, since its value need
+    not match any secret-shaped pattern to be forbidden by this module's
+    no-leak contract."""
+    if isinstance(value, str):
+        return redact(value)
+    if isinstance(value, Mapping):
+        return {
+            key: "[REDACTED]" if _is_sensitive_key(key) else _redact_value(item)
+            for key, item in value.items()
+        }
+    if isinstance(value, (list, tuple)):
+        return type(value)(_redact_value(item) for item in value)
+    return value
+
+
 def _redact_event_dict(logger: Any, method_name: str, event_dict: MutableMapping[str, Any]) -> MutableMapping[str, Any]:
     for key, value in event_dict.items():
-        if isinstance(value, str):
-            event_dict[key] = redact(value)
+        event_dict[key] = "[REDACTED]" if _is_sensitive_key(key) else _redact_value(value)
     return event_dict
 
 
