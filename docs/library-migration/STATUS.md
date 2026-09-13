@@ -3176,8 +3176,10 @@ so every caller's stdlib idioms (`log.info("Wrote %s", path)`,
 `log.info(msg, extra={"operation": ...})`) are unaffected. The pre-migration
 redaction logic (`_SECRET_PATTERNS`, `_RUNTIME_SECRETS`, `register_secret`,
 `redact`) is reused **verbatim**, not reimplemented, from a new
-`_redact_event_dict` processor that redacts every string value in the
-structlog event dict — a superset of the pre-migration
+`_redact_event_dict` processor that redacts every top-level string value in
+the structlog event dict, followed by final rendered-line redaction so nested
+mappings, sequences, and object string representations cannot bypass it — a
+superset of the pre-migration
 `JsonRedactingFormatter`'s fixed 8-key extra-field allowlist
 (`run_id`/`workstream_id`/`batch_id`/`custom_id`/`operation`/`status`/
 `duration_ms`/`error_type`), since `structlog.stdlib.ExtraAdder()` now
@@ -3233,7 +3235,7 @@ classes used to call.
 `structlog.stdlib.ProcessorFormatter`'s processor chain.
 
 **Tests run:**
-- `pytest tests/unit/test_logging_config.py -q --tb=short` — **19 passed**
+- `pytest tests/unit/test_logging_config.py -q --tb=short` — **20 passed**
   (no `importorskip` guard, since `structlog` is now a base dependency —
   unlike the optional-extra pattern in `test_indicators.py`/
   `test_analytics_parity.py`, a missing `structlog` import here is a real
@@ -3250,7 +3252,9 @@ classes used to call.
   plain-text line, into a JSON `extra` field, and a `Bearer` token
   surviving into a JSON `message` field) proving redaction actually fires
   through the full `configure_logging` → `get_logger` → log call →
-  rendered-output path, not just at the unit level of `redact()` alone.
+  rendered-output path, not just at the unit level of `redact()` alone, plus
+  a nested-`extra` regression test proving serialized nested values are also
+  scrubbed.
 - `nox -s ci` (full suite) — all four sessions passed: `tests`
   **3277 passed, 106 skipped**; `paper_tests` **160 passed**;
   `safety_typecheck` **0 errors, 0 warnings**; `migration_smoke` OK.
@@ -3269,6 +3273,6 @@ market-data service was called; no live data was fetched; the scheduler
 was not enabled; no external paper order of any kind was submitted or
 referenced. The one behavioral change relevant to safety is a strict
 improvement: redaction coverage broadened from a fixed 8-key extra-field
-allowlist to every string value in the log event, so a secret passed
-through an `extra=` key the pre-migration allowlist did not happen to name
-is now also scrubbed.
+allowlist to all serialized log-event content, so a secret passed through an
+`extra=` key the pre-migration allowlist did not happen to name — including
+inside a nested value — is now also scrubbed.

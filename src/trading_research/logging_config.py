@@ -74,12 +74,25 @@ def _redact_event_dict(logger: Any, method_name: str, event_dict: MutableMapping
 
 
 def _render_plain(logger: Any, method_name: str, event_dict: MutableMapping[str, Any]) -> str:
-    return "{timestamp} {level} {logger} {message}".format(
-        timestamp=event_dict.get("timestamp", ""),
-        level=event_dict.get("level", ""),
-        logger=event_dict.get("logger", ""),
-        message=event_dict.get("message", ""),
+    return redact(
+        "{timestamp} {level} {logger} {message}".format(
+            timestamp=event_dict.get("timestamp", ""),
+            level=event_dict.get("level", ""),
+            logger=event_dict.get("logger", ""),
+            message=event_dict.get("message", ""),
+        )
     )
+
+
+_JSON_RENDERER = structlog.processors.JSONRenderer()
+
+
+def _render_json(logger: Any, method_name: str, event_dict: MutableMapping[str, Any]) -> str:
+    # Redact the serialized line as the final boundary too.  ExtraAdder may
+    # surface nested mappings, sequences, or objects whose string
+    # representation contains a secret; top-level event-dict redaction alone
+    # cannot see those values before JSONRenderer serializes them.
+    return redact(_JSON_RENDERER(logger, method_name, event_dict))
 
 
 _FOREIGN_PRE_CHAIN = [
@@ -94,7 +107,7 @@ _FOREIGN_PRE_CHAIN = [
 
 
 def configure_logging(level: str = "INFO", json_output: bool = False) -> None:
-    renderer = structlog.processors.JSONRenderer() if json_output else _render_plain
+    renderer = _render_json if json_output else _render_plain
     formatter = structlog.stdlib.ProcessorFormatter(
         foreign_pre_chain=_FOREIGN_PRE_CHAIN,
         processors=[structlog.stdlib.ProcessorFormatter.remove_processors_meta, renderer],

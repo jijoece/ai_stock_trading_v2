@@ -157,6 +157,17 @@ def test_json_output_redacts_registered_secret_in_extra_field():
     assert "[REDACTED]" in payload["operation"]
 
 
+def test_json_output_redacts_registered_secret_in_nested_extra_field():
+    logging_config.register_secret("nested-extra-secret")
+    buffer = _configure_capturing(json_output=True)
+    log = logging_config.get_logger("unit_test")
+    log.info("event", extra={"context": {"token": "nested-extra-secret"}})
+    raw = buffer.getvalue()
+    assert "nested-extra-secret" not in raw
+    payload = json.loads(raw.strip())
+    assert payload["context"]["token"] == "[REDACTED]"
+
+
 def test_json_output_never_leaks_bearer_token_end_to_end():
     buffer = _configure_capturing(json_output=True)
     log = logging_config.get_logger("unit_test")

@@ -1488,8 +1488,10 @@ confirmed by reading every caller (`shadow/alerts.py`,
 caller-analysis discipline used in PR 3/PR 4/PR 9. The redaction logic
 itself (`_SECRET_PATTERNS`, `_RUNTIME_SECRETS`, `register_secret`,
 `redact`) is reused **verbatim** — not reimplemented — from a new
-`_redact_event_dict` processor that applies `redact()` to every string
-value in the structlog event dict (a broadened superset of the
+`_redact_event_dict` processor that applies `redact()` to every top-level
+string value in the structlog event dict, with a second application to the
+fully rendered line so nested mappings, sequences, and object string
+representations cannot bypass redaction (a broadened superset of the
 pre-migration `JsonRedactingFormatter`'s fixed 8-key extra-field allowlist,
 which only scrubbed `run_id`/`workstream_id`/`batch_id`/`custom_id`/
 `operation`/`status`/`duration_ms`/`error_type`; any other `extra=` key is
