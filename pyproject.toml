@@ -21,6 +21,13 @@ dependencies = [
     # base application infrastructure, not an optional extra, once that
     # migration lands. See docs/library-migration/DECISIONS.md.
     "exchange_calendars>=4.13,<5",
+    # PR 15 replaces logging_config.py with this library. Same reasoning as
+    # exchange_calendars above: logging_config.get_logger is imported
+    # unconditionally by shadow/alerts.py, mcp/reddit_adapter.py, and
+    # mcp/capability_inventory.py, all exercised by the default `.[dev]`
+    # test environment -- an optional extra would break `nox -s tests`
+    # rather than gate an opt-in feature. See DECISIONS.md D13.
+    "structlog>=26.1,<27",
 ]
 
 [project.optional-dependencies]
@@ -71,9 +78,10 @@ analytics = [
     "empyrical-reloaded>=0.5.12,<0.6",
     "quantstats-lumi>=1.1.5,<2",
 ]
-# PR 15/16 candidates: structured logging and additive tracing/metrics.
+# PR 16 candidate: additive tracing/metrics SDK only, no exporter configured
+# by default. structlog moved to base dependencies in PR 15 -- see DECISIONS.md
+# D13 -- so this extra is opentelemetry-only now.
 observability = [
-    "structlog>=26.1,<27",
     "opentelemetry-api>=1.44,<2",
     "opentelemetry-sdk>=1.44,<2",
 ]

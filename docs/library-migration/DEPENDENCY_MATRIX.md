@@ -165,8 +165,14 @@ analytics:
                                  outstanding
 
 observability:
-  structlog                    (PR 1 — added; PR 15 wires it in)
   opentelemetry-sdk, opentelemetry-api   (PR 1 — added; PR 16 wires them in)
+
+structlog moved from the `observability` extra to a base dependency in
+PR 15 (DECISIONS.md D13): logging_config.get_logger is imported
+unconditionally by modules the default `.[dev]` test environment already
+exercises (shadow/alerts.py, mcp/reddit_adapter.py,
+mcp/capability_inventory.py), the same caller-analysis finding that moved
+exchange_calendars from a proposed extra to a base dependency in PR 1.
 
 dev:
   pytest, pytest-asyncio        (existing)

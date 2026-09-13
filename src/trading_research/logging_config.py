@@ -1,15 +1,26 @@
-"""Structured logging with centralized secret redaction.
+"""Structured logging with centralized secret redaction (structlog-backed).
 
 No API key, bearer token, OAuth token, account number, or raw credential
-header may reach a log line. redact() is applied to every formatted message.
+header may reach a log line. `redact()` is applied to every rendered field.
+
+`get_logger()` still returns a plain `logging.Logger` — every existing
+caller uses stdlib idioms (`%s` positional args, `extra={...}`) and none of
+that changes. Structlog is wired in purely as the formatting layer, via
+`structlog.stdlib.ProcessorFormatter`: it turns every stdlib `LogRecord`
+into a structlog event dict, runs the redaction logic (unchanged from the
+pre-migration implementation, just relocated into a processor) over every
+string field in that dict, then renders it. No structlog-native logger
+(`structlog.get_logger()`/`structlog.configure()`) is created anywhere in
+this module.
 """
 from __future__ import annotations
 
-import json
 import logging
 import re
 import sys
-from typing import Any
+from typing import Any, MutableMapping
+
+import structlog
 
 _SECRET_PATTERNS = [
     re.compile(r"(sk-ant-[A-Za-z0-9\-_]{10,})"),
@@ -38,37 +49,61 @@ def redact(text: str) -> str:
     return out
 
 
-class RedactingFormatter(logging.Formatter):
-    def format(self, record: logging.LogRecord) -> str:
-        original = super().format(record)
-        return redact(original)
+_TIMESTAMP_FMT = "%Y-%m-%dT%H:%M:%S%z"
 
 
-class JsonRedactingFormatter(logging.Formatter):
-    def format(self, record: logging.LogRecord) -> str:
-        payload: dict[str, Any] = {
-            "timestamp": self.formatTime(record, "%Y-%m-%dT%H:%M:%S%z"),
-            "level": record.levelname,
-            "logger": record.name,
-            "message": redact(record.getMessage()),
-        }
-        for key in ("run_id", "workstream_id", "batch_id", "custom_id", "operation", "status", "duration_ms", "error_type"):
-            value = getattr(record, key, None)
-            if value is not None:
-                payload[key] = redact(str(value)) if isinstance(value, str) else value
-        return redact(json.dumps(payload, default=str))
+def _add_timestamp(logger: Any, method_name: str, event_dict: MutableMapping[str, Any]) -> MutableMapping[str, Any]:
+    record = event_dict.get("_record")
+    if record is not None:
+        event_dict["timestamp"] = logging.Formatter().formatTime(record, _TIMESTAMP_FMT)
+    return event_dict
+
+
+def _uppercase_level(logger: Any, method_name: str, event_dict: MutableMapping[str, Any]) -> MutableMapping[str, Any]:
+    level = event_dict.get("level")
+    if isinstance(level, str):
+        event_dict["level"] = level.upper()
+    return event_dict
+
+
+def _redact_event_dict(logger: Any, method_name: str, event_dict: MutableMapping[str, Any]) -> MutableMapping[str, Any]:
+    for key, value in event_dict.items():
+        if isinstance(value, str):
+            event_dict[key] = redact(value)
+    return event_dict
+
+
+def _render_plain(logger: Any, method_name: str, event_dict: MutableMapping[str, Any]) -> str:
+    return "{timestamp} {level} {logger} {message}".format(
+        timestamp=event_dict.get("timestamp", ""),
+        level=event_dict.get("level", ""),
+        logger=event_dict.get("logger", ""),
+        message=event_dict.get("message", ""),
+    )
+
+
+_FOREIGN_PRE_CHAIN = [
+    structlog.stdlib.add_log_level,
+    _uppercase_level,
+    structlog.stdlib.add_logger_name,
+    structlog.stdlib.ExtraAdder(),
+    _add_timestamp,
+    _redact_event_dict,
+    structlog.processors.EventRenamer("message"),
+]
 
 
 def configure_logging(level: str = "INFO", json_output: bool = False) -> None:
+    renderer = structlog.processors.JSONRenderer() if json_output else _render_plain
+    formatter = structlog.stdlib.ProcessorFormatter(
+        foreign_pre_chain=_FOREIGN_PRE_CHAIN,
+        processors=[structlog.stdlib.ProcessorFormatter.remove_processors_meta, renderer],
+    )
     root = logging.getLogger("trading_research")
     root.setLevel(level)
     root.handlers.clear()
     handler = logging.StreamHandler(stream=sys.stderr)
-    handler.setFormatter(
-        JsonRedactingFormatter() if json_output else RedactingFormatter(
-            "%(asctime)s %(levelname)s %(name)s %(message)s"
-        )
-    )
+    handler.setFormatter(formatter)
     root.addHandler(handler)
     root.propagate = False
 

@@ -234,7 +234,9 @@ jobs:
           - extra: analytics
             import_check: "import empyrical, quantstats_lumi; print(empyrical.__version__, quantstats_lumi.__version__)"
           - extra: observability
-            import_check: "import structlog; import opentelemetry.sdk; print(structlog.__version__)"
+            # structlog moved to base dependencies in PR 15 (DECISIONS.md
+            # D13); this extra is opentelemetry-only now (PR 16 candidate).
+            import_check: "import opentelemetry.sdk; from opentelemetry.sdk import trace; print(trace.__name__)"
           - extra: research
             import_check: "import vectorbt; print(vectorbt.__version__)"
     steps:

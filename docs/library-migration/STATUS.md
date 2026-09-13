@@ -1,35 +1,53 @@
 # Migration Status
 
-**Current phase: PR 14 — APScheduler/Tenacity feasibility — EVALUATED, NOT MERGED**
-(branch `migration/14-apscheduler-tenacity-feasibility`; `MASTER_PLAN.md` row
-14, `DECISIONS.md` D12). Both packages re-verified live (APScheduler 3.11.3
-stable, v4 still alpha-only; Tenacity 9.1.4). **Outcome: defer both, not
-added.** APScheduler conflicts with ADR 0005 Decision 1's no-daemon
-architecture in its normal mode of use, and its stateless trigger classes
-alone (tested directly, `pr14/scratch_apscheduler_trigger_gaps.py`) solve
-none of this repository's actual scheduling complexity — a bare
-`CronTrigger` fired on 2026-09-07, a real NYSE Labor Day closure it has no
-concept of, and its trigger classes have no catch-up/idempotency concept at
-all; the existing lease/generation-fencing logic (`paper_recurring_
-scheduler_leases`, `shadow_run_leases`) stays custom regardless, as
-`MASTER_PLAN.md` row 14 already anticipated. Tenacity has no concrete
-current capability gap (`evidence_providers/http_client.py`'s hand-rolled
-backoff already covers `Retry-After`/rate-limiter/injectable-sleep
-behavior), so it is not added either, but — per row 14's explicit
-requirement, independent of the adoption decision —
-`tests/unit/test_external_broker_no_tenacity_import_boundary.py` was added:
-an AST-based structural guard, modeled on the existing
-`test_lumibot_import_boundary.py` precedent, proving `external_broker.py`
-never imports `tenacity`. No production code under `src/`, `scripts/`, or
-`paper_runtime/src/` besides that one new test file was modified; no
-dependency was added to any `pyproject.toml`. See "Completed work (PR 14)"
+**Current phase: PR 15 — Structlog migration — IMPLEMENTED, NOT MERGED**
+(branch `migration/15-structlog-migration`; `MASTER_PLAN.md` row 15,
+`DECISIONS.md` D13). `logging_config.py`'s `RedactingFormatter`/
+`JsonRedactingFormatter` are replaced in place by
+`structlog.stdlib.ProcessorFormatter`; `get_logger`/`configure_logging`
+keep their exact names and signatures, and the pre-migration `redact`/
+`register_secret` functions are reused verbatim inside a new structlog
+processor rather than reimplemented. **Correction found during caller
+analysis:** `structlog` is promoted from PR 1's planned `observability`
+extra to a base dependency — `logging_config.get_logger` is imported
+unconditionally by `shadow/alerts.py`, `mcp/reddit_adapter.py`, and
+`mcp/capability_inventory.py`, all exercised by the default `.[dev]` test
+environment, the same finding that moved `exchange_calendars` from a
+proposed extra to a base dependency in PR 1. `REMOVAL_MANIFEST.md`'s
+custom-logging-formatter row is closed in this PR (not deferred to PR 17),
+the same early-closure pattern PR 3/PR 4 used. See "Completed work (PR 15)"
 below for the full record.
 
-**Next phase: PR 15 — Structlog migration** (`MASTER_PLAN.md` row 15), which
-depends only on PR 1 (already merged). PR 14 above is now evaluated; row 15
-is the next unstarted row whose dependency is already satisfied (row 8a
-remains independent of the numbered sequence, per its own note below, and is
-not "next" in this ordering).
+**Next phase: PR 16 — OpenTelemetry migration** (`MASTER_PLAN.md` row 16),
+which depends on PR 15 (implemented above, not yet merged).
+
+PR 14 — APScheduler/Tenacity feasibility — is **merged** (PR #32, branch
+`migration/14-apscheduler-tenacity-feasibility`; `MASTER_PLAN.md` row 14,
+`DECISIONS.md` D12). This entry previously read "EVALUATED, NOT MERGED" —
+corrected here, per `AUTOMATION.md`'s "GitHub is authoritative for merge
+status" rule, the same correction pattern already applied to PR 9's/PR 11's/
+PR 12's entries elsewhere in this file. Both packages were re-verified live
+(APScheduler 3.11.3 stable, v4 still alpha-only; Tenacity 9.1.4).
+**Outcome: defer both, not added.** APScheduler conflicts with ADR 0005
+Decision 1's no-daemon architecture in its normal mode of use, and its
+stateless trigger classes alone (tested directly,
+`pr14/scratch_apscheduler_trigger_gaps.py`) solve none of this repository's
+actual scheduling complexity — a bare `CronTrigger` fired on 2026-09-07, a
+real NYSE Labor Day closure it has no concept of, and its trigger classes
+have no catch-up/idempotency concept at all; the existing lease/
+generation-fencing logic (`paper_recurring_scheduler_leases`,
+`shadow_run_leases`) stays custom regardless, as `MASTER_PLAN.md` row 14
+already anticipated. Tenacity has no concrete current capability gap
+(`evidence_providers/http_client.py`'s hand-rolled backoff already covers
+`Retry-After`/rate-limiter/injectable-sleep behavior), so it is not added
+either, but — per row 14's explicit requirement, independent of the
+adoption decision — `tests/unit/test_external_broker_no_tenacity_import_
+boundary.py` was added: an AST-based structural guard, modeled on the
+existing `test_lumibot_import_boundary.py` precedent, proving
+`external_broker.py` never imports `tenacity`. No production code under
+`src/`, `scripts/`, or `paper_runtime/src/` besides that one new test file
+was modified; no dependency was added to any `pyproject.toml`. See
+"Completed work (PR 14)" below for the full record.
 
 PR 11 — QuantStats/analytics migration — is **merged** (PR #28, `611b3df`,
 branch `migration/11-quantstats-analytics-parity`; `MASTER_PLAN.md` row
@@ -3129,3 +3147,128 @@ its optional `SQLAlchemyJobStore` docstring) into a disposable scratch
 virtualenv outside the repository (never the project's own `.venv`) and two
 read-only PyPI JSON metadata lookups; the scheduler was not enabled; no
 external paper order of any kind was submitted or referenced.
+
+## Completed work (PR 15)
+
+**Scope:** `src/trading_research/logging_config.py` (rewritten in place),
+one new test file (`tests/unit/test_logging_config.py`), `pyproject.toml`
+(the correction below), `.github/workflows/ci.yml` (one comment/import-check
+edit, no new job — see "Correction" below for why), plus this file,
+`MASTER_PLAN.md`, `COMPONENT_MATRIX.md`, `DEPENDENCY_MATRIX.md`,
+`REMOVAL_MANIFEST.md`, and `DECISIONS.md` (D13). No other file under
+`src/`, `scripts/`, or `paper_runtime/src/` was modified — every existing
+caller of `logging_config` (`shadow/alerts.py`, `mcp/reddit_adapter.py`,
+`mcp/capability_inventory.py`, `scripts/inventory_mcp_tools.py`) was read
+before this change and needed no edit, since `get_logger`/`configure_logging`
+keep their exact names, signatures, and stdlib-`Logger` return type.
+`paper_runtime/src/trading_paper_runtime/logging_config.py` is a separate,
+independently-maintained module in an isolated distribution (ADR 0002/0009)
+with no `structlog` dependency declared there — out of this PR's scope,
+untouched.
+
+**Outcome: Structlog adopted; `RedactingFormatter`/`JsonRedactingFormatter`
+replaced in place, not left as a parallel legacy path.**
+`structlog.stdlib.ProcessorFormatter` is now the sole formatting layer,
+wired directly onto the `trading_research` root logger's `StreamHandler`;
+no structlog-native logger (`structlog.get_logger()`/`structlog.configure()`)
+is created anywhere — `get_logger()` still returns a plain `logging.Logger`,
+so every caller's stdlib idioms (`log.info("Wrote %s", path)`,
+`log.info(msg, extra={"operation": ...})`) are unaffected. The pre-migration
+redaction logic (`_SECRET_PATTERNS`, `_RUNTIME_SECRETS`, `register_secret`,
+`redact`) is reused **verbatim**, not reimplemented, from a new
+`_redact_event_dict` processor that redacts every string value in the
+structlog event dict — a superset of the pre-migration
+`JsonRedactingFormatter`'s fixed 8-key extra-field allowlist
+(`run_id`/`workstream_id`/`batch_id`/`custom_id`/`operation`/`status`/
+`duration_ms`/`error_type`), since `structlog.stdlib.ExtraAdder()` now
+surfaces *every* `extra=` key, not only those eight, into the redaction
+pass. See `DECISIONS.md` D13 for the full design record, including the one
+disclosed formatting difference (plain-text mode's timestamp unified to the
+same ISO-8601-with-offset format the JSON mode already used, since no
+caller parses that substring).
+
+**Correction found during caller analysis: `structlog` promoted from the
+`observability` extra to a base dependency.** `MASTER_PLAN.md` row 15 and
+PR 1's `DEPENDENCY_MATRIX.md` entry both planned `structlog` as part of the
+optional `observability` extra. Caller analysis for this PR (reading every
+importer of `logging_config` before writing any code, the same discipline
+used in PR 3/PR 4/PR 9) found `shadow/alerts.py`, `mcp/reddit_adapter.py`,
+and `mcp/capability_inventory.py` import `get_logger` unconditionally, and
+are themselves imported by many existing test files that already run in
+the default `.[dev]` environment (e.g. `test_shadow_alerts.py`,
+`test_reddit_fetch.py`, `test_shadow_readiness.py`) — not gated behind any
+opt-in extra the way TA-Lib/VectorBT/empyrical are. Leaving `structlog` as
+an extra would have broken `nox -s tests`/the `main-tests` CI job (both
+install only `.[dev]`) the moment `logging_config.py` imported it
+unconditionally. **Fixed by moving `structlog>=26.1,<27` from the
+`observability` extra into `[project] dependencies`** in `pyproject.toml` —
+the same correction, for the same reason, as PR 1's `exchange_calendars`
+extra-to-base-dependency move. The `observability` extra now contains only
+`opentelemetry-api`/`opentelemetry-sdk` (PR 16's concern);
+`ci.yml`'s `dependency-extras-smoke` matrix's `observability` import check
+was narrowed to opentelemetry only, since structlog is no longer specific
+to that extra. **No new CI job was added** (unlike PR 4/PR 11/PR 5's
+`indicators-tests`/`analytics-tests`/`research-tests` matrices) — because
+`structlog` is a base dependency, `tests/unit/test_logging_config.py`
+already runs, unguarded by any `importorskip`, inside the existing
+blocking `main-tests` job; this mirrors PR 3, which also needed no
+dedicated `exchange_calendars` CI job for the same reason.
+
+**Removal manifest:** `REMOVAL_MANIFEST.md`'s custom-logging-formatter row
+is **closed in this PR, not deferred to PR 17** — the same early-closure
+pattern as the PR 3/PR 4 rows (`MASTER_PLAN.md` row 15 says "Replace
+`logging_config.py`", not "prove parity via a new, additive module and
+leave the original as sole authority" the way row 11's analytics wording
+does). See that file's "PR 15 update" paragraph.
+
+**Custom code removed (deleted in place, not left for a later PR):**
+`RedactingFormatter` and `JsonRedactingFormatter` (both `logging.Formatter`
+subclasses) are fully deleted from `logging_config.py`. No competing
+redaction implementation remains — `_redact_event_dict` is the only
+redaction code path, and it calls the same `redact()` function these
+classes used to call.
+
+**No legacy fallback path remains:** there is no code path in
+`logging_config.py` that formats a log line without going through
+`structlog.stdlib.ProcessorFormatter`'s processor chain.
+
+**Tests run:**
+- `pytest tests/unit/test_logging_config.py -q --tb=short` — **19 passed**
+  (no `importorskip` guard, since `structlog` is now a base dependency —
+  unlike the optional-extra pattern in `test_indicators.py`/
+  `test_analytics_parity.py`, a missing `structlog` import here is a real
+  failure, not an expected skip). Covers: `get_logger`'s stdlib-`Logger`
+  return type and namespace; `configure_logging`'s single-handler/
+  no-propagate setup and idempotent re-configuration; plain-text output
+  (level/logger-name/message, `%s`-positional-argument interpolation);
+  JSON output (`timestamp`/`level`/`logger`/`message` keys, `extra=` field
+  propagation); `register_secret`'s verbatim-value redaction,
+  deduplication, and `None`/empty-value no-ops; every pre-migration
+  `_SECRET_PATTERNS` case (`sk-ant-*`, `Bearer *`, `api_key`/`token`/
+  `secret`/`password`/`authorization` key-value pairs); and three
+  end-to-end leak checks (a registered secret surviving into a rendered
+  plain-text line, into a JSON `extra` field, and a `Bearer` token
+  surviving into a JSON `message` field) proving redaction actually fires
+  through the full `configure_logging` → `get_logger` → log call →
+  rendered-output path, not just at the unit level of `redact()` alone.
+- `nox -s ci` (full suite) — all four sessions passed: `tests`
+  **3277 passed, 106 skipped**; `paper_tests` **160 passed**;
+  `safety_typecheck` **0 errors, 0 warnings**; `migration_smoke` OK.
+- `pytest tests/unit/test_migration_helper.py tests/unit/
+  test_pr12_evaluation_docs.py tests/unit/test_pr13_evaluation_docs.py -q
+  --tb=short` — **147 passed** (re-run after this PR's `STATUS.md`/
+  `MASTER_PLAN.md` edits, confirming the phase-parsing helper and the
+  existing doc-pinning tests from earlier PRs still parse this file
+  correctly).
+- `scripts/check_links.sh` — **192 total, 155 unique, 190 OK, 0 errors,
+  2 excluded**.
+
+**Safety:** no trading limit, authorization rule, `paper_books` accounting
+code, or scheduling behavior was touched; no broker, provider, model, or
+market-data service was called; no live data was fetched; the scheduler
+was not enabled; no external paper order of any kind was submitted or
+referenced. The one behavioral change relevant to safety is a strict
+improvement: redaction coverage broadened from a fixed 8-key extra-field
+allowlist to every string value in the log event, so a secret passed
+through an `extra=` key the pre-migration allowlist did not happen to name
+is now also scrubbed.
