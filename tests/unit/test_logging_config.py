@@ -81,6 +81,27 @@ def test_plain_output_percent_style_positional_args_interpolated():
     assert "%s" not in line
 
 
+def test_plain_output_preserves_and_redacts_exception_traceback():
+    logging_config.register_secret("exception-secret-value")
+    buffer = _configure_capturing(json_output=False)
+    log = logging_config.get_logger("unit_test")
+    try:
+        raise ValueError("exception-secret-value")
+    except ValueError:
+        log.exception("operation failed")
+    line = buffer.getvalue()
+    assert "Traceback (most recent call last)" in line
+    assert "ValueError: [REDACTED]" in line
+    assert "exception-secret-value" not in line
+
+
+def test_plain_output_preserves_stack_info():
+    buffer = _configure_capturing(json_output=False)
+    log = logging_config.get_logger("unit_test")
+    log.info("diagnostic", stack_info=True)
+    assert "Stack (most recent call last)" in buffer.getvalue()
+
+
 def test_json_output_has_expected_keys_and_message():
     buffer = _configure_capturing(json_output=True)
     log = logging_config.get_logger("unit_test")

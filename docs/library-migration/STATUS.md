@@ -3226,23 +3226,24 @@ does). See that file's "PR 15 update" paragraph.
 **Custom code removed (deleted in place, not left for a later PR):**
 `RedactingFormatter` and `JsonRedactingFormatter` (both `logging.Formatter`
 subclasses) are fully deleted from `logging_config.py`. No competing
-redaction implementation remains — `_redact_event_dict` is the only
-redaction code path, and it calls the same `redact()` function these
-classes used to call.
+redaction implementation remains — `_redact_event_dict` and the final
+rendered-line boundary both call the same `redact()` function these classes
+used to call.
 
 **No legacy fallback path remains:** there is no code path in
 `logging_config.py` that formats a log line without going through
 `structlog.stdlib.ProcessorFormatter`'s processor chain.
 
 **Tests run:**
-- `pytest tests/unit/test_logging_config.py -q --tb=short` — **20 passed**
+- `pytest tests/unit/test_logging_config.py -q --tb=short` — **22 passed**
   (no `importorskip` guard, since `structlog` is now a base dependency —
   unlike the optional-extra pattern in `test_indicators.py`/
   `test_analytics_parity.py`, a missing `structlog` import here is a real
   failure, not an expected skip). Covers: `get_logger`'s stdlib-`Logger`
   return type and namespace; `configure_logging`'s single-handler/
   no-propagate setup and idempotent re-configuration; plain-text output
-  (level/logger-name/message, `%s`-positional-argument interpolation);
+  (level/logger-name/message, `%s`-positional-argument interpolation,
+  preserved and redacted exception tracebacks, preserved `stack_info`);
   JSON output (`timestamp`/`level`/`logger`/`message` keys, `extra=` field
   propagation); `register_secret`'s verbatim-value redaction,
   deduplication, and `None`/empty-value no-ops; every pre-migration
@@ -3256,7 +3257,7 @@ classes used to call.
   a nested-`extra` regression test proving serialized nested values are also
   scrubbed.
 - `nox -s ci` (full suite) — all four sessions passed: `tests`
-  **3277 passed, 106 skipped**; `paper_tests` **160 passed**;
+  **3283 passed, 106 skipped**; `paper_tests` **160 passed**;
   `safety_typecheck` **0 errors, 0 warnings**; `migration_smoke` OK.
 - `pytest tests/unit/test_migration_helper.py tests/unit/
   test_pr12_evaluation_docs.py tests/unit/test_pr13_evaluation_docs.py -q

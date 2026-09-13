@@ -9,7 +9,8 @@ that changes. Structlog is wired in purely as the formatting layer, via
 `structlog.stdlib.ProcessorFormatter`: it turns every stdlib `LogRecord`
 into a structlog event dict, runs the redaction logic (unchanged from the
 pre-migration implementation, just relocated into a processor) over every
-string field in that dict, then renders it. No structlog-native logger
+top-level string field and the final rendered line, then renders it. No
+structlog-native logger
 (`structlog.get_logger()`/`structlog.configure()`) is created anywhere in
 this module.
 """
@@ -73,15 +74,34 @@ def _redact_event_dict(logger: Any, method_name: str, event_dict: MutableMapping
     return event_dict
 
 
+def _add_plain_diagnostics(
+    logger: Any, method_name: str, event_dict: MutableMapping[str, Any]
+) -> MutableMapping[str, Any]:
+    """Preserve stdlib Formatter's exception and stack-info behavior."""
+    exc_info = event_dict.get("exc_info")
+    if isinstance(exc_info, tuple):
+        event_dict["_exception_text"] = logging.Formatter().formatException(exc_info)
+    stack_info = event_dict.get("stack_info")
+    if isinstance(stack_info, str):
+        event_dict["_stack_info"] = stack_info
+    return event_dict
+
+
 def _render_plain(logger: Any, method_name: str, event_dict: MutableMapping[str, Any]) -> str:
-    return redact(
-        "{timestamp} {level} {logger} {message}".format(
-            timestamp=event_dict.get("timestamp", ""),
-            level=event_dict.get("level", ""),
-            logger=event_dict.get("logger", ""),
-            message=event_dict.get("message", ""),
-        )
+    rendered = "{timestamp} {level} {logger} {message}".format(
+        timestamp=event_dict.get("timestamp", ""),
+        level=event_dict.get("level", ""),
+        logger=event_dict.get("logger", ""),
+        message=event_dict.get("message", ""),
     )
+    diagnostics = [
+        str(event_dict[key])
+        for key in ("_exception_text", "_stack_info")
+        if event_dict.get(key)
+    ]
+    if diagnostics:
+        rendered = "\n".join((rendered, *diagnostics))
+    return redact(rendered)
 
 
 _JSON_RENDERER = structlog.processors.JSONRenderer()
@@ -108,9 +128,12 @@ _FOREIGN_PRE_CHAIN = [
 
 def configure_logging(level: str = "INFO", json_output: bool = False) -> None:
     renderer = _render_json if json_output else _render_plain
+    processors = [structlog.stdlib.ProcessorFormatter.remove_processors_meta, renderer]
+    if not json_output:
+        processors.insert(0, _add_plain_diagnostics)
     formatter = structlog.stdlib.ProcessorFormatter(
         foreign_pre_chain=_FOREIGN_PRE_CHAIN,
-        processors=[structlog.stdlib.ProcessorFormatter.remove_processors_meta, renderer],
+        processors=processors,
     )
     root = logging.getLogger("trading_research")
     root.setLevel(level)

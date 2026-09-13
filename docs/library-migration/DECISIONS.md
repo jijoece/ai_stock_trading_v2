@@ -1498,7 +1498,8 @@ which only scrubbed `run_id`/`workstream_id`/`batch_id`/`custom_id`/
 now covered too, via `structlog.stdlib.ExtraAdder()` in the processor
 chain). `tests/unit/test_logging_config.py` proves the plain-text and JSON
 output modes, `%s`-positional-argument interpolation, `extra=` field
-propagation, and every pre-migration redaction pattern (registered
+propagation, preservation of stdlib plain-text exception tracebacks and
+`stack_info`, and every pre-migration redaction pattern (registered
 runtime secrets, `sk-ant-*`, `Bearer *`, `api_key`/`token`/`secret`/
 `password`/`authorization` key-value pairs) still redact correctly.
 
