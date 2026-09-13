@@ -1373,3 +1373,92 @@ committed rather than after, and separately test bulk Core insert/update
 constructs (`sqlalchemy.dml.Insert`/`Update` used for multi-row bulk
 operations), which bypass ORM events but not Core execution and were not
 covered by this PR's ORM-session-focused testing.
+
+## D12 — PR 14: APScheduler and Tenacity evaluated, deferred (not adopted); Tenacity gains a structural guard
+
+**Context.** `MASTER_PLAN.md` row 14 reframed this evaluation at PR 0 from
+"replace" to "coexist": could APScheduler v3 take over due-time triggering
+while the existing lease/generation-fencing logic stays custom, and could
+Tenacity's retry scoping be structurally restricted away from the ambiguous
+external-broker-retry path (`external_broker.py`)? Full detail in
+`docs/library-migration/pr14/EVALUATION.md`.
+
+**Live re-verification (2026-08-30).** APScheduler 3.11.3 stable, MIT,
+`>=3.8`; v4's newest release remains alpha-only (`4.0.0a6`), reconfirming
+"not production-ready" from PR 0. Tenacity 9.1.4, Apache-2.0, `>=3.10`,
+unchanged. Neither is a current dependency of this repository.
+
+**APScheduler, empirically tested — defer, do not adopt.** Two independent
+reasons. First, an architectural conflict: ADR 0005 Decision 1 (Accepted,
+unamended) states plainly that this repository has "no `while True` loop, no
+background thread, and no self-installing OS schedule anywhere," with
+recurring behavior entirely the external invoker's responsibility
+(cron/launchd/operator). APScheduler's normal mode of use — an in-process
+`BlockingScheduler`/`AsyncIOScheduler` loop — **is** that daemon; adopting it
+that way would reopen an Accepted ADR's core decision, out of this
+feasibility PR's bounded scope. Second, even the narrowest possible use —
+calling only APScheduler's stateless trigger classes
+(`CronTrigger.get_next_fire_time`) to compute a next-due timestamp, never
+running the scheduler loop — was tested directly
+(`pr14/scratch_apscheduler_trigger_gaps.py`): a `CronTrigger(hour=9,
+minute=30, day_of_week="mon-fri")` computed its next fire time as
+2026-09-07 09:30 ET, which is Labor Day, a real NYSE closure `CronTrigger`
+has no concept of — the same market-holiday gap `evaluation/
+market_calendar.py`'s `exchange_calendars` integration (PR 3) already
+solves, so making a trigger holiday-aware would only wire that same
+dependency in a second, unrelated way, not remove any code. Its
+`IntervalTrigger`/`CronTrigger` surface also has no catch-up/idempotency
+concept at all (confirmed by inspecting the public API directly) — the
+`MISSED_WITHIN_CATCHUP`/`MISSED_TOO_OLD`/`ALREADY_COMPLETED` classification
+in `shadow/schedule.py::resolve_due_status` depends entirely on this
+repository's own persisted `shadow_scheduler_runs` table regardless of
+whether a trigger class is involved. The jobstore/lease limitation already
+recorded at PR 0 was independently re-confirmed at the source level:
+`BaseScheduler`'s internal locks are plain in-process locks, not a
+cross-process distributed lease, and `SQLAlchemyJobStore` provides no
+fencing token or heartbeat/TTL comparable to
+`paper_recurring_scheduler_leases`/`shadow_run_leases`. **Not added to any
+dependency declaration.**
+
+**Tenacity, structurally scoped — deferred as a dependency, but its guard is
+added regardless.** Its retry scoping remains decorator/context-manager only
+(`tenacity.retry`, `tenacity.Retrying`), with no global interception,
+reconfirmed against the current 9.1.4 API. No concrete current need exists:
+`evidence_providers/http_client.py`'s existing hand-rolled backoff already
+handles `Retry-After` parsing, rate-limiter coordination, and a
+deterministic injectable sleep function, with no defect motivating
+replacement — the same "no concrete current need exists" bar already
+applied to Pandera/PyArrow/Riskfolio-Lib/SQLAlchemy/Alembic. **Not added to
+any dependency declaration.** However, per this row's explicit requirement,
+a structural regression test was added regardless of the adoption decision:
+`tests/unit/test_external_broker_no_tenacity_import_boundary.py`, modeled on
+the existing `test_lumibot_import_boundary.py` AST-based precedent — it
+parses `external_broker.py`'s source and asserts no `tenacity` import node
+exists, runs unconditionally (no `importorskip`, no dependency on
+`tenacity` being installed), and includes a proof test confirming the
+detector fires against a synthetic offending file. Scoped to
+`external_broker.py` alone — `COMPONENT_MATRIX.md`'s "Generic transient
+retries" row leaves the per-provider transport backoff open to a future,
+separately-evaluated Tenacity adoption.
+
+This guard is a static, file-scoped source check, not a runtime backstop: it
+parses only `external_broker.py`'s own text, so it has no visibility into a
+wrapper applied from another module at import or call time (monkeypatching,
+`globals()`/`setattr` rebinding), and, by design, cannot distinguish an
+arbitrary externally-named wrapper from an ordinary helper call without
+inspecting that external module. PR 14 review rounds 3-5 progressively
+closed several source-level bypasses (aliased imports, transitively-called
+helpers, dynamic imports, module-level reassignment including annotated/
+nested-block/walrus forms, `functools.partial`-wrapped decorators); each
+round's fix demonstrates the technique converges on closing syntactic
+variants, not on eliminating the class of gap outside this file's own
+source. See `_find_protected_function_offenders`'s docstring in the test
+file for the residual gaps this mechanism cannot structurally close.
+
+**Ruling: defer both, do not adopt either package.** No ADR is required —
+per the single-ADR rule established in D2 and reapplied at D9/D10/D11,
+an ADR is needed only if adoption is recommended, and neither is here.
+Re-evaluate APScheduler only if a future milestone proposes reopening ADR
+0005 itself; re-evaluate Tenacity once a concrete generic-retry gap is
+scoped (e.g. a new external HTTP integration point outside
+`http_client.py`'s existing coverage).
