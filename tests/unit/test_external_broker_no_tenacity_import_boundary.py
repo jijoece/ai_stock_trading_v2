@@ -955,6 +955,20 @@ def _find_protected_function_offenders(tree: ast.Module) -> list[str]:
     legitimate future helpers. See
     `test_detector_does_not_flag_an_arbitrarily_named_external_factory_call`
     for the documented, deliberately-accepted current behavior.
+
+    A second, deliberately accepted residual gap (PR 15 fix round 3): a
+    default-bound helper unconditionally overwritten before its only call
+    (e.g. `def retry_external_paper_order(fn=helper): fn = ordinary;
+    fn()`) is still flagged, even though `helper` is provably never
+    invoked. `_local_aliases_in_block`'s monotonic union (PR 14 review
+    round 12) tracks every value a local alias ever held anywhere in the
+    function rather than the value live at each specific call site, by
+    design -- narrowing that to genuine per-call-site (flow-sensitive)
+    resolution is a materially larger rewrite, for a finding whose failure
+    direction is already safe (over-flagging a function that delegates
+    safely, not missing a real unguarded retry path). See
+    `test_detector_over_flags_a_default_bound_helper_unconditionally_overwritten_before_its_only_call`
+    for the documented, deliberately-accepted current behavior.
     """
     aliases = _resolve_import_aliases(tree)
     decorator_states = _decorator_alias_states(tree)
@@ -1412,6 +1426,53 @@ def test_detector_flags_a_default_bound_helper_via_an_alias_reassigned_after_def
         "def retry_external_paper_order(fn=alias):\n"
         "    fn()\n\n"
         "alias = ordinary\n"
+    )
+
+    tree = ast.parse(module.read_text())
+
+    assert _find_tenacity_import_offenders(tree) == []
+    assert _find_protected_function_offenders(tree) == [
+        "decorator 'retry' on helper at line 3",
+    ]
+
+
+def test_detector_over_flags_a_default_bound_helper_unconditionally_overwritten_before_its_only_call(
+    tmp_path,
+):
+    """GitHub PR review (discussion_r4000965156): documents a deliberately
+    accepted false positive, the mirror image of the case above. Here
+    `fn=helper` binds the retry-decorated `helper` at `def`-time, but `fn`
+    is then unconditionally reassigned to `ordinary` *before* the only call
+    `fn()` -- so `helper` is provably never invoked, yet this still reports
+    it.
+
+    This is not an oversight: `_local_aliases_in_block`'s monotonic mode
+    (PR 14 review round 12) deliberately unions every value a local alias
+    ever held anywhere in the function, rather than tracking the value live
+    at each specific call site, because the bug it closed was the opposite
+    failure -- a retry-decorated helper *actually invoked* earlier in the
+    function being missed because a later, unrelated reassignment discarded
+    that binding before the whole-function analysis ever got to resolve the
+    call against it. Making resolution precise per call site would require
+    genuine flow-sensitive (position-in-the-CFG-aware) analysis in place of
+    this whole-function set-union model -- a materially larger rewrite of
+    logic that took many rounds to harden against real gaps, for a finding
+    whose failure direction is already safe: this over-flags a function
+    that merely delegates safely, which blocks CI and demands a human look,
+    but (unlike the round-2/finding-5 case above) never lets an unguarded
+    retry path through unnoticed. See PR 15 fix round 3 in
+    REVIEW_FINDINGS.md for the full investigation."""
+    module = tmp_path / "synthetic_external_broker_overwritten_default_before_call.py"
+    module.write_text(
+        "from retry_utils import retry\n\n"
+        "@retry\n"
+        "def helper():\n"
+        "    pass\n\n"
+        "def ordinary():\n"
+        "    pass\n\n"
+        "def retry_external_paper_order(fn=helper):\n"
+        "    fn = ordinary\n"
+        "    fn()\n"
     )
 
     tree = ast.parse(module.read_text())

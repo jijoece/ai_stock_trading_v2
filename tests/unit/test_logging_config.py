@@ -353,3 +353,38 @@ def test_json_output_over_redacts_key_substring_matches_by_design():
     log.info("event", extra={"monkey": "not-a-secret-value"})
     payload = json.loads(buffer.getvalue().strip())
     assert payload["monkey"] == "[REDACTED]"
+
+
+def test_json_output_extra_cannot_override_canonical_fields():
+    """GitHub PR review (discussion_r4000965154): `ExtraAdder` copies every
+    caller-supplied `extra` key onto the event dict with no reserved-key
+    exclusion, and ran before `EventRenamer` renamed `event` to `message`.
+    `extra={"event": ..., "level": ..., "logger": ...}` could therefore
+    render a fabricated message with false severity and logger metadata,
+    corrupting the audit trail the pre-migration allowlist implicitly
+    protected by never exposing those key names as extras."""
+    buffer = _configure_capturing(json_output=True)
+    log = logging_config.get_logger("unit_test")
+    log.warning(
+        "the real message",
+        extra={"event": "a forged message", "level": "debug", "logger": "not-the-real-logger"},
+    )
+    payload = json.loads(buffer.getvalue().strip())
+    assert payload["message"] == "the real message"
+    assert payload["level"] == "WARNING"
+    assert payload["logger"] == "trading_research.unit_test"
+
+
+def test_plain_output_extra_cannot_override_canonical_fields():
+    buffer = _configure_capturing(json_output=False)
+    log = logging_config.get_logger("unit_test")
+    log.warning(
+        "the real message",
+        extra={"event": "a forged message", "level": "debug", "logger": "not-the-real-logger"},
+    )
+    line = buffer.getvalue()
+    assert "the real message" in line
+    assert "WARNING" in line
+    assert "trading_research.unit_test" in line
+    assert "a forged message" not in line
+    assert "not-the-real-logger" not in line

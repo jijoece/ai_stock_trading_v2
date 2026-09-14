@@ -124,6 +124,38 @@ def _redact_event_dict(logger: Any, method_name: str, event_dict: MutableMapping
     return event_dict
 
 
+def _snapshot_original_event(logger: Any, method_name: str, event_dict: MutableMapping[str, Any]) -> MutableMapping[str, Any]:
+    """Stashes the event dict's original, correctly `%`-substituted
+    `event` value before `ExtraAdder()` can overwrite it. Structlog's
+    stdlib bridge consumes and clears `record.args` while building this
+    initial event dict, so `record.getMessage()` can no longer recompute
+    this later -- calling it again from `_protect_canonical_fields` would
+    return the raw, unsubstituted `record.msg` instead."""
+    event_dict["_original_event"] = event_dict.get("event")
+    return event_dict
+
+
+def _protect_canonical_fields(logger: Any, method_name: str, event_dict: MutableMapping[str, Any]) -> MutableMapping[str, Any]:
+    """Reasserts `level`/`logger`/`event` after `ExtraAdder()` runs.
+    `ExtraAdder` copies every caller-supplied `extra` key onto the event
+    dict, with no reserved-key exclusion -- so `extra={"level": "debug",
+    "logger": "other", "event": "replacement"}` silently overwrites the
+    severity, logger name, and (once `EventRenamer` renames `event` to
+    `message`) the message itself with caller-controlled values, corrupting
+    the audit trail the pre-migration allowlist implicitly protected by
+    never exposing those key names as extras. `level`/`logger` are
+    trustworthy straight off the `LogRecord`; `event` is restored from
+    `_snapshot_original_event`'s stash (see its docstring for why)."""
+    record = event_dict.get("_record")
+    if record is not None:
+        event_dict["level"] = record.levelname.upper()
+        event_dict["logger"] = record.name
+    original_event = event_dict.pop("_original_event", None)
+    if original_event is not None:
+        event_dict["event"] = original_event
+    return event_dict
+
+
 def _add_plain_diagnostics(
     logger: Any, method_name: str, event_dict: MutableMapping[str, Any]
 ) -> MutableMapping[str, Any]:
@@ -166,10 +198,12 @@ def _render_json(logger: Any, method_name: str, event_dict: MutableMapping[str, 
 
 
 _FOREIGN_PRE_CHAIN = [
+    _snapshot_original_event,
     structlog.stdlib.add_log_level,
     _uppercase_level,
     structlog.stdlib.add_logger_name,
     structlog.stdlib.ExtraAdder(),
+    _protect_canonical_fields,
     _add_timestamp,
     _redact_event_dict,
     structlog.processors.EventRenamer("message"),
