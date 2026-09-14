@@ -124,3 +124,16 @@ def test_configure_telemetry_registers_global_providers_and_is_idempotent():
 
     # A shutdown-then-nothing-configured call is a safe no-op.
     observability.shutdown_telemetry()
+
+    # OpenTelemetry's global providers are one-shot per process: once shut
+    # down, they cannot be replaced. configure_telemetry must say so
+    # explicitly rather than silently building fresh providers that could
+    # never actually become the process-global ones, while is_configured()
+    # falsely reports success and the real global providers stay attached
+    # to the shut-down originals.
+    with pytest.raises(observability.TelemetryReconfigurationError):
+        observability.configure_telemetry(service_name="post-shutdown-service", console_export=False)
+    assert observability.is_configured() is False
+    assert trace.get_tracer_provider() is tracer_provider
+    assert metrics.get_meter_provider() is meter_provider
+    assert tracer_provider.resource.attributes["service.name"] == "trading-research-test"

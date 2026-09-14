@@ -48,8 +48,24 @@ _DEFAULT_SERVICE_NAME = "trading-research"
 _CONSOLE_EXPORT_ENV_VAR = "TRADING_RESEARCH_OTEL_CONSOLE"
 
 _configured = False
+_shutdown = False
 _tracer_provider: TracerProvider | None = None
 _meter_provider: MeterProvider | None = None
+
+
+class TelemetryReconfigurationError(RuntimeError):
+    """Raised by `configure_telemetry` after `shutdown_telemetry` has run.
+
+    OpenTelemetry's global `TracerProvider`/`MeterProvider` registration is
+    one-shot per process: `trace.set_tracer_provider`/
+    `metrics.set_meter_provider` silently refuse (only logging a warning) to
+    replace an already-registered provider. Building fresh providers here
+    anyway and reporting `is_configured() == True` afterward would be a lie
+    -- the real global providers would remain the shut-down originals, so
+    new spans/metrics would silently attach to dead providers. There is no
+    way to truthfully "reconfigure" telemetry within the same process once
+    shut down; callers that need a fresh setup must start a new process.
+    """
 
 
 def _console_export_from_env() -> bool:
@@ -99,10 +115,14 @@ def configure_telemetry(
 ) -> None:
     """Register global `TracerProvider`/`MeterProvider` for process-wide use.
 
-    Idempotent, mirroring `logging_config.configure_logging`'s
-    idempotent-reconfiguration contract: a second call is a no-op rather
-    than attempting to register a second global provider (which the
-    OpenTelemetry API itself would refuse and warn about).
+    Idempotent while still configured, mirroring
+    `logging_config.configure_logging`'s idempotent-reconfiguration
+    contract: a second call before shutdown is a no-op rather than
+    attempting to register a second global provider (which the
+    OpenTelemetry API itself would refuse and warn about). After
+    `shutdown_telemetry()` has run, this raises `TelemetryReconfigurationError`
+    instead of silently rebuilding providers that could never actually
+    become the process-global ones -- see that exception's docstring.
 
     `console_export` defaults to the `TRADING_RESEARCH_OTEL_CONSOLE`
     environment variable (`"1"` enables it) when not passed explicitly, so
@@ -111,6 +131,12 @@ def configure_telemetry(
     global _configured, _tracer_provider, _meter_provider
     if _configured:
         return
+    if _shutdown:
+        raise TelemetryReconfigurationError(
+            "configure_telemetry() cannot run again in this process: "
+            "shutdown_telemetry() has already run, and OpenTelemetry's "
+            "global providers cannot be re-registered."
+        )
 
     if console_export is None:
         console_export = _console_export_from_env()
@@ -142,7 +168,7 @@ def shutdown_telemetry() -> None:
     return the API's abstract provider type, which declares no `shutdown()`
     method (only the SDK implementation does).
     """
-    global _configured, _tracer_provider, _meter_provider
+    global _configured, _shutdown, _tracer_provider, _meter_provider
     if not _configured:
         return
     assert _tracer_provider is not None
@@ -151,4 +177,5 @@ def shutdown_telemetry() -> None:
     _meter_provider.shutdown()
     _tracer_provider = None
     _meter_provider = None
+    _shutdown = True
     _configured = False
