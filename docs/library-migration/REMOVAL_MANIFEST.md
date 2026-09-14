@@ -45,6 +45,20 @@ PR" column (`PR 17`) is unchanged. `evaluation/analytics_parity.py` is new,
 additive, and has zero production callers
 (`tests/unit/test_analytics_parity_import_boundary.py`).
 
+**PR 15 update:** the custom logging formatter row is now **closed, not
+pending PR 17** — the same early-closure pattern as the PR 3/PR 4 rows above,
+not the deferred-parity pattern of the PR 11 row. `MASTER_PLAN.md` row 15
+says "Replace `logging_config.py`" (not "prove parity via a new, additive
+module" the way row 11 does for analytics), and that is what happened:
+`RedactingFormatter`/`JsonRedactingFormatter` are deleted from
+`src/trading_research/logging_config.py`, not left as a parallel legacy
+implementation. `structlog.stdlib.ProcessorFormatter` is now the sole
+rendering path; the pre-migration redaction/secret-registration functions
+(`redact`, `register_secret`) are reused verbatim inside a structlog
+processor rather than reimplemented, and `tests/unit/test_logging_config.py`
+proves the redaction behavior matches (see `STATUS.md` "Completed work
+(PR 15)", `DECISIONS.md` D13).
+
 **PR 8 update (2026-08-02):** `backtesting/engine.py` appeared in the
 "conditionally eligible" section below while this paragraph said not to add it
 — a real contradiction, since PR 0 opened a removal gate on a file this
@@ -59,7 +73,7 @@ process at the foot of this file (`DECISIONS.md` D7, `pr8/DECISION.md` §9).
 | Custom market calendar | `src/trading_research/evaluation/market_calendar.py` | `exchange_calendars` fixture parity | **Done in PR 3** — all session/holiday/weekend/DST/pre-market/intraday/after-hours/previous-and-next-session/session-count fixture cases pass | Removed in PR 3 (not deferred to PR 17) |
 | Custom EMA/RSI/MACD/TRIX/Bollinger formulas | `scripts/indicators.py` | TA-Lib fixture parity | **Done in PR 4** — warm-up, null, and rounding semantics documented and matched for EMA/RSI/MACD/TRIX/Bollinger (one intentional preserved difference: flat-price RSI stays 100, not TA-Lib's default 0 — see `STATUS.md`) | Hand-written formulas removed in PR 4 (not deferred to PR 17); **the thin MACD/TRIX-composition and compatibility adapter is retained, not removed** — see `COMPONENT_MATRIX.md`, not tracked for further removal |
 | Custom analytics formulas | `src/trading_research/evaluation/metrics.py` — `sharpe_ratio`, `sortino_ratio`, `max_drawdown`, `calmar_ratio`, `cumulative_return` only | quantstats-lumi / empyrical-reloaded fixture parity | Annualization convention and insufficient-data status semantics matched | PR 17 (parity proven in PR 11) |
-| Custom logging formatter | `src/trading_research/logging_config.py` — `RedactingFormatter`, `JsonRedactingFormatter` | Structlog processor parity | Redaction and secret-registration behavior matched exactly (no secret ever logged during the transition) | PR 17 (parity proven in PR 15) |
+| Custom logging formatter | `src/trading_research/logging_config.py` — `RedactingFormatter`, `JsonRedactingFormatter` | Structlog processor parity | **Done in PR 15** — redaction and secret-registration behavior matched exactly (`tests/unit/test_logging_config.py`); no secret ever logged during the transition | Removed in PR 15 (not deferred to PR 17) |
 
 ## Conditionally eligible — gated on a decision PR, not a parity PR
 

@@ -1462,3 +1462,89 @@ Re-evaluate APScheduler only if a future milestone proposes reopening ADR
 0005 itself; re-evaluate Tenacity once a concrete generic-retry gap is
 scoped (e.g. a new external HTTP integration point outside
 `http_client.py`'s existing coverage).
+
+## D13 — PR 15: Structlog adopted, `logging_config.py` replaced in place; structlog promoted to a base dependency
+
+**Context.** `MASTER_PLAN.md` row 15 says "Replace `logging_config.py`;
+port custom redaction/secret-registration logic to a structlog processor" —
+this is the PR 3/PR 4 "replace in place" pattern, not the PR 11
+"prove-parity-via-a-new-additive-module, leave the original untouched"
+pattern. `logging_config.py` only ever had one implementation to replace
+(no "authoritative Decimal formula" analogue forcing a parallel-proof
+design like `evaluation/metrics.py`), so there is no reason to keep a
+second, unused legacy code path alive past this PR.
+
+**Adoption.** `RedactingFormatter`/`JsonRedactingFormatter` (both
+`logging.Formatter` subclasses) are deleted and replaced by
+`structlog.stdlib.ProcessorFormatter`, wired in purely as the stdlib
+logging handler's formatter — no structlog-native logger
+(`structlog.get_logger()`/`structlog.configure()`) is created anywhere.
+This preserves `get_logger()`'s contract exactly: it still returns a plain
+`logging.Logger`, so every existing caller's stdlib idioms (`log.info("Wrote
+%s", path)`, `log.info(msg, extra={"operation": ...})`) are unaffected —
+confirmed by reading every caller (`shadow/alerts.py`,
+`mcp/reddit_adapter.py`, `mcp/capability_inventory.py`,
+`scripts/inventory_mcp_tools.py`) before making the change, the same
+caller-analysis discipline used in PR 3/PR 4/PR 9. The redaction logic
+itself (`_SECRET_PATTERNS`, `_RUNTIME_SECRETS`, `register_secret`,
+`redact`) is reused **verbatim** — not reimplemented — from a new
+`_redact_event_dict` processor that applies `redact()` to every top-level
+string value in the structlog event dict, with a second application to the
+fully rendered line so nested mappings, sequences, and object string
+representations cannot bypass redaction (a broadened superset of the
+pre-migration `JsonRedactingFormatter`'s fixed 8-key extra-field allowlist,
+which only scrubbed `run_id`/`workstream_id`/`batch_id`/`custom_id`/
+`operation`/`status`/`duration_ms`/`error_type`; any other `extra=` key is
+now covered too, via `structlog.stdlib.ExtraAdder()` in the processor
+chain). `tests/unit/test_logging_config.py` proves the plain-text and JSON
+output modes, `%s`-positional-argument interpolation, `extra=` field
+propagation, preservation of stdlib plain-text exception tracebacks and
+`stack_info`, and every pre-migration redaction pattern (registered
+runtime secrets, `sk-ant-*`, `Bearer *`, `api_key`/`token`/`secret`/
+`password`/`authorization` key-value pairs) still redact correctly.
+
+**Disclosed formatting difference (not a caller-visible contract change):**
+the plain-text mode's timestamp changed from stdlib's default `asctime`
+format (local time, comma-separated milliseconds, e.g. `2026-09-13
+10:00:00,123`) to the same ISO-8601-with-offset format the JSON mode
+already used (`%Y-%m-%dT%H:%M:%S%z`, via `logging.Formatter.formatTime`
+keyed on the same `LogRecord.created`, so both modes now share one
+timestamp source and format). No caller inspects or parses the plain-text
+log line's timestamp substring — grep-verified across `src/`, `scripts/`,
+and `tests/` — so this is a disclosed, intentional formatting
+unification, not a hidden behavior change.
+
+**Correction found during caller analysis: `structlog` promoted from the
+`observability` extra to a base dependency.** PR 1 planned `structlog` as
+part of the optional `observability` extra (alongside `opentelemetry-api`/
+`opentelemetry-sdk`, PR 16's concern). Caller analysis for this PR found
+`logging_config.get_logger` is imported unconditionally by
+`shadow/alerts.py`, `mcp/reddit_adapter.py`, and
+`mcp/capability_inventory.py` — all exercised by many existing test files
+in the default `.[dev]` environment (e.g. `test_shadow_alerts.py`,
+`test_reddit_fetch.py`), not gated behind any opt-in extra the way
+TA-Lib/VectorBT/empyrical are. Keeping `structlog` as an extra would have
+broken `nox -s tests`/the `main-tests` CI job (which install only
+`.[dev]`) the moment `logging_config.py` imported it unconditionally —
+this is the exact same finding, and the exact same fix, as PR 1's
+correction moving `exchange_calendars` from a proposed extra to a base
+dependency (see this file's PR 1 history and `STATUS.md`). `structlog` is
+now declared directly under `[project] dependencies` in `pyproject.toml`;
+the `observability` extra now contains only the two `opentelemetry-*`
+packages, unchanged for PR 16. No new CI job was needed for this
+migration (unlike PR 4/PR 11/PR 5's `indicators-tests`/`analytics-tests`/
+`research-tests` jobs) — `structlog` being a base dependency means
+`tests/unit/test_logging_config.py` already runs, unguarded, in the
+existing blocking `main-tests` job, the same reasoning that meant PR 3
+needed no dedicated `exchange_calendars` CI job either.
+
+**Removal manifest.** `REMOVAL_MANIFEST.md`'s custom-logging-formatter row
+is closed in this PR, not deferred to PR 17 — see that file's "PR 15
+update" paragraph and `COMPONENT_MATRIX.md`'s "Structured logging" row.
+
+**Ruling: adopt, no ADR required.** Per the single-ADR rule (D2, reapplied
+at D9-D12), an ADR is required only when adoption of a Category-B-style
+evaluation is recommended after a feasibility question was open; here
+adoption was the plan's own instruction (`MASTER_PLAN.md` row 15) and no
+architectural conflict with any Accepted ADR was found (unlike APScheduler/
+D12), so no ADR is drafted.
