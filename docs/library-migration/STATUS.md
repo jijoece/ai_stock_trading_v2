@@ -1,6 +1,32 @@
 # Migration Status
 
-**Current phase: PR 15 — Structlog migration — IMPLEMENTED, NOT MERGED**
+**Current phase: PR 16 — OpenTelemetry migration — IMPLEMENTED, NOT MERGED**
+(branch `migration/16-opentelemetry-tracing`; `MASTER_PLAN.md` row 16,
+`DECISIONS.md` D14). New, additive `src/trading_research/observability.py`
+wires the OpenTelemetry SDK: `build_resource`/`build_tracer_provider`/
+`build_meter_provider`/`configure_telemetry`/`is_configured`/
+`shutdown_telemetry`. This is a from-scratch new-capability adoption, not a
+migration — `COMPONENT_MATRIX.md`'s "Tracing/metrics (spans)" row's
+pre-migration state was "None," so there was no existing implementation to
+replace or prove parity against. Default-built providers attach no span
+processor or metric reader at all, so creating spans/metrics has zero
+network, filesystem, or stdout side effect unless `console_export=True` (or
+`TRADING_RESEARCH_OTEL_CONSOLE=1`) opts into local `Console*Exporter`
+output — no OTLP/network exporter exists in this module. `opentelemetry-sdk`
+stays an optional `observability` extra, not a base dependency (unlike
+`structlog` in PR 15): nothing imports `observability.py` unconditionally,
+enforced by `tests/unit/test_observability_import_boundary.py`, which also
+proves domain telemetry (`research/cycle_telemetry.py`,
+`paper_books/metrics.py`) stays untouched. See "Completed work (PR 16)"
+below for the full record.
+
+**Next phase: PR 17 — Remove only approved commodity implementations**
+(`MASTER_PLAN.md` row 17), which depends on PR 3, PR 4, PR 11, and PR 15
+(PR 15 implemented above, not yet merged; PR 8's conditional contribution
+is already resolved and contributes nothing to this row — see
+`DECISIONS.md` D7).
+
+PR 15 — Structlog migration — is **IMPLEMENTED, NOT MERGED**
 (branch `migration/15-structlog-migration`; `MASTER_PLAN.md` row 15,
 `DECISIONS.md` D13). `logging_config.py`'s `RedactingFormatter`/
 `JsonRedactingFormatter` are replaced in place by
@@ -17,9 +43,6 @@ proposed extra to a base dependency in PR 1. `REMOVAL_MANIFEST.md`'s
 custom-logging-formatter row is closed in this PR (not deferred to PR 17),
 the same early-closure pattern PR 3/PR 4 used. See "Completed work (PR 15)"
 below for the full record.
-
-**Next phase: PR 16 — OpenTelemetry migration** (`MASTER_PLAN.md` row 16),
-which depends on PR 15 (implemented above, not yet merged).
 
 PR 14 — APScheduler/Tenacity feasibility — is **merged** (PR #32, branch
 `migration/14-apscheduler-tenacity-feasibility`; `MASTER_PLAN.md` row 14,
@@ -3277,3 +3300,159 @@ improvement: redaction coverage broadened from a fixed 8-key extra-field
 allowlist to all serialized log-event content, so a secret passed through an
 `extra=` key the pre-migration allowlist did not happen to name — including
 inside a nested value — is now also scrubbed.
+
+## Completed work (PR 16)
+
+**Scope:** new file `src/trading_research/observability.py`; new test files
+`tests/unit/test_observability.py` and
+`tests/unit/test_observability_import_boundary.py`; a new blocking
+`observability-tests` CI job (`.github/workflows/ci.yml`); the
+`observability` extra's `pyproject.toml` comment; plus this file,
+`MASTER_PLAN.md` row 16, `DECISIONS.md` (new D14), `COMPONENT_MATRIX.md`'s
+"Tracing/metrics (spans)" row, and `DEPENDENCY_MATRIX.md`'s OpenTelemetry
+rows. No other file under `src/`, `scripts/`, `paper_runtime/src/`,
+`tests/`, or `config/` was modified — in particular,
+`research/cycle_telemetry.py` and `paper_books/metrics.py` (the existing
+domain-specific telemetry `MASTER_PLAN.md` row 16 names as unaffected) are
+untouched, proven by construction (see below), not just by omission.
+
+**Outcome: OpenTelemetry adopted as a new, additive, offline-safe-by-default
+capability — not a migration.** `COMPONENT_MATRIX.md`'s "Tracing/metrics
+(spans)" row's pre-migration state was "None (domain telemetry only, not
+spans)," so unlike PR 15 (replace-in-place) or PR 11 (parity proof against
+an existing authority), there was nothing to replace or reconcile against.
+`observability.py` provides: `build_resource(service_name)`,
+`build_tracer_provider(resource, console_export=False)`,
+`build_meter_provider(resource, console_export=False)` (pure factories,
+no global side effect), `configure_telemetry(service_name, console_export)`
+(the process-wide entry point — idempotent, mirroring
+`logging_config.configure_logging`'s idempotent-reconfiguration contract,
+since the OpenTelemetry API itself silently refuses to re-register a global
+provider once set), `is_configured()`, and `shutdown_telemetry()`.
+
+**Offline-safe by construction, no OTLP/network exporter added.** A
+default-built provider (`console_export=False`, the default) attaches no
+span processor and no metric reader at all, so creating spans/metrics has
+zero network, filesystem, or stdout side effect —
+`test_build_tracer_provider_default_is_offline_safe`/
+`test_build_meter_provider_default_is_offline_safe` prove this by asserting
+empty captured output. `console_export=True` (or the
+`TRADING_RESEARCH_OTEL_CONSOLE=1` environment variable) attaches
+`ConsoleSpanExporter`/`ConsoleMetricExporter` for local stdout-only output.
+**No OTLP or other network exporter exists in this module** — adding one is
+explicitly out of this PR's additive-only bound (`MASTER_PLAN.md` row 16),
+left for a future PR if a real tracing backend is wanted.
+
+**Correctness fix found during implementation: late-bound `sys.stdout`.**
+`ConsoleSpanExporter`/`ConsoleMetricExporter` default their `out=` parameter
+to `sys.stdout` evaluated once, when `opentelemetry` is first imported — not
+at call time. This surfaced as a test failure: `pytest`'s `capsys` fixture
+redirects `sys.stdout` per test, after `opentelemetry` is already imported
+at collection time, so the exporters' unqualified default silently kept
+writing to the pre-redirection stream, which `capsys.readouterr()` could
+never see (confirmed via `capfd`, which reads the OS file descriptor
+directly and did see the write — proving the data really was written, just
+not through the object `capsys` was watching). Fixed by passing
+`out=sys.stdout` explicitly inside `build_tracer_provider`/
+`build_meter_provider`, evaluated fresh on every call — this is a real
+correctness property, not just a test artifact: without it, any caller that
+redirects `sys.stdout` after process start (not only a test) would silently
+lose console-exported telemetry to the wrong stream. See `DECISIONS.md` D14
+for the full record.
+
+**`opentelemetry-sdk` stays an optional `observability` extra, not a base
+dependency — unlike `structlog` in PR 15 (D13).**
+`tests/unit/test_observability_import_boundary.py` proves, by unconditional
+AST source parsing (no import of `opentelemetry` required), that: (a)
+`opentelemetry` is imported nowhere under `src/trading_research/` except
+`observability.py` itself; (b) no production module imports
+`observability.py`; and (c) `research/cycle_telemetry.py` and
+`paper_books/metrics.py` do not import `opentelemetry` — the "domain
+telemetry stays unaffected" claim enforced by construction, matching the
+`test_analytics_parity_import_boundary.py`/
+`test_vector_research_import_boundary.py` precedent.
+
+**Caveat found during focused testing: `importorskip("opentelemetry")`
+alone is insufficient.** The first `nox -s ci` run failed collecting
+`tests/unit/test_observability.py` under a plain `.[dev]` install with
+`ModuleNotFoundError: No module named 'opentelemetry.sdk'` — the `mcp`
+package (a base dependency) itself requires `opentelemetry-api`, so the
+top-level `opentelemetry` package (API only, no SDK) is already importable
+without the `observability` extra. `test_observability.py`'s guard is
+`pytest.importorskip("opentelemetry.sdk")` instead — the actual dependency
+this module needs (`TracerProvider`/`MeterProvider`), matching the
+`dependency-extras-smoke` CI job's own `import opentelemetry.sdk` check. A
+new blocking `observability-tests` CI job (matrixed over Python 3.10/3.11,
+matching `indicators-tests`/`analytics-tests`) installs `.[dev,observability]`
+and runs the real behavioral tests, since `main-tests` only installs
+`.[dev]` and would otherwise never exercise the SDK for real.
+
+**Background-thread cleanup:** `PeriodicExportingMetricReader` (used when
+`console_export=True`) owns a background export thread that otherwise keeps
+running past the calling test/process and, observed directly during local
+verification, can race a closed stdout at interpreter shutdown (`Exception
+while exporting metrics ... ValueError: I/O operation on closed file`).
+`shutdown_telemetry()` stops it for the `configure_telemetry` global-entry-
+point path; the equivalent test
+(`test_build_meter_provider_console_export_writes_metric`) calls
+`provider.shutdown()` directly in a `finally` block for the same reason.
+
+**Tests run:**
+- `pytest tests/unit/test_observability_import_boundary.py -q --tb=short`
+  (no `opentelemetry` install needed) — **4 passed**.
+- `pytest tests/unit/test_observability.py
+  tests/unit/test_observability_import_boundary.py -q --tb=short` with
+  `.[dev,observability]` installed — **11 passed**. Covers: `build_resource`'s
+  default/explicit `service.name`; `build_tracer_provider`/
+  `build_meter_provider`'s offline-safe default (empty captured output) and
+  `console_export=True` behavior (span/metric name present in captured
+  output); and `configure_telemetry`'s global-registration,
+  idempotent-second-call, and `shutdown_telemetry` behavior in one test
+  (deliberately not split across tests — the OpenTelemetry API refuses to
+  re-register a global provider once set, so splitting this across separate
+  test functions in the same process would make the second function's
+  assertions depend on unpredictable cross-test ordering of a real
+  process-global).
+- `pytest tests/unit/test_observability_import_boundary.py
+  tests/unit/test_logging_config.py -q --tb=short` (no `observability`
+  extra installed, regression check alongside PR 15's test file) —
+  **40 passed**.
+- `pytest tests/unit/test_migration_helper.py
+  tests/unit/test_pr12_evaluation_docs.py
+  tests/unit/test_pr13_evaluation_docs.py -q --tb=short` (re-run after this
+  PR's `STATUS.md`/`MASTER_PLAN.md` edits, matching the PR 15 precedent) —
+  **147 passed**, confirming the phase-parsing helper still reads
+  `Current phase: PR 16` / `Next phase: PR 17` correctly.
+- `nox -s ci` (full suite, `.[dev]` only — the `observability` extra is
+  never combined with the default environment, preserving the isolation
+  `DEPENDENCY_MATRIX.md` Section 3 requires) — all four sessions passed:
+  `tests` **3314 passed, 107 skipped** (the 2 `test_observability.py` cases
+  skip here, as expected, via `importorskip("opentelemetry.sdk")`; the 4
+  `test_observability_import_boundary.py` cases run unconditionally and
+  pass); `paper_tests` **160 passed**; `safety_typecheck` **0 errors, 0
+  warnings**; `migration_smoke` OK.
+- `nox -s typecheck` (non-blocking, `continue-on-error: true` in CI) —
+  `observability.py` itself: **0 errors** (two `Cannot access attribute
+  "shutdown"` errors surfaced during implementation, from calling
+  `.shutdown()` on the API's abstract `trace.get_tracer_provider()`/
+  `metrics.get_meter_provider()` return types rather than the concrete SDK
+  objects `configure_telemetry` itself built; fixed by having
+  `configure_telemetry` keep module-level references to the concrete
+  `TracerProvider`/`MeterProvider` instances it constructs, and
+  `shutdown_telemetry` shuts those down directly instead of re-fetching
+  through the API's global-registry getters). The pre-existing
+  ~2670-error baseline elsewhere in the codebase is unrelated and unchanged
+  by this PR.
+- `scripts/check_links.sh` — not run in this session (the sandbox this PR
+  was authored in requires interactive approval for network-capable
+  commands, which was unavailable); no Markdown link was added or changed
+  in this PR's documentation edits (only prose and table-cell text), so no
+  link-checker regression is expected, but this should be confirmed before
+  merge.
+
+**Safety:** no trading limit, authorization rule, `paper_books` accounting
+code, or scheduling behavior was touched; no broker, provider, model, or
+market-data service was called; no live data was fetched; the scheduler was
+not enabled; no external paper order of any kind was submitted or
+referenced; no network call was made by any code this PR added (`console_
+export=True`'s exporters write to local stdout only).

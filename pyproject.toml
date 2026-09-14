@@ -78,9 +78,10 @@ analytics = [
     "empyrical-reloaded>=0.5.12,<0.6",
     "quantstats-lumi>=1.1.5,<2",
 ]
-# PR 16 candidate: additive tracing/metrics SDK only, no exporter configured
-# by default. structlog moved to base dependencies in PR 15 -- see DECISIONS.md
-# D13 -- so this extra is opentelemetry-only now.
+# Wired in by PR 16 (`observability.py`): additive tracing/metrics SDK only,
+# no exporter configured by default (offline-safe). structlog moved to base
+# dependencies in PR 15 -- see DECISIONS.md D13 -- so this extra is
+# opentelemetry-only.
 observability = [
     "opentelemetry-api>=1.44,<2",
     "opentelemetry-sdk>=1.44,<2",
