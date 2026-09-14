@@ -38,6 +38,8 @@ _SECRET_PATTERNS = [
 # Field names redacted by key regardless of value shape, because their
 # content (e.g. an account number) does not match any secret-shaped
 # pattern above but is still forbidden by this module's no-leak contract.
+# Substring matching over-redacts innocent keys like "monkey" or "hotkey";
+# that's the accepted, safe direction for this module's contract.
 _SENSITIVE_KEY_SUBSTRINGS = ("key", "token", "secret", "password", "authorization", "account")
 
 _RUNTIME_SECRETS: list[str] = []
@@ -83,23 +85,36 @@ def _is_sensitive_key(key: object) -> bool:
 
 
 def _redact_value(value: Any) -> Any:
-    """Redacts strings and recurses into mappings/sequences, so a secret or
-    sensitive field nested inside an `extra` value is redacted on the raw
-    Python object -- before `JSONRenderer` escapes it -- rather than on the
-    serialized line, where escaping can break the verbatim substring match
-    `redact()` depends on. A mapping key matching a sensitive-field name
-    (e.g. `account_number`) is redacted by key alone, since its value need
-    not match any secret-shaped pattern to be forbidden by this module's
-    no-leak contract."""
+    """Redacts strings and recurses into mappings/sequences/sets, so a
+    secret or sensitive field nested inside an `extra` value is redacted on
+    the raw Python object -- before `JSONRenderer` escapes it -- rather than
+    on the serialized line, where escaping can break the verbatim substring
+    match `redact()` depends on. A mapping key matching a sensitive-field
+    name (e.g. `account_number`) is redacted by key alone, since its value
+    need not match any secret-shaped pattern to be forbidden by this
+    module's no-leak contract. `bytes`/`bytearray` are redacted via their
+    `str()` form, matching what `JSONRenderer`'s own non-serializable-value
+    fallback would otherwise render unredacted. A `list`/`tuple`/`set`/
+    `frozenset` subclass (e.g. a namedtuple, whose `__new__` takes
+    positional fields rather than a single iterable) is rebuilt as a plain
+    `tuple` rather than its own type, since reconstructing it via
+    `type(value)(iterable)` can raise -- silently dropping the log record
+    entirely, which is worse than losing the subclass's identity in a
+    JSON/text log line that would discard it anyway."""
     if isinstance(value, str):
         return redact(value)
+    if isinstance(value, (bytes, bytearray)):
+        return redact(str(value))
     if isinstance(value, Mapping):
         return {
             key: "[REDACTED]" if _is_sensitive_key(key) else _redact_value(item)
             for key, item in value.items()
         }
-    if isinstance(value, (list, tuple)):
-        return type(value)(_redact_value(item) for item in value)
+    if isinstance(value, (list, tuple, set, frozenset)):
+        redacted_items = (_redact_value(item) for item in value)
+        if type(value) in (list, tuple, set, frozenset):
+            return type(value)(redacted_items)
+        return tuple(redacted_items)
     return value
 
 

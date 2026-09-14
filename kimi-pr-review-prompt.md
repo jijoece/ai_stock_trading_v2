@@ -68,15 +68,32 @@ any of the invariants above.
 ### Blocking issues
 Correctness bugs, safety/audit-invariant violations, or anything that
 weakens a disabled-by-default posture, isolation boundary, or immutability
-guarantee. Cite `file:line`. Empty section if none.
+guarantee. These map to review priority P1. Write `None.` if there are none.
+
+Otherwise, one item per line, in **exactly** this pipe-delimited form —
+`kimi_client.py review` parses this format mechanically to file findings in
+`REVIEW_FINDINGS.md`, so do not deviate from it (no extra pipes inside a
+field, no multi-line items, no leading/trailing whitespace around a field):
+
+```
+- [P1] <short title, no pipes> | `<path/to/file.py:line>` | <1-3 sentence concern citing evidence and potential impact>
+```
 
 ### Should-fix
 Real problems that aren't safety-critical — missing test coverage for the
 changed path, an untested edge case, a fail-open condition on a non-critical
-path, inconsistent error handling.
+path, inconsistent error handling. These map to review priority P2. Write
+`None.` if there are none. Use the identical pipe-delimited form as Blocking
+issues, but with `[P2]` instead of `[P1]`:
+
+```
+- [P2] <short title, no pipes> | `<path/to/file.py:line>` | <1-3 sentence concern citing evidence and potential impact>
+```
 
 ### Nits
 Style, naming, minor readability. Keep this short — don't pad the review.
+Plain prose or a short bullet list; not machine-parsed, so the pipe format
+above does not apply here.
 
 ### Test coverage gaps
 Specific scenarios the current test suite doesn't cover for this diff,

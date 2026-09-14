@@ -222,7 +222,7 @@ def test_json_output_redacts_registered_secret_in_nested_extra_field_with_json_e
     raw = buffer.getvalue()
     payload = json.loads(raw.strip())
     assert payload["context"]["value"] == "[REDACTED]"
-    assert "nested" not in raw or "REDACTED" in raw
+    assert secret not in raw
 
 
 def test_json_output_redacts_account_number_extra_field_by_key():
@@ -279,3 +279,77 @@ def test_json_output_does_not_redact_unrelated_extra_fields():
     assert payload["operation"] == "list_repos"
     assert payload["duration_ms"] == 42
     assert payload["status"] == "ok"
+
+
+def test_json_output_redacts_registered_secret_inside_set_extra_field():
+    """Kimi K3 automated review (PR 15 fix round 3): `_redact_value`
+    originally handled only `Mapping`/`list`/`tuple`, so a secret nested
+    inside a `set` extra reached `JSONRenderer`'s non-serializable-value
+    fallback (which stringifies via `repr()`) unredacted by the
+    pre-serialization pass -- relying entirely on the post-render safety
+    net, which (as the earlier escaping findings in this file show) is not
+    reliable for secrets containing JSON-escaped characters."""
+    logging_config.register_secret("set-member-secret")
+    buffer = _configure_capturing(json_output=True)
+    log = logging_config.get_logger("unit_test")
+    log.info("event", extra={"items": {"set-member-secret", "harmless"}})
+    raw = buffer.getvalue()
+    assert "set-member-secret" not in raw
+    assert "[REDACTED]" in raw
+    assert "harmless" in raw
+
+
+def test_json_output_redacts_registered_secret_inside_frozenset_extra_field():
+    logging_config.register_secret("frozenset-member-secret")
+    buffer = _configure_capturing(json_output=True)
+    log = logging_config.get_logger("unit_test")
+    log.info("event", extra={"items": frozenset({"frozenset-member-secret"})})
+    raw = buffer.getvalue()
+    assert "frozenset-member-secret" not in raw
+    assert "[REDACTED]" in raw
+
+
+def test_json_output_redacts_registered_secret_inside_bytes_extra_field():
+    logging_config.register_secret("bytes-member-secret")
+    buffer = _configure_capturing(json_output=True)
+    log = logging_config.get_logger("unit_test")
+    log.info("event", extra={"blob": b"bytes-member-secret"})
+    raw = buffer.getvalue()
+    assert "bytes-member-secret" not in raw
+    assert "[REDACTED]" in raw
+
+
+def test_json_output_redacts_registered_secret_inside_namedtuple_extra_field_without_crashing():
+    """Kimi K3 automated review (PR 15 fix round 3): reconstructing a
+    namedtuple via `type(value)(generator)` raises, because a namedtuple's
+    `__new__` takes one positional argument per field rather than a single
+    iterable -- silently dropping the entire log record (Python's logging
+    module swallows a formatter exception), which is worse than losing the
+    namedtuple's type identity in a JSON line that would discard it
+    anyway."""
+    import collections
+
+    Point = collections.namedtuple("Point", ["x", "y"])
+    logging_config.register_secret("namedtuple-member-secret")
+    buffer = _configure_capturing(json_output=True)
+    log = logging_config.get_logger("unit_test")
+    log.info("event", extra={"point": Point(x="namedtuple-member-secret", y="b")})
+    raw = buffer.getvalue()
+    assert raw, "log record must not be silently dropped"
+    assert "namedtuple-member-secret" not in raw
+    payload = json.loads(raw.strip())
+    assert payload["point"] == ["[REDACTED]", "b"]
+
+
+def test_json_output_over_redacts_key_substring_matches_by_design():
+    """Documents accepted, deliberate over-redaction (Kimi K3 automated
+    review, PR 15 fix round 3): `_SENSITIVE_KEY_SUBSTRINGS` matches `key` as
+    a substring, so an unrelated field like `monkey` is redacted too. This
+    is the safe direction for this module's no-leak contract and is not a
+    bug -- an actual API key must never slip through because its field
+    happened to be named something slightly different."""
+    buffer = _configure_capturing(json_output=True)
+    log = logging_config.get_logger("unit_test")
+    log.info("event", extra={"monkey": "not-a-secret-value"})
+    payload = json.loads(buffer.getvalue().strip())
+    assert payload["monkey"] == "[REDACTED]"
