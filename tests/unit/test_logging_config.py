@@ -419,7 +419,40 @@ def test_self_returning_structlog_hook_is_bounded():
     log.info("must survive", extra={"details": SelfReferential()})
     payload = json.loads(buffer.getvalue().strip())
     assert payload["message"] == "must survive"
-    assert payload["details"] == "SelfReferential()"
+    assert payload["details"] == "<structlog hook depth exceeded: test_self_returning_structlog_hook_is_bounded.<locals>.SelfReferential>"
+
+
+def test_structlog_hook_chain_past_depth_limit_does_not_leak_its_repr():
+    """PR 18 review round 6 (P2, r4264214827): past
+    `_MAX_STRUCTLOG_HOOK_DEPTH`, the unevaluated object fell back to its
+    `repr()`, so an unregistered account number in that repr -- which its
+    hook would have exposed only under a redactable key -- reached the log.
+    The cutoff must render a type-only placeholder instead."""
+
+    class Chain:
+        def __init__(self, remaining: int) -> None:
+            self.remaining = remaining
+
+        def __structlog__(self):
+            if self.remaining > 1:
+                return Chain(self.remaining - 1)
+            return {"account_number": "123456789"}
+
+        def __repr__(self) -> str:
+            return f"Chain({self.remaining}, 123456789)"
+
+    depth = logging_config._MAX_STRUCTLOG_HOOK_DEPTH
+    buffer = _configure_capturing(json_output=True)
+    log = logging_config.get_logger("unit_test")
+    log.info("event", extra={"within": Chain(depth), "beyond": Chain(depth + 1)})
+    raw = buffer.getvalue()
+    payload = json.loads(raw.strip())
+    assert "123456789" not in raw
+    assert payload["within"] == {"account_number": "[REDACTED]"}
+    assert payload["beyond"] == (
+        "<structlog hook depth exceeded: "
+        "test_structlog_hook_chain_past_depth_limit_does_not_leak_its_repr.<locals>.Chain>"
+    )
 
 
 def test_json_output_preserves_json_scalar_extra_fields():

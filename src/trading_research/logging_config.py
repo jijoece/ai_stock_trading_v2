@@ -85,7 +85,7 @@ def _is_sensitive_key(key: object) -> bool:
 
 
 # How many nested `__structlog__` hook results `_redact_value` follows
-# before falling back to the object's redacted `repr()`.
+# before replacing the value with a type-only cutoff placeholder.
 _MAX_STRUCTLOG_HOOK_DEPTH = 8
 
 # Sentinel distinguishing "no usable hook" from a hook that returned `None`.
@@ -126,7 +126,11 @@ def _redact_value(value: Any, _hook_depth: int = 0) -> Any:
     inside the `repr()` instead of redacted by key. A hook whose lookup or
     call raises falls through to the guarded `repr()` path, and nested hook results are
     followed at most `_MAX_STRUCTLOG_HOOK_DEPTH` levels deep, so a hook that
-    returns itself cannot recurse without bound."""
+    returns itself cannot recurse without bound. A non-scalar,
+    non-container object reached past that depth is replaced by a fixed
+    placeholder naming only its type -- never its `repr()`, which could
+    carry an unregistered sensitive value (e.g. an account number) that
+    its unevaluated hook would have exposed only under a redactable key."""
     if value is None or isinstance(value, (bool, int, float)):
         return value
     if isinstance(value, str):
@@ -143,14 +147,15 @@ def _redact_value(value: Any, _hook_depth: int = 0) -> Any:
         if type(value) in (list, tuple, set, frozenset):
             return type(value)(redacted_items)
         return tuple(redacted_items)
-    if _hook_depth < _MAX_STRUCTLOG_HOOK_DEPTH:
-        try:
-            hook = getattr(value, "__structlog__", None)
-            structured = hook() if callable(hook) else _NO_HOOK_RESULT
-        except Exception:
-            structured = _NO_HOOK_RESULT
-        if structured is not _NO_HOOK_RESULT:
-            return _redact_value(structured, _hook_depth + 1)
+    if _hook_depth >= _MAX_STRUCTLOG_HOOK_DEPTH:
+        return f"<structlog hook depth exceeded: {type(value).__qualname__}>"
+    try:
+        hook = getattr(value, "__structlog__", None)
+        structured = hook() if callable(hook) else _NO_HOOK_RESULT
+    except Exception:
+        structured = _NO_HOOK_RESULT
+    if structured is not _NO_HOOK_RESULT:
+        return _redact_value(structured, _hook_depth + 1)
     try:
         representation = repr(value)
     except Exception:
