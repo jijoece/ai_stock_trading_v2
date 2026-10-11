@@ -1833,6 +1833,23 @@ exact phrase, given fresh after reconciliation, beside the retry command.
 is not operator approval. `test_alpaca_runbook_approval_gates.py` pins the
 gate beside both commands.
 
+**Ruling 2b: cancellation needs its own explicit operator request.** Review
+found that the runbook supplied `external-paper-cancel` with no approval
+step, and its rollback section told the reader to "explicitly cancel"
+orders. `cancel_external_paper_order()` calls
+`runtime.cancel_external_order()`, which changes broker order state, and
+`CLAUDE.md` requires the user's explicit approval for any external
+paper-order action. Running the command is not that approval: the agent
+would supply the arguments itself. The runbook now requires the operator's
+own request to cancel the named client order ID before the cancel command,
+forbids cancelling on the agent's initiative (rollback, reconciliation, or
+cleanup included), and says a submit or retry approval does not cover it.
+The submit phrase is not reused, because it names a submission; no new
+exact phrase is added, which would be a separate owner decision. No code
+checks the request, for the reason given in Ruling 2.
+`test_alpaca_runbook_approval_gates.py` pins the gate beside the cancel
+command and the rollback section's deferral to it.
+
 **Ruling 3: correct merge-status drift.** GitHub (the authority under
 `AUTOMATION.md`) shows PRs 9–17 merged (PR #22, #27–#30, #32–#35).
 `MASTER_PLAN.md` rows 9–17 and several `STATUS.md` paragraphs still read

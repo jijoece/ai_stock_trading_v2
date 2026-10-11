@@ -15,6 +15,7 @@ import json
 import logging
 
 import pytest
+import structlog
 
 from trading_research import logging_config
 
@@ -53,6 +54,15 @@ def test_configure_logging_sets_up_single_stderr_handler_no_propagate():
     assert len(root.handlers) == 1
     assert isinstance(root.handlers[0], logging.StreamHandler)
     assert root.propagate is False
+
+
+@pytest.mark.parametrize("json_output", [False, True])
+def test_configure_logging_installs_the_structlog_processor_formatter(json_output):
+    """PR 18 review round 11 (P2, r4266942257): the installed formatter,
+    not merely a constructed one, must be structlog's `ProcessorFormatter`."""
+    logging_config.configure_logging(json_output=json_output)
+    (handler,) = logging.getLogger("trading_research").handlers
+    assert type(handler.formatter) is structlog.stdlib.ProcessorFormatter
 
 
 def test_configure_logging_clears_handlers_on_repeat_call():

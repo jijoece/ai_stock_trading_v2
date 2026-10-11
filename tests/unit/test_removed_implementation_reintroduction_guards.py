@@ -234,13 +234,71 @@ def _formatter_authority_offenders() -> list[str]:
     ]
 
 
-def test_structlog_and_formatter_installation_only_in_logging_config():
-    assert _formatter_authority_offenders() == []
+def _is_processor_formatter_call(node: ast.AST | None) -> bool:
+    return isinstance(node, ast.Call) and _base_name(node.func) == "ProcessorFormatter"
+
+
+def _installed_formatter_offenders() -> list[str]:
+    """Traces each `setFormatter(...)` argument in `configure_logging` back
+    to its value: a `ProcessorFormatter(...)` call, or a name whose every
+    binding in the function is one."""
     configure = next(
         node for node in _tree(LOGGING_PATH).body
         if isinstance(node, ast.FunctionDef) and node.name == "configure_logging"
     )
-    assert "ProcessorFormatter" in _attribute_calls(configure)
+    # Only a plain `name = value` (or annotated/walrus) binding keeps its
+    # value; any other store (augmented, unpacking, loop, with, del) is None.
+    direct_values = {
+        id(target): node.value for node in ast.walk(configure)
+        if isinstance(node, (ast.Assign, ast.AnnAssign, ast.NamedExpr))
+        for target in (node.targets if isinstance(node, ast.Assign) else [node.target])
+    }
+    bindings: dict[str, list[ast.AST | None]] = {}
+    for node in ast.walk(configure):
+        if isinstance(node, ast.Name) and isinstance(node.ctx, (ast.Store, ast.Del)):
+            bindings.setdefault(node.id, []).append(direct_values.get(id(node)))
+    calls = [
+        node for node in ast.walk(configure)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "setFormatter"
+    ]
+    if not calls:
+        return ["configure_logging installs no formatter"]
+    offenders = []
+    for call in calls:
+        argument = call.args[0] if len(call.args) == 1 and not call.keywords else None
+        if _is_processor_formatter_call(argument):
+            continue
+        values = bindings.get(argument.id, []) if isinstance(argument, ast.Name) else []
+        if not values or not all(_is_processor_formatter_call(value) for value in values):
+            offenders.append(f"line {call.lineno}: {ast.unparse(call)}")
+    return offenders
+
+
+def test_structlog_and_formatter_installation_only_in_logging_config():
+    assert _formatter_authority_offenders() == []
+    assert _installed_formatter_offenders() == []
+
+
+def test_installed_formatter_guard_traces_the_set_formatter_argument(tmp_path, monkeypatch):
+    """PR 18 review round 11 (P2, r4266942257): the guard checked only that
+    some `ProcessorFormatter(...)` call existed in `configure_logging`, so
+    rebinding `formatter = logging.Formatter()` before `setFormatter`
+    while keeping the unused call passed every guard."""
+    source = LOGGING_PATH.read_text()
+    original = "    handler.setFormatter(formatter)\n"
+    assert original in source
+    mutated = tmp_path / "logging_config.py"
+    monkeypatch.setattr(sys.modules[__name__], "LOGGING_PATH", mutated)
+    for replacement in (
+        "    formatter = logging.Formatter()\n" + original,
+        "    handler.setFormatter(logging.Formatter())\n",
+        "    handler.setFormatter(other)\n",
+        "",
+    ):
+        mutated.write_text(source.replace(original, replacement))
+        assert _installed_formatter_offenders() != [], replacement
+    mutated.write_text(source.replace(original, "    handler.setFormatter(structlog.stdlib.ProcessorFormatter())\n"))
+    assert _installed_formatter_offenders() == []
 
 
 def test_formatter_authority_guard_scans_scripts(tmp_path, monkeypatch):

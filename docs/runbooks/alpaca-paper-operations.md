@@ -139,6 +139,14 @@ is required before another retry.
 
 ## Explicit cancellation
 
+`external-paper-cancel` changes the state of a broker order, so it needs the
+operator's own explicit request to cancel that client order ID. Show the
+operator the order's current status first. Do not cancel on your own
+initiative, including during rollback, reconciliation, or cleanup. A submit
+or retry approval does not cover a cancellation. As with submit, the CLI
+does not check for the request. It is an operator gate the agent must
+observe before running the command.
+
 ```bash
 python -m trading_research.cli external-paper-cancel \
   --book-id BASELINE --client-order-id <client-order-id> \
@@ -152,8 +160,9 @@ same reconciliation flow.
 
 Set `external_broker.allow_order_submission: false`, then
 `external_broker.enabled: false` and clear `enabled_book_ids`. This does not
-cancel existing paper orders; inspect/reconcile and explicitly cancel them
-first if required. Local simulation remains available for future intents.
+cancel existing paper orders; inspect/reconcile them first, and cancel one
+only when the operator explicitly requests it (see Explicit cancellation).
+Local simulation remains available for future intents.
 
 ## Optional real-paper smoke
 

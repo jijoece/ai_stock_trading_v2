@@ -54,6 +54,20 @@ def test_retry_requires_fresh_approval_rather_than_the_original_submit_approval(
     assert "does not carry over" in prose
 
 
+def test_cancellation_requires_an_explicit_operator_request():
+    """PR 18 review round 11 (P2, r4266942250, D16 Ruling 2b): the runbook
+    supplied `external-paper-cancel`, which changes broker order state, with
+    no approval step, and its rollback section said to "explicitly cancel"
+    orders without naming whose decision that was."""
+    text = RUNBOOK_PATH.read_text()
+    prose = " ".join(_prose_before_command(text, "external-paper-cancel").split())
+    assert "operator's own explicit request to cancel that client order ID" in prose
+    assert "Do not cancel on your own initiative" in prose
+    assert "does not cover a cancellation" in prose
+    rollback = " ".join(text.split("## Rollback", 1)[1].split("\n## ", 1)[0].split())
+    assert "only when the operator explicitly requests it" in rollback
+
+
 def _accepts_paper_books_config(command: str, capsys) -> bool:
     from trading_research.cli import main
 
