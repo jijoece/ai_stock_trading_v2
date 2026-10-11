@@ -102,13 +102,15 @@ def _redact_value(value: Any, _hook_depth: int = 0) -> Any:
     need not match any secret-shaped pattern to be forbidden by this
     module's no-leak contract. `bytes`/`bytearray` are redacted via their
     `str()` form, matching what `JSONRenderer`'s own non-serializable-value
-    fallback would otherwise render unredacted. A `list`/`tuple`/`set`/
-    `frozenset` subclass (e.g. a namedtuple, whose `__new__` takes
-    positional fields rather than a single iterable) is rebuilt as a plain
-    `tuple` rather than its own type, since reconstructing it via
-    `type(value)(iterable)` can raise -- silently dropping the log record
-    entirely, which is worse than losing the subclass's identity in a
-    JSON/text log line that would discard it anyway. Any other object that
+    fallback would otherwise render unredacted. A `list`/`tuple` subclass
+    (e.g. a namedtuple, whose `__new__` takes positional fields rather than
+    a single iterable) and every `set`/`frozenset` are rebuilt as a plain
+    `tuple` rather than their own type, since reconstructing them via
+    `type(value)(iterable)` can raise -- for a set, whenever a member's
+    redacted form (e.g. a `__structlog__` hook's mapping) is unhashable --
+    silently dropping the log record entirely, which is worse than losing
+    the container's identity in a JSON/text log line that would discard it
+    anyway. Any other object that
     is not a JSON scalar (`int`/`float`/`bool`/`None`) is replaced by its
     redacted `repr()` -- the same text `JSONRenderer`'s non-serializable-value
     fallback would render -- so a registered secret inside an arbitrary
@@ -147,7 +149,7 @@ def _redact_value(value: Any, _hook_depth: int = 0) -> Any:
         }
     if isinstance(value, (list, tuple, set, frozenset)):
         redacted_items = (_redact_value(item, _hook_depth) for item in value)
-        if type(value) in (list, tuple, set, frozenset):
+        if type(value) in (list, tuple):
             return type(value)(redacted_items)
         return tuple(redacted_items)
     if _hook_depth >= _MAX_STRUCTLOG_HOOK_DEPTH:

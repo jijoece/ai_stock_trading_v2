@@ -560,6 +560,26 @@ def test_json_output_redacts_registered_secret_inside_frozenset_extra_field():
     assert "[REDACTED]" in raw
 
 
+@pytest.mark.parametrize("container", [set, frozenset])
+def test_set_of_structlog_hook_objects_with_unhashable_results_is_logged(container):
+    """PR 18 review (r4266867609): rebuilding a `set`/`frozenset` from its
+    redacted members raised `TypeError` when a member's `__structlog__`
+    hook returned an unhashable mapping, dropping the whole record. Sets
+    must serialize as a hashability-independent sequence instead."""
+
+    class Summary:
+        def __structlog__(self):
+            return {"summary": "safe", "account_number": "123456789"}
+
+    buffer = _configure_capturing(json_output=True)
+    log = logging_config.get_logger("unit_test")
+    log.info("event", extra={"items": container({Summary()})})
+    raw = buffer.getvalue()
+    assert "123456789" not in raw
+    payload = json.loads(raw.strip())
+    assert payload["items"] == [{"summary": "safe", "account_number": "[REDACTED]"}]
+
+
 def test_json_output_redacts_registered_secret_inside_bytes_extra_field():
     logging_config.register_secret("bytes-member-secret")
     buffer = _configure_capturing(json_output=True)
