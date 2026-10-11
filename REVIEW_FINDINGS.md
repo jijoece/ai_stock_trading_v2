@@ -4,76 +4,135 @@
 
 - Repository: `/Users/jijopaul/workspace/ai_stock_trading_v2`
 - Branch: `migration/18-final-authority-safety-audit`
-- Reviewed HEAD: `df6bb571cbc018c7ad3e7861692ed83090981540`
-- Subject: PR 18: final authority and safety audit
-- Claude commits reviewed: 4f261aa81b77117c711bc77c4a4045f58863d444,76b399d1a270388425fb28884962b8a4c852ddf6,82860bcb28f730d983f1100cc3639fb092883f68,7b9d88eb4e2d56f354f3d60e84fc8eb898ebeb2d,b388928ce6fdcba8a5d6c165ab92460118e6600d,409244ca6c80e369f9207892a2e0f7743070823c,23bc0192a627bd5fa88c061995ff864ded94f502,8722863703a0a4beac11a46242afe23fc4ba0821,ab8c755a0c1f4890e27a7abed9908ff812745222,8ab474fb0a67609d725b968d1660e874b393606e,4c2bead9a374390b34fe2c8482eafae1a695667b,6c62ba4632b53336ed735b0da5b77d123067c6da,e087fea72f15f8d4d9461b7c78f39ad99f3bb607,69f05a611ffd8d85e2e27543d60d76305ec6f8aa,7e523012072b6887e6bb4d9de61158e6df49d648,5840263d87fd53bf4561d8c444bc2135871435bd,6958cc72250572f16df50ac6ad5dfc6937fd9c3c,7f53240d254e0961e9808051161f82871e63d3f3,c355b37863fa6a536fd6391d7048be3c6de46a18,08d6a6fd4f8f672ef477bd8762c672abb66cd455,13d49ad3370eb9563ad0960cb0568086db6d87d5,30fdc546be223173e754ef637a2d0c1436b5dd5e,88d3cb55a5b4667e2e34fe3c1d89f57bc5c87672,177d2744c62314ec5bc709f55f696aaf6ff0ea1d,3e15923397f461d07b95ee8d8605c772e3521303,8f73889c146a78887415ae2731654539d76dd16e,9732aa1bc3571f772316231dc71e4dcdd7fec12c,59eb96d30868c15dab4dccb69ca3fb67bd4009a4,9bd7446febf54a3722970c9d6df57f5fd4540dc9,6f66e1e871cbfc51c7f56ff2f25a6aed6ce7191e,fdfb219d4f5308ce48921b496dcba3e8e66e8287,3a5b9dc4f3f8ac895e10f301b9ac934fd08ac413,987013aa173fae4962b1fef8e5e35a90e0968e9f,155b0a3f6326687e272dc6d4355a64254c4b65f6,7594aca024ed08df11f8dfe75cb9804ddbe410b6,445a3ec97cb3c76456d28ce9bc21cc29c9fd93bd,df6bb571cbc018c7ad3e7861692ed83090981540
-- Review scope: INCREMENTAL
-- Fix round: 0
+- Reviewed HEAD: `04da132a2c83b29388d94352cb0b99af3c47fc94`
+- Subject: PR 18 fix round 1: record review findings resolution
+- Claude commits reviewed: df6bb571cbc018c7ad3e7861692ed83090981540,27b7fcd410bf28ae055a4b7f870214f879762084,04da132a2c83b29388d94352cb0b99af3c47fc94
+- Review scope: FULL_PR
+- Reviewed base: `bd95d2c7ba14a5333f1128ecf7b34a2059a95602`
+- GitHub PR: #36
+- Fix round: 1
 - Trigger: local Git `post-commit`
 - Review status: FIXES_APPLIED_PENDING_REVIEW
 - Highest priority: P1 (confirmed, fixed)
 - Finding count: 0
-- Fix commit: 27b7fcd410bf28ae055a4b7f870214f879762084
+- Fix commit: 2276e5dd17942e8e46de7d3dc18e75c0a64d55a4
 
 ## Findings
 
-### [P1] Investigate: JSON logging can expose escaped registered secrets from arbitrary extra objects
+### [P2] Investigate: arbitrary extra objects can suppress audit log records
 
-Commit: 13d49ad3370eb9563ad0960cb0568086db6d87d5
+Commit: 27b7fcd410bf28ae055a4b7f870214f879762084
 
-Location: src/trading_research/logging_config.py:104-118
+Location: src/trading_research/logging_config.py:108-124
 
-Concern: Verify whether JSON logging still violates the module’s no-secret-leak contract when an arbitrary object supplied through `extra` renders a registered secret containing JSON-escaped characters.
+Concern: Verify whether converting every non-scalar `extra` value with an unguarded `repr()` can cause otherwise valid log records to be dropped when an object’s representation raises an exception.
 
-Evidence: Commit `13d49ad…` replaced the fixed extra-field allowlist with `structlog.stdlib.ExtraAdder()`, allowing arbitrary objects into the JSON event. At HEAD, `_redact_value()` returns unrecognized objects unchanged. `JSONRenderer` subsequently serializes such an object through its representation, escaping quotes before the final string-level `redact()` pass. A focused probe registered `s3cr"et-value`, logged an object whose `__repr__` contained that value, and produced:
+Evidence: This commit changed `_redact_value()` from returning arbitrary objects unchanged to calling `redact(repr(value))`. A current-HEAD probe logged `extra={"details": Bad()}` where `Bad.__repr__()` raises `RuntimeError`. In plain-text mode—where extra fields are not rendered—the formatter nevertheless called `repr()`, emitted a logging-internal traceback, and produced an empty output stream instead of the requested `"must survive"` record. The added tests exercise successful representations only and only in JSON mode. Before this commit, plain rendering passed such values through and ignored them.
 
-```json
-{"details": "opaque s3cr\\\"et-value payload", "message": "event", ...}
-```
+Potential impact if confirmed: A diagnostic or domain object with a failing representation could suppress operational, safety, or audit log records, including records unrelated to the problematic extra field.
 
-The existing tests cover exceptions, mappings, sequences, sets, and bytes, but not arbitrary objects whose representation contains an escapable registered secret.
+Investigation and conditional remediation: First verify the concern against the current code in both plain and JSON modes using an `extra` object whose `__repr__` raises. If confirmed, make arbitrary-object conversion fail safely—for example, through a redacted fallback representation—and add regression coverage proving the main record is still emitted without leaking object contents. If disproved or already fixed through behavior not apparent in the current code, document that evidence and leave the code unchanged.
 
-Potential impact if confirmed: API credentials, tokens, account identifiers, or other registered secrets embedded in diagnostic/domain objects could be written to JSON logs despite the documented centralized-redaction guarantee.
-
-Investigation and conditional remediation: First verify the concern against the current logging pipeline using an arbitrary `extra` object whose `__repr__` contains registered secrets with a quote, backslash, and control character. If confirmed, ensure non-primitive values are converted and redacted before JSON serialization, or otherwise prevent arbitrary representations from entering rendered output, and add regression coverage for each escaping case. If the concern is disproved or already fixed through behavior not apparent in the current code, document that evidence and leave the code unchanged.
-
-Validation: Parse the emitted JSON and assert that neither the original secret nor its decoded value appears, while `[REDACTED]` does. Run `nox -s tests -- tests/unit/test_logging_config.py` and the canonical `nox -s ci`.
+Validation: Add focused tests for throwing representations in both output modes, then run `nox -s tests -- tests/unit/test_logging_config.py` and `nox -s ci`.
 
 Tests or diagnostics run:
 
-- Inspected every specified commit chronologically, including full code/test/configuration changes and relevant current ADR, migration, and runbook context.
-- Reproduced the JSON redaction leak with `.venv/bin/python` against reviewed HEAD.
-- Attempted the focused pytest suite, but the read-only environment had no writable temporary directory; pytest stopped during capture initialization before collecting tests.
-- `nox` was unavailable in the active environment.
-- No credentialed tests, broker operations, model calls, scheduler activation, or external order actions were performed.
+- Inspected all three specified commits chronologically, including their full diffs and relevant current code, tests, configuration, ADR decisions, and runbooks.
+- Reproduced the dropped plain-text log record with `.venv/bin/python` against reviewed HEAD.
+- `git diff --check bd95d2c7ba14a5333f1128ecf7b34a2059a95602..04da132a2c83b29388d94352cb0b99af3c47fc94` passed.
+- Targeted Nox tests could not start because the read-only environment provided no usable temporary directory; no tests were collected.
+- No credentialed tests, broker access, model calls, scheduler activation, or order actions were performed.
+
+### [P1] Investigate: Verify approval before retry submissions
+
+Commit: `df6bb571cbc018c7ad3e7861692ed83090981540`
+
+Location: `/Users/jijopaul/workspace/ai_stock_trading_v2/docs/runbooks/alpaca-paper-operations.md:46`
+
+Concern: An active GitHub review thread raises the following potentially valid issue:
+
+> **<sub><sub>![P1 Badge](https://img.shields.io/badge/P1-orange?style=flat)</sub></sub>  Verify approval before retry submissions**
+> 
+> The new approval gate is scoped only to `external-paper-submit`, but the same runbook later directs operators to run `external-paper-retry-submit`, and `retry_external_paper_order()` ultimately calls the broker submission path without reconfirming the phrase. Investigate whether the original order-level approval is intentionally valid after an ambiguous outcome and reconciliation; if it is not, an agent following this runbook could initiate another external broker action based only on `NOT_FOUND` evidence and CLI arguments. Verify the intended authorization lifetime and, if fresh approval is required, document that gate beside the retry command and add regression/procedural coverage; otherwise record why the original approval remains valid.
+> 
+> AGENTS.md reference: [AGENTS.md:L3-L4](https://github.com/jijoece/ai_stock_trading_v2/blob/df6bb571cbc018c7ad3e7861692ed83090981540/AGENTS.md#L3-L4)
+> 
+> Useful? React with 👍 / 👎.
+
+Evidence: [chatgpt-codex-connector review thread](https://github.com/jijoece/ai_stock_trading_v2/pull/36#discussion_r4255339515) is current, unresolved, and not outdated.
+
+Potential impact if confirmed: Merging would carry the reported defect into main.
+
+Investigation and conditional remediation: Verify the comment against the current code and reproduce the behavior where practical. If confirmed, fix it and add regression coverage. If it is invalid or already fixed, document the evidence and do not make an unnecessary code change.
+
+Validation: Run the focused regression test and the repository's canonical validation; a subsequent full-PR review must find no remaining defect.
+
+### [P2] Investigate: Include scripts in the formatter-authority guard
+
+Commit: `df6bb571cbc018c7ad3e7861692ed83090981540`
+
+Location: `/Users/jijopaul/workspace/ai_stock_trading_v2/tests/unit/test_removed_implementation_reintroduction_guards.py:169`
+
+Concern: An active GitHub review thread raises the following potentially valid issue:
+
+> **<sub><sub>![P2 Badge](https://img.shields.io/badge/P2-yellow?style=flat)</sub></sub>  Include scripts in the formatter-authority guard**
+> 
+> This guard builds `tree_by_path` only from `SRC_ROOT`, even though the test's stated scope and D16 explicitly include `scripts/`. Consequently, adding `import structlog` and `handler.setFormatter(...)` to any script passes this test, allowing the second formatter authority that the audit says CI now prevents. Confirm this with a temporary script mutation; if reproduced, scan `_python_sources()` (or explicitly union `SCRIPTS_ROOT`) here and keep a regression mutation covering a script.
+> 
+> Useful? React with 👍 / 👎.
+
+Evidence: [chatgpt-codex-connector review thread](https://github.com/jijoece/ai_stock_trading_v2/pull/36#discussion_r4255339522) is current, unresolved, and not outdated.
+
+Potential impact if confirmed: Merging would carry the reported defect into main.
+
+Investigation and conditional remediation: Verify the comment against the current code and reproduce the behavior where practical. If confirmed, fix it and add regression coverage. If it is invalid or already fixed, document the evidence and do not make an unnecessary code change.
+
+Validation: Run the focused regression test and the repository's canonical validation; a subsequent full-PR review must find no remaining defect.
+
 
 ## Fix Record
 
-**Confirmed.** At `df6bb57`, logging an `extra` object whose `__repr__`
-contained a registered secret with a quote, backslash, or newline emitted the
-secret in JSON-escaped form (all three cases reproduced with
-`.venv/bin/python`). `_redact_value()` returned the object unchanged, and
-`JSONRenderer`'s `repr()` fallback escaped the secret before the final
-string-level `redact()` pass.
+All three findings were confirmed against `04da132` and fixed in
+`2276e5dd17942e8e46de7d3dc18e75c0a64d55a4`.
 
-Fix (`27b7fcd`): `_redact_value()` now passes JSON scalars
-(`int`/`float`/`bool`/`None`) through and replaces any other non-container
-object with `redact(repr(value))`, the same text `JSONRenderer` would have
-rendered, before serialization. `_redact_event_dict()` skips the
-`ProcessorFormatter` meta keys (`_record`, `_from_structlog`).
+**[P2] Raising `repr()` dropped log records — confirmed.** A probe that
+logged `extra={"details": Bad()}`, where `Bad.__repr__` raises, produced
+empty output in both plain and JSON modes. `_redact_value()` now catches
+the exception and substitutes a redacted `<unrepresentable TypeName>`
+placeholder. The record is emitted, and neither the object contents nor the
+exception text appear. Regression:
+`test_extra_object_with_raising_repr_does_not_drop_record[False|True]` in
+`tests/unit/test_logging_config.py`, which fails on `04da132`.
 
-Regression tests in `tests/unit/test_logging_config.py`:
+**[P1] Retry submission lacked the approval gate — confirmed.** D16
+Ruling 2 makes the phrase an operator-conversation gate that no code
+checks. The runbook applied it only to `external-paper-submit`, while
+`retry_external_paper_order()` sends a new broker attempt. `CLAUDE.md`
+requires explicit approval for any external paper-order action. The
+original approval covered one transmission and came before the ambiguous
+outcome, so it does not carry over. The runbook now requires the exact
+phrase, given fresh after reconciliation, beside the retry command. D16
+Ruling 2a and the `PRESERVATION_MANIFEST.md` row record this. Regression:
+`tests/unit/test_alpaca_runbook_approval_gates.py` checks that the gate
+appears in the prose directly before both broker-transmitting command blocks
+and that the retry approval is fresh. Two of its three tests fail against
+the previous runbook.
 
-- `test_json_output_redacts_registered_secret_in_arbitrary_object_repr_with_json_escaped_characters`
-  (quote, backslash, newline; top-level and nested objects; parses the JSON
-  and asserts neither the raw nor decoded secret appears while `[REDACTED]`
-  does). It fails on `df6bb57` and passes with the fix.
-- `test_json_output_preserves_json_scalar_extra_fields`.
+**[P2] Formatter-authority guard skipped `scripts/` — confirmed.**
+`test_structlog_and_formatter_installation_only_in_logging_config` built
+its tree map from `SRC_ROOT` only. It now uses `_python_sources()`, which
+covers `src/` and `scripts/`, through `_formatter_authority_offenders()`.
+Regression: `test_formatter_authority_guard_scans_scripts` points
+`SCRIPTS_ROOT` at a temporary script that imports `structlog` and calls
+`setFormatter`, and asserts that both are flagged. It fails with the old
+`SRC_ROOT`-only scan.
 
 Validation:
 
-- `nox -s tests -- tests/unit/test_logging_config.py`: 41 passed.
-- `nox -s ci`: passed (tests 3416 passed / 107 skipped; paper_tests 160
+- `nox -s tests -- tests/unit/test_logging_config.py tests/unit/test_removed_implementation_reintroduction_guards.py tests/unit/test_alpaca_runbook_approval_gates.py`:
+  55 passed.
+- `nox -s ci`: passed (tests 3422 passed / 107 skipped; paper_tests 160
   passed; safety_typecheck 0 errors; migration_smoke passed).
+- `scripts/check_links.sh`: 0 errors.
 - No credentialed tests, broker operations, model calls, scheduler
   activation, or external order actions were performed.
