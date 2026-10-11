@@ -2,10 +2,14 @@
 
 Branch `migration/18-final-authority-safety-audit`, based on `origin/main`
 `bd95d2c` (PR 17 merged). Rulings: [`DECISIONS.md`](../DECISIONS.md) D16.
-This PR changes tests and documents, plus one line in the migration tooling,
-`scripts/migration_helper.py` (D16 ruling 3a). No code under `src/`,
-`paper_runtime/src/`, `backtest_runtime/`, or `config/` is modified, and no
-trading, safety, or accounting behavior changes.
+This PR changes tests and documents, one line in the migration tooling,
+`scripts/migration_helper.py` (D16 ruling 3a), and one source file,
+`src/trading_research/logging_config.py` (D16 ruling 5): review found that
+arbitrary objects in log `extra` fields bypassed redaction, and the fix
+redacts their `repr()` before JSON serialization. No other code under
+`src/`, and no code under `paper_runtime/src/`, `backtest_runtime/`, or
+`config/`, is modified. No trading, limit, authorization, or accounting
+behavior changes.
 
 ## Merge status (GitHub-authoritative, checked 2026-10-12)
 
@@ -65,6 +69,12 @@ numbered sequence and is not a precondition for this audit.
    (D16 ruling 3a).
 5. **Hard limits versus configurable limits.** The owner chose policy B.
    The rationale and regression coverage are in D16 ruling 4.
+6. **Log `extra` objects bypassed redaction (found in review).**
+   `_redact_value()` returned arbitrary objects unchanged, so a registered
+   secret in an object's `repr()` reached `JSONRenderer`, which could escape
+   it past the line-level redaction. It now redacts every non-scalar
+   object's `repr()`, and a `repr()` that raises becomes a type-only
+   placeholder so the record is still emitted (D16 ruling 5).
 
 ## Residual items (not blockers)
 

@@ -1893,6 +1893,19 @@ audit:
 Moving to policy A later is a change to `config.py`'s validation and to
 these tests, not a reinterpretation of them.
 
+**Ruling 5: redact arbitrary log `extra` objects before serialization.**
+Review found that `logging_config._redact_value()` returned objects other
+than strings, bytes, mappings, and sequences unchanged. `JSONRenderer` then
+serialized them through `repr()`, and JSON escaping could hide a registered
+secret from the line-level redaction. This is the PR's one change under
+`src/`. JSON scalars (`None`, `bool`, `int`, `float`) pass through
+unchanged; any other object is replaced by its redacted `repr()`. A
+`repr()` that raises is replaced by `<unrepresentable TypeName>`, so the
+record is still emitted in both plain and JSON modes. `ProcessorFormatter`
+bookkeeping keys (`_record`, `_from_structlog`) are left raw because they
+are removed before rendering. `tests/unit/test_logging_config.py` pins
+this behavior.
+
 **Out of scope, recorded.**
 
 - `paper_runtime/src/trading_paper_runtime/logging_config.py` installs a
@@ -1906,5 +1919,6 @@ these tests, not a reinterpretation of them.
   `talib.MACD`/`TRIX`), not by an AST guard. That is sufficient to catch a
   reintroduced hand-written formula, and the owner did not ask for more.
 
-**No ADR.** This PR adds tests and corrects documents. Policy B keeps the
-existing behavior.
+**No ADR.** This PR adds tests, corrects documents, and hardens log
+redaction within the existing `structlog` authority (ruling 5). Policy B
+keeps the existing behavior.

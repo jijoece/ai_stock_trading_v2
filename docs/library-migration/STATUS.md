@@ -17,10 +17,12 @@ checks all eleven `plan.md` completion criteria and makes four changes:
   validation used is preserved. The rationale is in D16 ruling 4; the
   regression coverage is in `tests/unit/test_standing_paper_limits_policy.py`.
 
-No code under `src/` or `config/` is modified. One tooling fix makes
-`scripts/migration_helper.py` read only this header block, so it treats
-PR 18 as the final phase (D16 ruling 3a). See "Completed work (PR 18)"
-below.
+One tooling fix makes `scripts/migration_helper.py` read only this header
+block, so it treats PR 18 as the final phase (D16 ruling 3a). One
+review-found source fix in `src/trading_research/logging_config.py` redacts
+arbitrary log `extra` objects' `repr()` before JSON serialization (D16
+ruling 5). No other code under `src/`, and nothing under `config/`, is
+modified. See "Completed work (PR 18)" below.
 
 PR 17 — Remove only approved commodity implementations — is **merged**
 (PR #35, `bd95d2c`, branch
@@ -3678,6 +3680,13 @@ Record at `pr18/AUDIT.md`; rulings at `DECISIONS.md` D16. All eleven
 
 - `scripts/migration_helper.py`: `parse_status` reads only the header block
   (D16 ruling 3a). A new test covers it in `tests/unit/test_migration_helper.py`.
+- `src/trading_research/logging_config.py` (the only `src/` change, found in
+  review): `_redact_value()` redacts any non-scalar object's `repr()`, with
+  a type-only placeholder when `repr()` raises (D16 ruling 5). Covered by
+  three new tests in `tests/unit/test_logging_config.py`.
+- `tests/unit/test_alpaca_runbook_approval_gates.py` (new, found in review):
+  pins the approval-phrase gate beside both broker-transmitting runbook
+  commands (D16 ruling 2a).
 - `PRESERVATION_MANIFEST.md`: corrected the approval-phrase row and recorded
   policy B on the hard-limits row.
 - `docs/runbooks/alpaca-paper-operations.md`: use an override file instead
@@ -3712,8 +3721,8 @@ This audit confirms the existing authorities and adds guards around them.
 - `scripts/check_links.sh`: 188 links checked, 186 OK, **0 errors**, 2
   excluded.
 
-**Safety:** no trading limit, limit value, authorization rule, `paper_books`
-accounting code, external-broker state machine, research boundary, or
+**Safety:** apart from the log-redaction hardening above, no trading limit,
+limit value, authorization rule, `paper_books` accounting code, external-broker state machine, research boundary, or
 scheduling behavior was modified. Real model calls: 0. Real provider
 calls: 0. Broker calls: 0. Paper orders: 0. Live orders: 0. Scheduler
 enabled: no.
