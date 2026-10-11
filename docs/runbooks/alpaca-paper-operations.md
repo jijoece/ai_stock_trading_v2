@@ -49,18 +49,20 @@ other wording counts as approval. The CLI does not check the phrase: it is
 the operator gate an agent must observe before running the command. The CLI
 enforces the configuration gates, a recent preview, `--operator`,
 `--reason`, account fingerprinting, and the notional caps. The phrase never
-enables live trading. Append `--paper-books-config <path>` to each command
-below.
+enables live trading. Every command below that accepts it takes the
+override file through `--paper-books-config <path>`.
 
 ```bash
-python -m trading_research.cli external-paper-account-check --book-id BASELINE
+python -m trading_research.cli external-paper-account-check --book-id BASELINE \
+  --paper-books-config <path>
 
 python -m trading_research.cli external-paper-preview \
-  --book-id BASELINE --intent-id <intent-id> --operator <name>
+  --book-id BASELINE --intent-id <intent-id> --operator <name> \
+  --paper-books-config <path>
 
 python -m trading_research.cli external-paper-submit \
   --book-id BASELINE --intent-id <intent-id> --preview-id <preview-id> \
-  --operator <name> --reason "<reason>"
+  --operator <name> --reason "<reason>" --paper-books-config <path>
 ```
 
 Inspect bounded local evidence:
@@ -87,7 +89,8 @@ fresh from the order-event chain every call, never a stale stored value.
 
 ```bash
 python -m trading_research.cli external-paper-reconcile \
-  --book-id BASELINE --client-order-id <client-order-id>
+  --book-id BASELINE --client-order-id <client-order-id> \
+  --paper-books-config <path>
 ```
 
 Never rerun submit after `UNKNOWN_REQUIRES_RECONCILIATION`. Reconcile first.
@@ -104,7 +107,8 @@ file, because the tracked config has submission disabled.
 ```bash
 python -m trading_research.cli external-paper-refresh-retry-preview \
   --book-id BASELINE --intent-id <intent-id> \
-  --operator <name> --reason "original preview expired during reconciliation"
+  --operator <name> --reason "original preview expired during reconciliation" \
+  --paper-books-config <path>
 ```
 
 `external-paper-retry-submit` transmits a new broker attempt, so it needs
@@ -119,7 +123,8 @@ the command.
 ```bash
 python -m trading_research.cli external-paper-retry-submit \
   --book-id BASELINE --intent-id <intent-id> \
-  --operator <name> --reason "authoritative not-found retry"
+  --operator <name> --reason "authoritative not-found retry" \
+  --paper-books-config <path>
 ```
 
 Account, namespace, order, fill, cash, or position mismatches are critical and
@@ -137,7 +142,7 @@ is required before another retry.
 ```bash
 python -m trading_research.cli external-paper-cancel \
   --book-id BASELINE --client-order-id <client-order-id> \
-  --operator <name> --reason "<reason>"
+  --operator <name> --reason "<reason>" --paper-books-config <path>
 ```
 
 There is no automatic cancellation. An ambiguous cancel outcome requires the

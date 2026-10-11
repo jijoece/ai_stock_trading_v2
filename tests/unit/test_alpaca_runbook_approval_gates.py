@@ -52,3 +52,33 @@ def test_retry_requires_fresh_approval_rather_than_the_original_submit_approval(
     prose = " ".join(_prose_before_command(RUNBOOK_PATH.read_text(), "external-paper-retry-submit").split())
     assert "needs fresh approval" in prose
     assert "does not carry over" in prose
+
+
+def _accepts_paper_books_config(command: str, capsys) -> bool:
+    from trading_research.cli import main
+
+    with pytest.raises(SystemExit):
+        main([command, "--help"])
+    return "--paper-books-config" in capsys.readouterr().out
+
+
+def test_every_documented_command_that_accepts_the_override_supplies_it(capsys):
+    """PR 18 review round 6 (P2): the retry-preview refresh example omitted
+    `--paper-books-config`, so following it loaded the tracked config, which
+    has external paper disabled, and the refresh failed with
+    `PAPER_BOOKS_DISABLED`. The flag set comes from the real CLI parser."""
+    text = RUNBOOK_PATH.read_text()
+    invocations = [
+        " ".join(invocation.replace("\\\n", " ").split())
+        for block in _FENCE.finditer(text)
+        for invocation in re.split(r"\n(?=python -m trading_research\.cli )", block.group(1))
+        if invocation.startswith("python -m trading_research.cli external-paper-")
+    ]
+    checked = set()
+    for invocation in invocations:
+        command = invocation.split()[3]
+        if _accepts_paper_books_config(command, capsys):
+            checked.add(command)
+            assert "--paper-books-config <path>" in invocation, invocation
+    assert "external-paper-refresh-retry-preview" in checked
+    assert "external-paper-retry-submit" in checked
