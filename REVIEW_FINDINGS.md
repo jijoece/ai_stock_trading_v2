@@ -4,18 +4,18 @@
 
 - Repository: `/Users/jijopaul/workspace/ai_stock_trading_v2`
 - Branch: `migration/18-final-authority-safety-audit`
-- Reviewed HEAD: `1555bf6f391426a8f96cff8c28e4a0440dd213b0`
-- Subject: PR 18 fix round 9: record review findings resolution
-- Claude commits reviewed: df6bb571cbc018c7ad3e7861692ed83090981540,27b7fcd410bf28ae055a4b7f870214f879762084,04da132a2c83b29388d94352cb0b99af3c47fc94,2276e5dd17942e8e46de7d3dc18e75c0a64d55a4,06042259ef32255aed41a814f3143bc2a7e34f70,b2271381180ed6e5c2293eadc29aa1eef2a63421,a6f03dd1eaef69b9223e81ac9374880f69026c11,79248feb33d3888cc7f0acb482f6a5f5a70742b8,9c7b20a6e4292fa1c1181f2d8f0ea00750abc36d,9dedcc080094ea8a54a5cfad343ba2d4c1c23715,19bb0edcf1594bb3d5fb16fb423377f194f39370,398ea07388af285e420e620dffd65aec1eee4d2b,9bc6e58be5dc1932236971316835d63b980c3e22,f9ec68d52ca33780da5b45c10fef54bec0a7554e,3a66d10de308fac681222c6a0160886e14a70c28,c1de3ed68a68efa330dca7eb2b6183cc10adf89e,fadb58900a5d8a655fe017c8197f85b94afe8419,581229c01301f9f4a1ce7da77cddbe69e4a84249,1555bf6f391426a8f96cff8c28e4a0440dd213b0
+- Reviewed HEAD: `90995596897cb2998cbdc56f8b5a2fe6ab0d83cf`
+- Subject: PR 18 fix round 10: record review findings resolution
+- Claude commits reviewed: df6bb571cbc018c7ad3e7861692ed83090981540,27b7fcd410bf28ae055a4b7f870214f879762084,04da132a2c83b29388d94352cb0b99af3c47fc94,2276e5dd17942e8e46de7d3dc18e75c0a64d55a4,06042259ef32255aed41a814f3143bc2a7e34f70,b2271381180ed6e5c2293eadc29aa1eef2a63421,a6f03dd1eaef69b9223e81ac9374880f69026c11,79248feb33d3888cc7f0acb482f6a5f5a70742b8,9c7b20a6e4292fa1c1181f2d8f0ea00750abc36d,9dedcc080094ea8a54a5cfad343ba2d4c1c23715,19bb0edcf1594bb3d5fb16fb423377f194f39370,398ea07388af285e420e620dffd65aec1eee4d2b,9bc6e58be5dc1932236971316835d63b980c3e22,f9ec68d52ca33780da5b45c10fef54bec0a7554e,3a66d10de308fac681222c6a0160886e14a70c28,c1de3ed68a68efa330dca7eb2b6183cc10adf89e,fadb58900a5d8a655fe017c8197f85b94afe8419,581229c01301f9f4a1ce7da77cddbe69e4a84249,1555bf6f391426a8f96cff8c28e4a0440dd213b0,90995596897cb2998cbdc56f8b5a2fe6ab0d83cf
 - Review scope: FULL_PR
 - Reviewed base: `bd95d2c7ba14a5333f1128ecf7b34a2059a95602`
 - GitHub PR: #36
-- Fix round: 1
+- Fix round: 2
 - Trigger: local Git `post-commit`
 - Review status: FIXES_APPLIED_PENDING_REVIEW
-- Highest priority: P1 (all four findings re-raised from still-open GitHub threads and already fixed at HEAD; no code change this round: retry approval in 2276e5d, `__structlog__` redaction in 79248fe and 9dedcc0, hook-depth fallback in f9ec68d, unhashable hook results inside sets in 581229c)
+- Highest priority: P1 (findings 1-4 re-raised from still-open GitHub threads and already fixed; findings 5-6 confirmed and fixed)
 - Finding count: 0
-- Fix commit: 1555bf6f391426a8f96cff8c28e4a0440dd213b0
+- Fix commit: f7b141c2d875e247454d3acdf7f923c95a37c44c
 
 ## Findings
 
@@ -43,7 +43,7 @@ Investigation and conditional remediation: Verify the comment against the curren
 
 Validation: Run the focused regression test and the repository's canonical validation; a subsequent full-PR review must find no remaining defect.
 
-Resolution: Already fixed in 2276e5d; no code change. `docs/runbooks/alpaca-paper-operations.md:114-121` requires fresh approval with the exact phrase directly before `external-paper-retry-submit`; the original approval does not carry over. `test_retry_requires_fresh_approval_rather_than_the_original_submit_approval` and `test_broker_transmitting_command_is_preceded_by_the_approval_gate` pass at HEAD.
+Resolution: Already fixed in 2276e5d; no code change. `docs/runbooks/alpaca-paper-operations.md` requires fresh approval with the exact phrase directly before `external-paper-retry-submit`; the original approval does not carry over. `test_retry_requires_fresh_approval_rather_than_the_original_submit_approval` and `test_broker_transmitting_command_is_preceded_by_the_approval_gate` pass.
 
 ### [P1] Investigate: Investigate bypassing `__structlog__` during redaction
 
@@ -67,7 +67,7 @@ Investigation and conditional remediation: Verify the comment against the curren
 
 Validation: Run the focused regression test and the repository's canonical validation; a subsequent full-PR review must find no remaining defect.
 
-Resolution: Already fixed in 79248fe and 9dedcc0; no code change. `_redact_value` evaluates the hook and recursively redacts its result before any `repr()` fallback. The reviewer's `Structured(api_key='abcd1234efgh')` probe yields `{'api_key': '[REDACTED]'}` at HEAD, and `test_json_output_redacts_structlog_hook_result_instead_of_leaking_its_repr` passes.
+Resolution: Already fixed in 79248fe and 9dedcc0; no code change. `_redact_value` evaluates the hook and recursively redacts its result before any `repr()` fallback. `test_json_output_redacts_structlog_hook_result_instead_of_leaking_its_repr` passes.
 
 ### [P2] Investigate: Investigate leaking data at the hook-depth fallback
 
@@ -91,7 +91,7 @@ Investigation and conditional remediation: Verify the comment against the curren
 
 Validation: Run the focused regression test and the repository's canonical validation; a subsequent full-PR review must find no remaining defect.
 
-Resolution: Already fixed in f9ec68d; no code change. Past `_MAX_STRUCTLOG_HOOK_DEPTH`, `_redact_value` returns a type-only `<structlog hook depth exceeded: ...>` placeholder, never the `repr()`. The reviewer's `Chain(9)` probe emits no account number at HEAD, and `test_structlog_hook_chain_past_depth_limit_does_not_leak_its_repr` passes.
+Resolution: Already fixed in f9ec68d; no code change. Past `_MAX_STRUCTLOG_HOOK_DEPTH`, `_redact_value` returns a type-only placeholder, never the `repr()`. `test_structlog_hook_chain_past_depth_limit_does_not_leak_its_repr` passes.
 
 ### [P2] Investigate: Investigate unhashable hook results inside sets
 
@@ -117,5 +117,57 @@ Investigation and conditional remediation: Verify the comment against the curren
 
 Validation: Run the focused regression test and the repository's canonical validation; a subsequent full-PR review must find no remaining defect.
 
-Resolution: Already fixed in 581229c; no code change. `_redact_value` rebuilds every `set`/`frozenset` as a plain `tuple`, so unhashable hook results cannot raise. The reviewer's `{X()}` probe yields `({'summary': 'safe'},)` at HEAD, and `test_set_of_structlog_hook_objects_with_unhashable_results_is_logged` passes.
+Resolution: Already fixed in 581229c; no code change. `_redact_value` rebuilds every `set`/`frozenset` as a plain `tuple`, so unhashable hook results cannot raise. `test_set_of_structlog_hook_objects_with_unhashable_results_is_logged` passes.
+
+### [P2] Investigate: Investigate approval before external cancellation
+
+Commit: `1555bf6f391426a8f96cff8c28e4a0440dd213b0`
+
+Location: `/Users/jijopaul/workspace/ai_stock_trading_v2/docs/library-migration/PRESERVATION_MANIFEST.md:17`
+
+Concern: An active GitHub review thread raises the following potentially valid issue:
+
+> **<sub><sub>![P2 Badge](https://img.shields.io/badge/P2-yellow?style=flat)</sub></sub>  Investigate approval before external cancellation**
+> 
+> When an agent follows the newly authoritative runbook's “Explicit cancellation” procedure, investigate whether `external-paper-cancel` needs its own fresh operator approval: this revised manifest now scopes the conversation gate only to submit and retry, while `docs/runbooks/alpaca-paper-operations.md:140-149` supplies the cancellation command without an approval step and `cancel_external_paper_order()` calls `runtime.cancel_external_order()`. If cancellation was not separately requested, the agent can change broker order state despite the project's operator-approval invariant. Verify the intended authorization semantics; if confirmed, document the cancellation gate and add procedural regression coverage, otherwise record why invoking this command already demonstrates explicit approval.
+> 
+> AGENTS.md reference: [AGENTS.md:L3-L4](https://github.com/jijoece/ai_stock_trading_v2/blob/1555bf6f391426a8f96cff8c28e4a0440dd213b0/AGENTS.md#L3-L4)
+> 
+> Useful? React with 👍 / 👎.
+
+Evidence: [chatgpt-codex-connector review thread](https://github.com/jijoece/ai_stock_trading_v2/pull/36#discussion_r4266942250) is current, unresolved, and not outdated.
+
+Potential impact if confirmed: Merging would carry the reported defect into main.
+
+Investigation and conditional remediation: Verify the comment against the current code and reproduce the behavior where practical. If confirmed, fix it and add regression coverage. If it is invalid or already fixed, document the evidence and do not make an unnecessary code change.
+
+Validation: Run the focused regression test and the repository's canonical validation; a subsequent full-PR review must find no remaining defect.
+
+Resolution: Confirmed and fixed in f7b141c. The runbook supplied `external-paper-cancel` with no approval step, and rollback said to "explicitly cancel". The runbook now requires the operator's own explicit request to cancel the named client order ID before the cancel command, forbids agent-initiated cancellation, and says a submit/retry approval does not cover it; rollback defers to that gate. Recorded as `DECISIONS.md` D16 Ruling 2b and in the manifest row. Regression: `test_cancellation_requires_an_explicit_operator_request`.
+
+### [P2] Investigate: Investigate whether ProcessorFormatter is actually installed
+
+Commit: `1555bf6f391426a8f96cff8c28e4a0440dd213b0`
+
+Location: `/Users/jijopaul/workspace/ai_stock_trading_v2/tests/unit/test_removed_implementation_reintroduction_guards.py:243`
+
+Concern: An active GitHub review thread raises the following potentially valid issue:
+
+> **<sub><sub>![P2 Badge](https://img.shields.io/badge/P2-yellow?style=flat)</sub></sub>  Investigate whether ProcessorFormatter is actually installed**
+> 
+> Investigate whether this guard establishes the claimed formatter authority: it proves only that some `ProcessorFormatter(...)` call exists in `configure_logging`, not that its result reaches `handler.setFormatter(...)`. A temporary mutation can assign `logging.Formatter()` to `formatter` while retaining an unused `structlog.stdlib.ProcessorFormatter(...)` call, and every new guard still passes because `LOGGING_PATH` is excluded from the `setFormatter` offender scan and no subclass is introduced. If confirmed, trace the value installed by `setFormatter` or add a behavioral assertion and retain that mutation as regression coverage; otherwise record the narrower guarantee.
+> 
+> AGENTS.md reference: [AGENTS.md:L68-L69](https://github.com/jijoece/ai_stock_trading_v2/blob/1555bf6f391426a8f96cff8c28e4a0440dd213b0/AGENTS.md#L68-L69)
+> 
+> Useful? React with 👍 / 👎.
+
+Evidence: [chatgpt-codex-connector review thread](https://github.com/jijoece/ai_stock_trading_v2/pull/36#discussion_r4266942257) is current, unresolved, and not outdated.
+
+Potential impact if confirmed: Merging would carry the reported defect into main.
+
+Investigation and conditional remediation: Verify the comment against the current code and reproduce the behavior where practical. If confirmed, fix it and add regression coverage. If it is invalid or already fixed, document the evidence and do not make an unnecessary code change.
+
+Validation: Run the focused regression test and the repository's canonical validation; a subsequent full-PR review must find no remaining defect.
+
+Resolution: Confirmed and fixed in f7b141c. The guard now traces each `setFormatter(...)` argument in `configure_logging` to a `ProcessorFormatter(...)` call (directly or via every binding of the name). Regression: `test_installed_formatter_guard_traces_the_set_formatter_argument` keeps the reviewer's mutation (`formatter = logging.Formatter()` before `setFormatter`) plus three others, and `test_configure_logging_installs_the_structlog_processor_formatter` asserts the installed formatter's type in both output modes.
 
