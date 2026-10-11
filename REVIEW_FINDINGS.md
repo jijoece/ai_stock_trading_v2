@@ -10,11 +10,12 @@
 - Review scope: FULL_PR
 - Reviewed base: `ea1168df782c5e07e961657ea947ec0724aa6e72`
 - GitHub PR: #34
-- Fix round: 0
-- Trigger: local Git `post-commit`
-- Review status: NEEDS_FIXES
-- Highest priority: P2
-- Finding count: 1
+- Fix round: 4
+- Trigger: local Git `post-commit`, plus a stale GitHub review thread on PR #34
+- Review status: FIXES_APPLIED_PENDING_REVIEW
+- Highest priority: none
+- Finding count: 0
+- Fix commit: `fdfb219d4f5308ce48921b496dcba3e8e66e8287`
 
 ## Investigation and resolution
 
