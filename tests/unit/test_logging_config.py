@@ -249,6 +249,49 @@ def test_json_output_redacts_registered_secret_in_nested_extra_field_with_json_e
     assert secret not in raw
 
 
+@pytest.mark.parametrize(
+    "secret",
+    [
+        'opaque"secret-with-quote',
+        "opaque\\secret-with-backslash",
+        "opaque\nsecret-with-newline",
+    ],
+)
+def test_json_output_redacts_registered_secret_in_arbitrary_object_repr_with_json_escaped_characters(secret):
+    """PR 18 review (P1): `_redact_value` returned an arbitrary `extra`
+    object unchanged, so `JSONRenderer` rendered its `repr()` itself and
+    JSON-escaped a quote, backslash, or control character inside a
+    registered secret -- defeating the final verbatim `redact()` pass over
+    the rendered line. The object's representation must be redacted before
+    serialization."""
+
+    class Opaque:
+        def __repr__(self) -> str:
+            return f"opaque {secret} payload"
+
+    logging_config.register_secret(secret)
+    buffer = _configure_capturing(json_output=True)
+    log = logging_config.get_logger("unit_test")
+    log.info("event", extra={"details": Opaque(), "nested": {"items": [Opaque()]}})
+    raw = buffer.getvalue()
+    payload = json.loads(raw.strip())
+    assert secret not in raw
+    assert secret not in payload["details"]
+    assert payload["details"] == "opaque [REDACTED] payload"
+    assert payload["nested"]["items"] == ["opaque [REDACTED] payload"]
+
+
+def test_json_output_preserves_json_scalar_extra_fields():
+    buffer = _configure_capturing(json_output=True)
+    log = logging_config.get_logger("unit_test")
+    log.info("event", extra={"count": 3, "ratio": 0.5, "flag": True, "missing": None})
+    payload = json.loads(buffer.getvalue().strip())
+    assert payload["count"] == 3
+    assert payload["ratio"] == 0.5
+    assert payload["flag"] is True
+    assert payload["missing"] is None
+
+
 def test_json_output_redacts_account_number_extra_field_by_key():
     """PR 15 review round 2 (finding 3): the pre-migration formatter only
     ever surfaced eight allowlisted `extra` fields, so an account number

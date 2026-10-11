@@ -100,7 +100,13 @@ def _redact_value(value: Any) -> Any:
     `tuple` rather than its own type, since reconstructing it via
     `type(value)(iterable)` can raise -- silently dropping the log record
     entirely, which is worse than losing the subclass's identity in a
-    JSON/text log line that would discard it anyway."""
+    JSON/text log line that would discard it anyway. Any other object that
+    is not a JSON scalar (`int`/`float`/`bool`/`None`) is replaced by its
+    redacted `repr()` -- the same text `JSONRenderer`'s non-serializable-value
+    fallback would render -- so a registered secret inside an arbitrary
+    object's representation is redacted before serialization can escape it."""
+    if value is None or isinstance(value, (bool, int, float)):
+        return value
     if isinstance(value, str):
         return redact(value)
     if isinstance(value, (bytes, bytearray)):
@@ -115,11 +121,18 @@ def _redact_value(value: Any) -> Any:
         if type(value) in (list, tuple, set, frozenset):
             return type(value)(redacted_items)
         return tuple(redacted_items)
-    return value
+    return redact(repr(value))
+
+
+# `ProcessorFormatter` bookkeeping, removed by `remove_processors_meta`
+# before rendering; never serialized, so it is left as the raw object.
+_PROCESSOR_META_KEYS = ("_record", "_from_structlog")
 
 
 def _redact_event_dict(logger: Any, method_name: str, event_dict: MutableMapping[str, Any]) -> MutableMapping[str, Any]:
     for key, value in event_dict.items():
+        if key in _PROCESSOR_META_KEYS:
+            continue
         event_dict[key] = "[REDACTED]" if _is_sensitive_key(key) else _redact_value(value)
     return event_dict
 
@@ -200,10 +213,9 @@ _JSON_RENDERER = structlog.processors.JSONRenderer()
 
 
 def _render_json(logger: Any, method_name: str, event_dict: MutableMapping[str, Any]) -> str:
-    # Redact the serialized line as the final boundary too.  ExtraAdder may
-    # surface nested mappings, sequences, or objects whose string
-    # representation contains a secret; top-level event-dict redaction alone
-    # cannot see those values before JSONRenderer serializes them.
+    # Redact the serialized line as the final boundary too.  Primary
+    # redaction already happened in `_redact_event_dict`, on raw values
+    # (including arbitrary objects' `repr()`), before JSON escaping.
     return redact(_JSON_RENDERER(logger, method_name, event_dict))
 
 
