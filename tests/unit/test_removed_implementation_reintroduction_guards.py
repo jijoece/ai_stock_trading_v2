@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import ast
 import pathlib
+import sys
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
 SRC_ROOT = REPO_ROOT / "src" / "trading_research"
@@ -163,15 +164,32 @@ def test_no_custom_logging_formatter_subclass_exists():
     assert offenders == []
 
 
+def _formatter_authority_offenders() -> list[str]:
+    tree_by_path = {path: _tree(path) for path in _python_sources() if path != LOGGING_PATH}
+    return [
+        f"{path}: {kind}" for path, tree in tree_by_path.items()
+        for kind, found in (("structlog", _imports(tree, "structlog")), ("setFormatter", "setFormatter" in _attribute_calls(tree)))
+        if found
+    ]
+
+
 def test_structlog_and_formatter_installation_only_in_logging_config():
-    tree_by_path = {path: _tree(path) for path in SRC_ROOT.rglob("*.py")}
-    assert [str(p) for p, t in tree_by_path.items() if p != LOGGING_PATH and _imports(t, "structlog")] == []
-    assert [str(p) for p, t in tree_by_path.items() if p != LOGGING_PATH and "setFormatter" in _attribute_calls(t)] == []
+    assert _formatter_authority_offenders() == []
     configure = next(
-        node for node in tree_by_path[LOGGING_PATH].body
+        node for node in _tree(LOGGING_PATH).body
         if isinstance(node, ast.FunctionDef) and node.name == "configure_logging"
     )
     assert "ProcessorFormatter" in _attribute_calls(configure)
+
+
+def test_formatter_authority_guard_scans_scripts(tmp_path, monkeypatch):
+    """PR 18 review round 2 (P2): the guard scanned only `SRC_ROOT`, so a
+    script importing structlog or installing a formatter passed despite
+    D16's `scripts/` scope."""
+    script = tmp_path / "rogue_logging.py"
+    script.write_text("import logging\nimport structlog\nlogging.StreamHandler().setFormatter(None)\n")
+    monkeypatch.setattr(sys.modules[__name__], "SCRIPTS_ROOT", tmp_path)
+    assert _formatter_authority_offenders() == [f"{script}: structlog", f"{script}: setFormatter"]
 
 
 def test_redaction_functions_have_exactly_one_definition():

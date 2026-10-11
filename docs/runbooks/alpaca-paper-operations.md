@@ -92,7 +92,16 @@ python -m trading_research.cli external-paper-reconcile \
 Never rerun submit after `UNKNOWN_REQUIRES_RECONCILIATION`. Reconcile first.
 If the deterministic client order ID is found, local state is repaired without
 submission. If and only if reconciliation persists authoritative `NOT_FOUND`,
-perform the bounded explicit retry:
+perform the bounded explicit retry.
+
+`external-paper-retry-submit` transmits a new broker attempt, so it needs
+fresh approval. The original submit approval does not carry over: it covered
+one transmission, and the ambiguous outcome and `NOT_FOUND` evidence came
+after it. Show the operator the reconciliation result and the retry, then
+wait for the exact phrase `Approved, submit this exact paper order.` for
+that retry. No other wording counts. As with submit, the CLI does not check
+the phrase. It is an operator gate the agent must observe before running
+the command.
 
 ```bash
 python -m trading_research.cli external-paper-retry-submit \

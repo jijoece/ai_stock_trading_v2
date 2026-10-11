@@ -1821,6 +1821,18 @@ implement a phrase check: an agent that runs the CLI would also supply the
 phrase, so the check would add a string and no assurance. Adding one would
 be a separate owner decision.
 
+**Ruling 2a: the approval phrase also gates a retry.** Review found that
+the runbook applied the phrase only to `external-paper-submit`, though
+`external-paper-retry-submit` reaches the same broker submission path.
+`CLAUDE.md` requires explicit approval for any external paper-order action,
+and a retry is a new transmission. The original approval covered one
+transmission and came before the ambiguous outcome and the `NOT_FOUND`
+evidence, so it does not carry over. The runbook now requires the same
+exact phrase, given fresh after reconciliation, beside the retry command.
+`NOT_FOUND` evidence remains a code gate on whether a retry is allowed. It
+is not operator approval. `test_alpaca_runbook_approval_gates.py` pins the
+gate beside both commands.
+
 **Ruling 3: correct merge-status drift.** GitHub (the authority under
 `AUTOMATION.md`) shows PRs 9–17 merged (PR #22, #27–#30, #32–#35).
 `MASTER_PLAN.md` rows 9–17 and several `STATUS.md` paragraphs still read

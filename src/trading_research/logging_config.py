@@ -104,7 +104,9 @@ def _redact_value(value: Any) -> Any:
     is not a JSON scalar (`int`/`float`/`bool`/`None`) is replaced by its
     redacted `repr()` -- the same text `JSONRenderer`'s non-serializable-value
     fallback would render -- so a registered secret inside an arbitrary
-    object's representation is redacted before serialization can escape it."""
+    object's representation is redacted before serialization can escape it.
+    A `repr()` that raises is replaced by a fixed placeholder naming only
+    the object's type, so a broken representation cannot drop the record."""
     if value is None or isinstance(value, (bool, int, float)):
         return value
     if isinstance(value, str):
@@ -121,7 +123,11 @@ def _redact_value(value: Any) -> Any:
         if type(value) in (list, tuple, set, frozenset):
             return type(value)(redacted_items)
         return tuple(redacted_items)
-    return redact(repr(value))
+    try:
+        representation = repr(value)
+    except Exception:
+        return redact(f"<unrepresentable {type(value).__qualname__}>")
+    return redact(representation)
 
 
 # `ProcessorFormatter` bookkeeping, removed by `remove_processors_meta`

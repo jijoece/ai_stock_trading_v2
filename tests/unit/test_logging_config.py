@@ -281,6 +281,32 @@ def test_json_output_redacts_registered_secret_in_arbitrary_object_repr_with_jso
     assert payload["nested"]["items"] == ["opaque [REDACTED] payload"]
 
 
+@pytest.mark.parametrize("json_output", [False, True])
+def test_extra_object_with_raising_repr_does_not_drop_record(json_output, capsys):
+    """PR 18 review round 2 (P2): `_redact_value` called `repr()` on an
+    arbitrary `extra` object unguarded, so a raising `__repr__` dropped the
+    whole record in both output modes. The record must still be emitted,
+    without the object's contents or the exception text."""
+
+    class Broken:
+        def __repr__(self) -> str:
+            raise RuntimeError("secret-bearing failure text")
+
+    buffer = _configure_capturing(json_output=json_output)
+    log = logging_config.get_logger("unit_test")
+    log.info("must survive", extra={"details": Broken(), "nested": [Broken()]})
+    raw = buffer.getvalue()
+    assert "must survive" in raw
+    assert "secret-bearing failure text" not in raw
+    assert "secret-bearing failure text" not in capsys.readouterr().err
+    if json_output:
+        payload = json.loads(raw.strip())
+        placeholder = "<unrepresentable test_extra_object_with_raising_repr_does_not_drop_record.<locals>.Broken>"
+        assert payload["message"] == "must survive"
+        assert payload["details"] == placeholder
+        assert payload["nested"] == [placeholder]
+
+
 def test_json_output_preserves_json_scalar_extra_fields():
     buffer = _configure_capturing(json_output=True)
     log = logging_config.get_logger("unit_test")
