@@ -4,61 +4,172 @@
 
 - Repository: `/Users/jijopaul/workspace/ai_stock_trading_v2`
 - Branch: `migration/16-opentelemetry-tracing`
-- Reviewed HEAD: `8f73889c146a78887415ae2731654539d76dd16e`
+- Reviewed HEAD: `94397bc8cb4eac19fd9f2e64f78e00cf8f9e065e`
 - Subject: PR 16: wire in OpenTelemetry as new, additive, offline-safe instrumentation
-- Claude commits reviewed: 4f261aa81b77117c711bc77c4a4045f58863d444,76b399d1a270388425fb28884962b8a4c852ddf6,82860bcb28f730d983f1100cc3639fb092883f68,7b9d88eb4e2d56f354f3d60e84fc8eb898ebeb2d,b388928ce6fdcba8a5d6c165ab92460118e6600d,409244ca6c80e369f9207892a2e0f7743070823c,23bc0192a627bd5fa88c061995ff864ded94f502,8722863703a0a4beac11a46242afe23fc4ba0821,ab8c755a0c1f4890e27a7abed9908ff812745222,8ab474fb0a67609d725b968d1660e874b393606e,4c2bead9a374390b34fe2c8482eafae1a695667b,6c62ba4632b53336ed735b0da5b77d123067c6da,e087fea72f15f8d4d9461b7c78f39ad99f3bb607,69f05a611ffd8d85e2e27543d60d76305ec6f8aa,7e523012072b6887e6bb4d9de61158e6df49d648,5840263d87fd53bf4561d8c444bc2135871435bd,6958cc72250572f16df50ac6ad5dfc6937fd9c3c,7f53240d254e0961e9808051161f82871e63d3f3,c355b37863fa6a536fd6391d7048be3c6de46a18,08d6a6fd4f8f672ef477bd8762c672abb66cd455,13d49ad3370eb9563ad0960cb0568086db6d87d5,30fdc546be223173e754ef637a2d0c1436b5dd5e,88d3cb55a5b4667e2e34fe3c1d89f57bc5c87672,177d2744c62314ec5bc709f55f696aaf6ff0ea1d,3e15923397f461d07b95ee8d8605c772e3521303,8f73889c146a78887415ae2731654539d76dd16e
 - Review scope: INCREMENTAL
-- Fix round: 0
-- Trigger: local Git `post-commit`
+- Fix round: 2
+- Trigger: GitHub review threads on PR #34
 - Review status: FIXES_APPLIED_PENDING_REVIEW
 - Highest priority: none
 - Finding count: 0
-- Fix commit: 6c9019b5542d6db57d58efae0711871f5dd672db
+- Fix commit: `9732aa1bc3571f772316231dc71e4dcdd7fec12c`
+- Prior round: the P1 JSON-exception-secret finding and the P2
+  configure-after-shutdown finding recorded at HEAD
+  `8f73889c146a78887415ae2731654539d76dd16e` were fixed in
+  `6c9019b5542d6db57d58efae0711871f5dd672db`; both remain fixed at the
+  HEAD reviewed here, and this round's two findings are new and distinct
+
+## Resolution
+
+Both P2 findings below are fixed in
+`9732aa1bc3571f772316231dc71e4dcdd7fec12c`
+(`src/trading_research/observability.py`,
+`tests/unit/test_observability.py`). The finding bodies are kept verbatim
+as the record of what was reviewed and confirmed.
+
+1. External global providers -- `configure_telemetry()` now refuses to
+   report success it cannot deliver. A pre-registration check plus a
+   post-registration identity check against
+   `trace.get_tracer_provider()`/`metrics.get_meter_provider()` (the only
+   reliable signal, since the API refuses replacement by log line alone)
+   decide whether this module actually owns each global. If another party
+   owns one, it raises the new `ExternalTelemetryProviderError`;
+   `adopt_existing_providers=True` is the explicit opt-in to run under
+   the already-registered provider(s), which are left untouched,
+   excluded from `shutdown_telemetry()`, and reported by the new
+   `uses_adopted_providers()`. A provider that loses a registration race
+   is shut down rather than leaked.
+2. Concurrent initialization -- a module `threading.Lock` now serializes
+   `configure_telemetry`/`shutdown_telemetry` in full, including the
+   `_configured` check, so exactly one concurrent first call builds and
+   registers providers and the rest are no-ops; the stored references
+   are therefore always the process globals.
+   `is_configured`/`uses_adopted_providers` stay lock-free single-`bool`
+   reads so a status query never blocks on someone else's call.
+
+Regression coverage runs each lifecycle scenario in a fresh subprocess
+with a hermetic environment, because OpenTelemetry's global registry is
+per-process and one-shot and is already consumed by the existing
+in-process test: external-provider refusal, full adoption,
+adopt-one/register-the-other, post-shutdown reconfiguration behavior in
+each case, and a deterministic two-thread serialization test asserting
+global identity and that shutdown shuts down the global providers.
+
+Validation after the fix:
+
+- `pytest tests/` with the opt-in gates disabled -- 3454 passed,
+  57 skipped.
+- `pytest tests/unit/test_observability.py
+  tests/unit/test_observability_import_boundary.py` -- 15 passed.
+- `scripts/check_links.sh` -- 184 OK, 0 errors.
+- `nox -s ci` (`tests`, `paper_tests`, `safety_typecheck`,
+  `migration_smoke`) -- all succeeded on this change set.
+- No broker access, credentialed tests, schedulers, model calls, or order
+  operations were performed.
 
 ## Findings
 
-### [P1] Investigate: JSON exception logging can expose registered secrets containing escaped characters
-
-Commit: 13d49ad3370eb9563ad0960cb0568086db6d87d5
-
-Location: src/trading_research/logging_config.py:104
-
-Concern: Investigate whether JSON-mode exception logging violates the module’s no-secret-leak contract when an exception contains a registered secret with a quote, backslash, or control character.
-
-Evidence: At reviewed HEAD, `_redact_value()` leaves exception objects unchanged. `JSONRenderer` then stringifies and JSON-escapes them before `_render_json()` performs its final verbatim replacement. A reproduction registering `secret"withquote`, raising `ValueError('secret"withquote')`, and calling `log.exception()` emitted:
-
-```json
-"ValueError('secret\"withquote')"
-```
-
-The pre-migration formatter did not serialize `exc_info`, so commit 13d49ad introduced this exposure. Existing escaping tests cover nested strings but not exception objects or other arbitrary objects.
-
-Potential impact if confirmed: API keys, tokens, credentials, account identifiers, or other registered secrets included in provider/broker exceptions could be written to JSON logs.
-
-Investigation and conditional remediation: Verify the concern against the current code first using JSON logging and an exception containing registered secrets with quotes, backslashes, and control characters. If confirmed, sanitize formatted exception data before JSON serialization—or otherwise ensure arbitrary objects cannot cross serialization without pre-escaping redaction—and add regression coverage. If disproved or already fixed, document the evidence and leave the code unchanged.
-
-Validation: Add an end-to-end JSON `log.exception()` regression test asserting both the parsed payload and raw serialized line contain no original secret. Run `nox -s tests -- tests/unit/test_logging_config.py`, followed by `nox -s ci`.
-
-### [P2] Investigate: telemetry cannot be configured again after shutdown despite reporting success
+### [P2] Confirmed: `configure_telemetry()` reports success while externally registered global providers stay in place
 
 Commit: 8f73889c146a78887415ae2731654539d76dd16e
 
-Location: src/trading_research/observability.py:95
+Location: src/trading_research/observability.py:111
 
-Concern: Investigate whether `shutdown_telemetry()` creates a false reconfiguration state: it resets the module’s `_configured` flag, but OpenTelemetry’s process-global provider registration is one-shot.
+Concern: If OpenTelemetry auto-instrumentation or another library has
+already registered the global tracer/meter providers,
+`configure_telemetry()` may still mark itself configured and store
+providers that never become global.
 
-Evidence: Configuring service `first`, shutting down, and configuring service `second` produced OpenTelemetry warnings that overriding both providers is prohibited. Nevertheless, `is_configured()` returned `True`, while both global providers remained the original shutdown providers and the tracer resource still reported service `first`. The module instead retained newly constructed providers that were never globally active. Existing tests stop after shutdown and do not exercise configure-after-shutdown.
+Evidence: CONFIRMED by a fresh-subprocess probe that registered an
+external `TracerProvider`/`MeterProvider` before importing this module,
+then called `configure_telemetry("probe-service")`. The call returned
+normally (exit code 0) and printed:
 
-Potential impact if confirmed: Long-running processes, test harnesses, or reloadable applications may believe telemetry was restarted while spans and metrics remain attached to shut-down providers, silently losing diagnostics.
+```
+is_configured True
+global_tracer_is_external True
+global_meter_is_external True
+stored_tracer_is_global False
+stored_meter_is_global False
+```
 
-Investigation and conditional remediation: Verify the concern against the current OpenTelemetry versions and intended lifecycle first. If confirmed, make the lifecycle truthful—either disallow reconfiguration after shutdown explicitly or preserve/reuse a valid global provider strategy—and add configure→shutdown→configure regression coverage. If disproved or already fixed, document the evidence and leave the code unchanged.
+with only `Overriding of current TracerProvider is not allowed` /
+`Overriding of current MeterProvider is not allowed` on stderr --
+OpenTelemetry's `set_tracer_provider`/`set_meter_provider` log a warning
+and keep the existing global. So `is_configured()` claimed success while
+both globals belonged to the external registrant and the two providers
+this module stored and would later `shutdown()` could never receive a
+span or metric. This is the same class of lie `TelemetryReconfigurationError`
+was added to prevent after shutdown, on the not-yet-covered
+pre-registration path.
 
-Validation: Assert global provider identity, service resource, exporter behavior, and `is_configured()` state across configure→shutdown→configure. Run `nox -s tests -- tests/unit/test_observability.py`, the observability-extra CI environment, and then `nox -s ci`.
+Potential impact if confirmed: Under `opentelemetry-instrument` or
+alongside any library that configures OpenTelemetry first, callers
+believe this module's resource/exporter settings are in effect while
+spans and metrics go to the foreign provider; `shutdown_telemetry()` then
+flushes and shuts down the wrong (unused) providers and leaves the live
+global ones running.
+
+Investigation and conditional remediation: Verify provider identity in a
+fresh subprocess with pre-registered providers. If confirmed, fail
+explicitly or implement a defined existing-provider policy, and test it.
+
+Validation: Subprocess regression tests asserting the raised error, the
+untouched external globals, and the documented adoption policy. Run
+`nox -s tests -- tests/unit/test_observability.py`, then `nox -s ci`.
+
+### [P2] Confirmed: concurrent first calls to `configure_telemetry()` leave globals and stored provider references inconsistent
+
+Commit: 8f73889c146a78887415ae2731654539d76dd16e
+
+Location: src/trading_research/observability.py:131
+
+Concern: Concurrent first calls to `configure_telemetry()` may interleave
+because the `_configured` check and the provider construction/
+registration/assignment that follow it are not protected by any lock.
+
+Evidence: CONFIRMED by a fresh-subprocess probe with deterministic
+synchronization: `build_tracer_provider` was wrapped so that both threads
+block on a 2-thread `threading.Barrier` after passing the `_configured`
+guard and building their own provider. Two threads then called
+`configure_telemetry("svc-a")` and `configure_telemetry("svc-b")`. No
+exception was raised in either thread, and the probe printed:
+
+```
+errors []
+is_configured True
+stored_tracer_is_global False
+stored_meter_is_global False
+stored_tracer_service svc-a
+global_tracer_service svc-b
+```
+
+Both calls passed the unguarded `_configured` check, both built
+providers, one won the global registration (`svc-b`) and the other's
+assignment to `_tracer_provider`/`_meter_provider` landed last (`svc-a`),
+so the module's stored references are not the process globals.
+
+Potential impact if confirmed: In a process that configures telemetry
+from more than one thread, the globals carry one service resource while
+`is_configured()` reports success and `shutdown_telemetry()` shuts down
+the losing providers -- leaving the real global providers live (including
+a `PeriodicExportingMetricReader` export thread under
+`console_export=True`) while the module believes telemetry is torn down.
+
+Investigation and conditional remediation: Verify with deterministic
+synchronization around provider construction/registration. If confirmed,
+serialize configuration and shutdown and test global identity plus
+shutdown behavior.
+
+Validation: Subprocess regression test asserting serialization, that the
+stored providers are the globals, which service name won, and that
+`shutdown_telemetry()` shuts down the global provider. Run
+`nox -s tests -- tests/unit/test_observability.py`, then `nox -s ci`.
 
 Tests or diagnostics run:
 
-- `git diff --check 30514df42ae61163875646eb8bc4c66f09140a41..8f73889c146a78887415ae2731654539d76dd16e` — passed.
-- Read-only JSON exception-secret reproduction — confirmed exposure.
-- Read-only telemetry configure→shutdown→configure reproduction — confirmed rejected provider replacement and stale global providers.
-- Focused pytest invocation was attempted but could not start because the read-only sandbox provided no writable temporary directory.
-- No broker access, credentialed tests, schedulers, model calls, or order operations were performed.
+- Fresh-subprocess external-provider probe — confirmed finding 1.
+- Fresh-subprocess barrier-synchronized concurrency probe — confirmed
+  finding 2.
+- No broker access, credentialed tests, schedulers, model calls, or order
+  operations were performed.
