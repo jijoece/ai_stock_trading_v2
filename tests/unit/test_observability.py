@@ -16,14 +16,29 @@ present with the `observability` extra installed, matching the CI
 `dependency-extras-smoke` job's own `import opentelemetry.sdk` check.
 
 Only `test_configure_telemetry_registers_global_providers_and_is_idempotent`
-touches OpenTelemetry's real global provider registry -- the API silently
-refuses to override an already-registered provider, so that one test
-covers both "sets the global provider" and "a second call is a no-op" in a
-single function rather than relying on cross-test ordering of a shared
-process-global. Every other test exercises `build_tracer_provider`/
-`build_meter_provider` directly, which never touch global state.
+touches OpenTelemetry's real global provider registry *in-process* -- the
+API silently refuses to override an already-registered provider, so that
+one test covers both "sets the global provider" and "a second call is a
+no-op" in a single function rather than relying on cross-test ordering of
+a shared process-global. Most other tests exercise
+`build_tracer_provider`/`build_meter_provider` directly, which never
+touch global state.
+
+The remaining lifecycle tests each need a *pristine* global registry --
+no provider registered yet, or one registered by a pretend external
+library before this module runs -- which is unreachable once anything in
+this process has registered one. They therefore run their body in a fresh
+subprocess via `_run_lifecycle_script`, assert inside that subprocess
+(where the global state actually lives), and let the parent test assert
+only on the exit status.
 """
 from __future__ import annotations
+
+import os
+import pathlib
+import subprocess
+import sys
+import textwrap
 
 import pytest
 
@@ -137,3 +152,280 @@ def test_configure_telemetry_registers_global_providers_and_is_idempotent():
     assert trace.get_tracer_provider() is tracer_provider
     assert metrics.get_meter_provider() is meter_provider
     assert tracer_provider.resource.attributes["service.name"] == "trading-research-test"
+
+
+REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
+
+
+def _run_lifecycle_script(body: str) -> None:
+    """Run `body` in a fresh interpreter, failing this test if it exits non-zero.
+
+    The assertions live inside the script because the state under test --
+    OpenTelemetry's process-global provider registry plus this module's
+    configuration flags -- is per-process and one-shot: it cannot be
+    restored between tests in this interpreter, where
+    `test_configure_telemetry_registers_global_providers_and_is_idempotent`
+    has already consumed it.
+    """
+    env = {
+        name: value
+        for name, value in os.environ.items()
+        # Drop the environment this module itself reads, so a developer
+        # shell that exports any of it cannot change what the script
+        # under test sees: console export would attach exporters the
+        # assertions do not expect, and either provider environment
+        # variable would make `get_*_provider()` load and register an
+        # external provider, i.e. silently change the scenario.
+        if name
+        not in {
+            "TRADING_RESEARCH_OTEL_CONSOLE",
+            "OTEL_PYTHON_TRACER_PROVIDER",
+            "OTEL_PYTHON_METER_PROVIDER",
+        }
+    }
+    # `src` first, and no empty path entry (which would add the CWD).
+    env["PYTHONPATH"] = os.pathsep.join(
+        path for path in (str(REPO_ROOT / "src"), os.environ.get("PYTHONPATH", "")) if path
+    )
+    completed = subprocess.run(
+        [sys.executable, "-c", textwrap.dedent(body)],
+        cwd=REPO_ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=120,
+        check=False,
+    )
+    assert completed.returncode == 0, (
+        f"lifecycle subprocess exited {completed.returncode}\n"
+        f"--- stdout ---\n{completed.stdout}\n--- stderr ---\n{completed.stderr}"
+    )
+
+
+def test_configure_telemetry_refuses_externally_registered_global_providers():
+    """Review thread: `configure_telemetry()` used to report success while
+    the globals stayed external and its own providers sat unused."""
+    _run_lifecycle_script(
+        """
+        from opentelemetry import metrics, trace
+        from opentelemetry.sdk.metrics import MeterProvider
+        from opentelemetry.sdk.trace import TracerProvider
+
+        # Stand in for OpenTelemetry auto-instrumentation, or any library
+        # that configures telemetry before this module gets a chance to.
+        external_tracer = TracerProvider()
+        external_meter = MeterProvider()
+        trace.set_tracer_provider(external_tracer)
+        metrics.set_meter_provider(external_meter)
+
+        from trading_research import observability
+
+        try:
+            observability.configure_telemetry("ours")
+        except observability.ExternalTelemetryProviderError as exc:
+            message = str(exc)
+        else:
+            raise AssertionError(
+                "configure_telemetry() reported success while both global "
+                "providers belonged to an external registrant"
+            )
+
+        assert "TracerProvider and MeterProvider" in message, message
+        assert "adopt_existing_providers=True" in message, message
+
+        # The external registrant keeps both globals; this module claims
+        # nothing and stores no provider that could never be used.
+        assert observability.is_configured() is False
+        assert observability.uses_adopted_providers() is False
+        assert trace.get_tracer_provider() is external_tracer
+        assert metrics.get_meter_provider() is external_meter
+        assert observability._tracer_provider is None
+        assert observability._meter_provider is None
+
+        # An unconfigured shutdown stays a no-op: it must never shut down
+        # a provider this module does not own.
+        observability.shutdown_telemetry()
+        assert external_meter._shutdown is False
+        """
+    )
+
+
+def test_configure_telemetry_adopts_external_global_providers_on_request():
+    _run_lifecycle_script(
+        """
+        from opentelemetry import metrics, trace
+        from opentelemetry.sdk.metrics import MeterProvider
+        from opentelemetry.sdk.trace import TracerProvider
+
+        external_tracer = TracerProvider()
+        external_meter = MeterProvider()
+        trace.set_tracer_provider(external_tracer)
+        metrics.set_meter_provider(external_meter)
+
+        from trading_research import observability
+
+        observability.configure_telemetry("ours", adopt_existing_providers=True)
+
+        # Adoption is explicit about what it means: configured, but with
+        # somebody else's providers, which stay exactly as they were.
+        assert observability.is_configured() is True
+        assert observability.uses_adopted_providers() is True
+        assert trace.get_tracer_provider() is external_tracer
+        assert metrics.get_meter_provider() is external_meter
+        assert observability._tracer_provider is None
+        assert observability._meter_provider is None
+
+        observability.shutdown_telemetry()
+        assert observability.is_configured() is False
+        assert observability.uses_adopted_providers() is False
+        # Not ours, so not shut down -- the registrant's telemetry keeps
+        # working after this module is torn down.
+        assert external_meter._shutdown is False
+
+        # Adoption registered nothing, so OpenTelemetry's one-shot global
+        # slot was never consumed and adopting again is still truthful.
+        observability.configure_telemetry("ours-again", adopt_existing_providers=True)
+        assert observability.is_configured() is True
+        assert trace.get_tracer_provider() is external_tracer
+        """
+    )
+
+
+def test_configure_telemetry_adopts_only_the_external_global_and_registers_the_other():
+    _run_lifecycle_script(
+        """
+        from opentelemetry import metrics, trace
+        from opentelemetry.sdk.metrics import MeterProvider
+
+        # Only the meter provider is external this time.
+        external_meter = MeterProvider()
+        metrics.set_meter_provider(external_meter)
+
+        from trading_research import observability
+
+        try:
+            observability.configure_telemetry("ours")
+        except observability.ExternalTelemetryProviderError as exc:
+            message = str(exc)
+        else:
+            raise AssertionError(
+                "configure_telemetry() reported success while the global "
+                "meter provider belonged to an external registrant"
+            )
+
+        # The error names the global that is actually external, not both.
+        assert "MeterProvider" in message, message
+        assert "TracerProvider" not in message, message
+        assert observability.is_configured() is False
+
+        observability.configure_telemetry("ours", adopt_existing_providers=True)
+
+        assert observability.is_configured() is True
+        assert observability.uses_adopted_providers() is True
+        # The external meter provider is adopted untouched...
+        assert metrics.get_meter_provider() is external_meter
+        assert observability._meter_provider is None
+        # ...while the still-unset tracer global is registered from here.
+        tracer_provider = trace.get_tracer_provider()
+        assert observability._tracer_provider is tracer_provider
+        assert tracer_provider.resource.attributes["service.name"] == "ours"
+
+        observability.shutdown_telemetry()
+        assert external_meter._shutdown is False
+
+        # This configuration *did* register a provider of its own, so it
+        # consumed the one-shot global slot and cannot be redone.
+        try:
+            observability.configure_telemetry("after", adopt_existing_providers=True)
+        except observability.TelemetryReconfigurationError:
+            pass
+        else:
+            raise AssertionError(
+                "configure_telemetry() ran again after shutting down a "
+                "provider it had registered globally"
+            )
+        """
+    )
+
+
+def test_concurrent_first_configure_telemetry_calls_are_serialized():
+    """Review thread: the `_configured` check and the provider
+    construction/registration/assignment after it used to be unprotected,
+    so two concurrent first calls could both build and register, leaving
+    the stored references pointing at providers that are not the globals."""
+    _run_lifecycle_script(
+        """
+        import threading
+
+        from opentelemetry import metrics, trace
+
+        from trading_research import observability
+
+        inside_build = threading.Event()
+        release_build = threading.Event()
+        parked = []
+        real_build_tracer_provider = observability.build_tracer_provider
+
+        def blocking_build_tracer_provider(resource, *, console_export=False):
+            provider = real_build_tracer_provider(resource, console_export=console_export)
+            # Park the *first* caller only, deep inside the critical
+            # section: past the "already configured" check and holding a
+            # freshly built provider that is not registered yet. That is
+            # the exact window in which a second first-caller used to be
+            # able to build and register one of its own.
+            if not parked:
+                parked.append(True)
+                inside_build.set()
+                assert release_build.wait(timeout=30)
+            return provider
+
+        observability.build_tracer_provider = blocking_build_tracer_provider
+
+        errors = []
+
+        def configure(service_name, returned=None):
+            try:
+                observability.configure_telemetry(service_name)
+            except BaseException as exc:  # noqa: BLE001
+                errors.append(repr(exc))
+            if returned is not None:
+                returned.set()
+
+        first = threading.Thread(target=configure, args=("first-service",))
+        first.start()
+        assert inside_build.wait(timeout=30)
+
+        second_returned = threading.Event()
+        second = threading.Thread(target=configure, args=("second-service", second_returned))
+        second.start()
+        # While the first call is still inside configure_telemetry(), the
+        # second must not be able to get through it.
+        assert not second_returned.wait(timeout=1.0), (
+            "configure_telemetry() is not serialized: a second first-call "
+            "returned while the first was still mid-configuration"
+        )
+
+        release_build.set()
+        first.join(timeout=30)
+        second.join(timeout=30)
+        assert not first.is_alive()
+        assert not second.is_alive()
+        assert errors == [], errors
+
+        # Exactly one call configured telemetry, and what this module
+        # stored is what is actually registered globally.
+        assert observability.is_configured() is True
+        assert observability.uses_adopted_providers() is False
+        tracer_provider = trace.get_tracer_provider()
+        meter_provider = metrics.get_meter_provider()
+        assert observability._tracer_provider is tracer_provider
+        assert observability._meter_provider is meter_provider
+        assert tracer_provider.resource.attributes["service.name"] == "first-service"
+
+        # ...so shutdown shuts down those same global providers, rather
+        # than a losing call's unused ones.
+        observability.shutdown_telemetry()
+        assert observability.is_configured() is False
+        assert meter_provider._shutdown is True
+        """
+    )
