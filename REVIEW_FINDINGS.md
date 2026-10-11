@@ -4,20 +4,46 @@
 
 - Repository: `/Users/jijopaul/workspace/ai_stock_trading_v2`
 - Branch: `migration/18-final-authority-safety-audit`
-- Reviewed HEAD: `9c7b20a6e4292fa1c1181f2d8f0ea00750abc36d`
-- Subject: PR 18 fix round 4: record review findings resolution
-- Claude commits reviewed: df6bb571cbc018c7ad3e7861692ed83090981540,27b7fcd410bf28ae055a4b7f870214f879762084,04da132a2c83b29388d94352cb0b99af3c47fc94,2276e5dd17942e8e46de7d3dc18e75c0a64d55a4,06042259ef32255aed41a814f3143bc2a7e34f70,b2271381180ed6e5c2293eadc29aa1eef2a63421,a6f03dd1eaef69b9223e81ac9374880f69026c11,79248feb33d3888cc7f0acb482f6a5f5a70742b8,9c7b20a6e4292fa1c1181f2d8f0ea00750abc36d
+- Reviewed HEAD: `19bb0edcf1594bb3d5fb16fb423377f194f39370`
+- Subject: PR 18 fix round 5: record review findings resolution
+- Claude commits reviewed: df6bb571cbc018c7ad3e7861692ed83090981540,27b7fcd410bf28ae055a4b7f870214f879762084,04da132a2c83b29388d94352cb0b99af3c47fc94,2276e5dd17942e8e46de7d3dc18e75c0a64d55a4,06042259ef32255aed41a814f3143bc2a7e34f70,b2271381180ed6e5c2293eadc29aa1eef2a63421,a6f03dd1eaef69b9223e81ac9374880f69026c11,79248feb33d3888cc7f0acb482f6a5f5a70742b8,9c7b20a6e4292fa1c1181f2d8f0ea00750abc36d,9dedcc080094ea8a54a5cfad343ba2d4c1c23715,19bb0edcf1594bb3d5fb16fb423377f194f39370
 - Review scope: FULL_PR
 - Reviewed base: `bd95d2c7ba14a5333f1128ecf7b34a2059a95602`
 - GitHub PR: #36
-- Fix round: 0
+- Fix round: 1
 - Trigger: local Git `post-commit`
 - Review status: FIXES_APPLIED_PENDING_REVIEW
-- Highest priority: P1 (retry approval already fixed in 2276e5d; type-level `__structlog__` bypass already fixed in 79248fe; instance/property hook resolution and alias-aware formatter guard confirmed, fixed)
+- Highest priority: P1 (retry approval already fixed in 2276e5d; `__structlog__` redaction already fixed in 79248fe and 9dedcc0; runbook override flag confirmed, fixed)
 - Finding count: 0
-- Fix commit: 9dedcc080094ea8a54a5cfad343ba2d4c1c23715
+- Fix commit: 398ea07388af285e420e620dffd65aec1eee4d2b
 
 ## Findings
+
+### [P2] Investigate: documented retry-preview refresh omits its required config override
+
+Commit: 79248feb33d3888cc7f0acb482f6a5f5a70742b8
+
+Location: docs/runbooks/alpaca-paper-operations.md:98-107
+
+Concern: Verify whether the newly documented retry-preview recovery command can work when followed as shown.
+
+Evidence: The surrounding prose says the command requires the operator’s override because the tracked configuration disables external submission. However, the command at lines 105-107 omits `--paper-books-config <path>`. Current `external_paper_refresh_retry_preview_cli()` therefore loads the tracked configuration, and `test_tracked_config_cannot_refresh_because_external_paper_is_disabled` confirms that this path returns `PAPER_BOOKS_DISABLED`. The runbook test checks only that the override is mentioned elsewhere, not that the executable example supplies it.
+
+Potential impact if confirmed: During ambiguous-order recovery, an operator following the documented command cannot refresh an expired preview. The order remains stranded in `UNKNOWN_REQUIRES_RECONCILIATION`, blocking the explicitly bounded retry workflow.
+
+Investigation and conditional remediation: First verify the concern against the current code by running or tracing the documented command without the flag and confirming that it loads the tracked, submission-disabled configuration. If confirmed, add `--paper-books-config <path>` to the refresh example and add regression coverage requiring that flag in the documented recovery command. If disproved or already fixed through behavior not apparent in the current code, document that evidence and leave the code unchanged.
+
+Validation: Run `nox -s tests -- tests/unit/test_external_paper_refresh_cli_config_override.py tests/unit/test_alpaca_runbook_approval_gates.py`, followed by `nox -s ci`.
+
+Resolution: Confirmed. The general "append the flag" sentence covered only the first command block, so the refresh, reconcile, retry, and cancel examples ran against the tracked, disabled config. Fixed in 398ea07: every runbook command that accepts `--paper-books-config` now shows it. Regression test `test_every_documented_command_that_accepts_the_override_supplies_it` reads the flag set from the real CLI parser (`--help`). It fails on the previous runbook and passes now.
+
+Tests or diagnostics run:
+
+- Inspected all 11 specified commits chronologically, including their diffs and relevant current code, tests, configuration, migration decisions, and Alpaca runbook.
+- Reviewed the final logging-redaction, formatter-authority, retry-approval, and config-override implementations against reviewed HEAD.
+- `git diff --check bd95d2c7ba14a5333f1128ecf7b34a2059a95602..19bb0edcf1594bb3d5fb16fb423377f194f39370` reported only excluded Markdown whitespace issues in `REVIEW_FINDINGS.md`.
+- Targeted pytest execution could not start because the read-only environment had no usable temporary directory.
+- No files were modified. No credentialed tests, broker access, model calls, scheduler activation, or order actions were performed.
 
 ### [P1] Investigate: Verify approval before retry submissions
 
@@ -43,6 +69,8 @@ Investigation and conditional remediation: Verify the comment against the curren
 
 Validation: Run the focused regression test and the repository's canonical validation; a subsequent full-PR review must find no remaining defect.
 
+Resolution: Already fixed in 2276e5d. The runbook requires fresh approval with the exact phrase directly before the `external-paper-retry-submit` block, and states that the original submit approval does not carry over. `test_broker_transmitting_command_is_preceded_by_the_approval_gate[external-paper-retry-submit]` and `test_retry_requires_fresh_approval_rather_than_the_original_submit_approval` pass. No code change.
+
 ### [P1] Investigate: Investigate bypassing `__structlog__` during redaction
 
 Commit: `06042259ef32255aed41a814f3143bc2a7e34f70`
@@ -65,51 +93,4 @@ Investigation and conditional remediation: Verify the comment against the curren
 
 Validation: Run the focused regression test and the repository's canonical validation; a subsequent full-PR review must find no remaining defect.
 
-### [P2] Investigate: Resolve hooks on the value before falling back to repr
-
-Commit: `9c7b20a6e4292fa1c1181f2d8f0ea00750abc36d`
-
-Location: `/Users/jijopaul/workspace/ai_stock_trading_v2/src/trading_research/logging_config.py:141`
-
-Concern: An active GitHub review thread raises the following potentially valid issue:
-
-> **<sub><sub>![P2 Badge](https://img.shields.io/badge/P2-yellow?style=flat)</sub></sub>  Resolve hooks on the value before falling back to repr**
-> 
-> Investigate instance-resolved `__structlog__` hooks when JSON logging is enabled: this condition checks whether the attribute on `type(value)` is callable, whereas structlog resolves and calls `value.__structlog__()` directly. Fresh evidence beyond the earlier hook finding is that a valid property-backed or instance-assigned hook is therefore ignored; a property hook returning `{"summary": "safe"}` with `repr()` equal to `PropertyHook(123456789)` emitted the account number here, while the parent revision's renderer emitted only the safe mapping. If confirmed, resolve the hook from the value within the existing exception/depth guards and add a property- or instance-hook regression test; otherwise record why those hooks are outside the serialization contract.
-> 
-> AGENTS.md reference: [AGENTS.md:L73-L78](https://github.com/jijoece/ai_stock_trading_v2/blob/9c7b20a6e4292fa1c1181f2d8f0ea00750abc36d/AGENTS.md#L73-L78)
-> 
-> Useful? React with 👍 / 👎.
-
-Evidence: [chatgpt-codex-connector review thread](https://github.com/jijoece/ai_stock_trading_v2/pull/36#discussion_r4261095847) is current, unresolved, and not outdated.
-
-Potential impact if confirmed: Merging would carry the reported defect into main.
-
-Investigation and conditional remediation: Verify the comment against the current code and reproduce the behavior where practical. If confirmed, fix it and add regression coverage. If it is invalid or already fixed, document the evidence and do not make an unnecessary code change.
-
-Validation: Run the focused regression test and the repository's canonical validation; a subsequent full-PR review must find no remaining defect.
-
-### [P2] Investigate: Track aliases when detecting custom formatter subclasses
-
-Commit: `9c7b20a6e4292fa1c1181f2d8f0ea00750abc36d`
-
-Location: `/Users/jijopaul/workspace/ai_stock_trading_v2/tests/unit/test_removed_implementation_reintroduction_guards.py:162`
-
-Concern: An active GitHub review thread raises the following potentially valid issue:
-
-> **<sub><sub>![P2 Badge](https://img.shields.io/badge/P2-yellow?style=flat)</sub></sub>  Track aliases when detecting custom formatter subclasses**
-> 
-> Investigate whether this guard actually establishes D16's no-custom-formatter invariant: it compares only the syntactic base name, so `from logging import Formatter as BaseFormatter; class Rogue(BaseFormatter): ...` produces `BaseFormatter` here and passes every new logging guard. This permits the second formatter authority that the final audit says CI prevents. Verify with that mutation in `logging_config.py`; if confirmed, resolve imported aliases when checking bases and retain the mutation as regression coverage, otherwise document the narrower guarantee.
-> 
-> AGENTS.md reference: [AGENTS.md:L68-L69](https://github.com/jijoece/ai_stock_trading_v2/blob/9c7b20a6e4292fa1c1181f2d8f0ea00750abc36d/AGENTS.md#L68-L69)
-> 
-> Useful? React with 👍 / 👎.
-
-Evidence: [chatgpt-codex-connector review thread](https://github.com/jijoece/ai_stock_trading_v2/pull/36#discussion_r4261095856) is current, unresolved, and not outdated.
-
-Potential impact if confirmed: Merging would carry the reported defect into main.
-
-Investigation and conditional remediation: Verify the comment against the current code and reproduce the behavior where practical. If confirmed, fix it and add regression coverage. If it is invalid or already fixed, document the evidence and do not make an unnecessary code change.
-
-Validation: Run the focused regression test and the repository's canonical validation; a subsequent full-PR review must find no remaining defect.
-
+Resolution: Already fixed in 79248fe (type-level hooks) and 9dedcc0 (instance and property hooks). `_redact_value` follows the hook result and redacts it recursively, with a guarded fallback. `test_json_output_redacts_structlog_hook_result_instead_of_leaking_its_repr`, `test_json_output_honors_property_and_instance_structlog_hooks`, `test_raising_structlog_hook_falls_back_to_redacted_repr`, and `test_self_returning_structlog_hook_is_bounded` pass. No code change.
