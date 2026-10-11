@@ -4,18 +4,18 @@
 
 - Repository: `/Users/jijopaul/workspace/ai_stock_trading_v2`
 - Branch: `migration/18-final-authority-safety-audit`
-- Reviewed HEAD: `fadb58900a5d8a655fe017c8197f85b94afe8419`
-- Subject: PR 18 fix round 8: record review findings resolution
-- Claude commits reviewed: df6bb571cbc018c7ad3e7861692ed83090981540,27b7fcd410bf28ae055a4b7f870214f879762084,04da132a2c83b29388d94352cb0b99af3c47fc94,2276e5dd17942e8e46de7d3dc18e75c0a64d55a4,06042259ef32255aed41a814f3143bc2a7e34f70,b2271381180ed6e5c2293eadc29aa1eef2a63421,a6f03dd1eaef69b9223e81ac9374880f69026c11,79248feb33d3888cc7f0acb482f6a5f5a70742b8,9c7b20a6e4292fa1c1181f2d8f0ea00750abc36d,9dedcc080094ea8a54a5cfad343ba2d4c1c23715,19bb0edcf1594bb3d5fb16fb423377f194f39370,398ea07388af285e420e620dffd65aec1eee4d2b,9bc6e58be5dc1932236971316835d63b980c3e22,f9ec68d52ca33780da5b45c10fef54bec0a7554e,3a66d10de308fac681222c6a0160886e14a70c28,c1de3ed68a68efa330dca7eb2b6183cc10adf89e,fadb58900a5d8a655fe017c8197f85b94afe8419
+- Reviewed HEAD: `1555bf6f391426a8f96cff8c28e4a0440dd213b0`
+- Subject: PR 18 fix round 9: record review findings resolution
+- Claude commits reviewed: df6bb571cbc018c7ad3e7861692ed83090981540,27b7fcd410bf28ae055a4b7f870214f879762084,04da132a2c83b29388d94352cb0b99af3c47fc94,2276e5dd17942e8e46de7d3dc18e75c0a64d55a4,06042259ef32255aed41a814f3143bc2a7e34f70,b2271381180ed6e5c2293eadc29aa1eef2a63421,a6f03dd1eaef69b9223e81ac9374880f69026c11,79248feb33d3888cc7f0acb482f6a5f5a70742b8,9c7b20a6e4292fa1c1181f2d8f0ea00750abc36d,9dedcc080094ea8a54a5cfad343ba2d4c1c23715,19bb0edcf1594bb3d5fb16fb423377f194f39370,398ea07388af285e420e620dffd65aec1eee4d2b,9bc6e58be5dc1932236971316835d63b980c3e22,f9ec68d52ca33780da5b45c10fef54bec0a7554e,3a66d10de308fac681222c6a0160886e14a70c28,c1de3ed68a68efa330dca7eb2b6183cc10adf89e,fadb58900a5d8a655fe017c8197f85b94afe8419,581229c01301f9f4a1ce7da77cddbe69e4a84249,1555bf6f391426a8f96cff8c28e4a0440dd213b0
 - Review scope: FULL_PR
 - Reviewed base: `bd95d2c7ba14a5333f1128ecf7b34a2059a95602`
 - GitHub PR: #36
-- Fix round: 0
+- Fix round: 1
 - Trigger: local Git `post-commit`
 - Review status: FIXES_APPLIED_PENDING_REVIEW
-- Highest priority: P1 (retry approval already fixed in 2276e5d; `__structlog__` redaction already fixed in 79248fe and 9dedcc0; hook-depth fallback already fixed in f9ec68d; unhashable hook results inside sets confirmed, fixed)
+- Highest priority: P1 (all four findings re-raised from still-open GitHub threads and already fixed at HEAD; no code change this round: retry approval in 2276e5d, `__structlog__` redaction in 79248fe and 9dedcc0, hook-depth fallback in f9ec68d, unhashable hook results inside sets in 581229c)
 - Finding count: 0
-- Fix commit: 581229c01301f9f4a1ce7da77cddbe69e4a84249
+- Fix commit: 1555bf6f391426a8f96cff8c28e4a0440dd213b0
 
 ## Findings
 
@@ -67,7 +67,7 @@ Investigation and conditional remediation: Verify the comment against the curren
 
 Validation: Run the focused regression test and the repository's canonical validation; a subsequent full-PR review must find no remaining defect.
 
-Resolution: Already fixed in 79248fe and 9dedcc0; no code change. `_redact_value` evaluates the hook and recursively redacts its result before any `repr()` fallback. `test_json_output_redacts_structlog_hook_result_instead_of_leaking_its_repr` runs the reviewer's `Structured(api_key='abcd1234efgh')` probe and passes at HEAD.
+Resolution: Already fixed in 79248fe and 9dedcc0; no code change. `_redact_value` evaluates the hook and recursively redacts its result before any `repr()` fallback. The reviewer's `Structured(api_key='abcd1234efgh')` probe yields `{'api_key': '[REDACTED]'}` at HEAD, and `test_json_output_redacts_structlog_hook_result_instead_of_leaking_its_repr` passes.
 
 ### [P2] Investigate: Investigate leaking data at the hook-depth fallback
 
@@ -91,7 +91,7 @@ Investigation and conditional remediation: Verify the comment against the curren
 
 Validation: Run the focused regression test and the repository's canonical validation; a subsequent full-PR review must find no remaining defect.
 
-Resolution: Already fixed in f9ec68d; no code change. Past `_MAX_STRUCTLOG_HOOK_DEPTH` the value becomes a type-only `<structlog hook depth exceeded: ...>` placeholder, never its `repr()`. `test_structlog_hook_chain_past_depth_limit_does_not_leak_its_repr` runs the reviewer's `Chain(9)` probe and passes at HEAD.
+Resolution: Already fixed in f9ec68d; no code change. Past `_MAX_STRUCTLOG_HOOK_DEPTH`, `_redact_value` returns a type-only `<structlog hook depth exceeded: ...>` placeholder, never the `repr()`. The reviewer's `Chain(9)` probe emits no account number at HEAD, and `test_structlog_hook_chain_past_depth_limit_does_not_leak_its_repr` passes.
 
 ### [P2] Investigate: Investigate unhashable hook results inside sets
 
@@ -117,5 +117,5 @@ Investigation and conditional remediation: Verify the comment against the curren
 
 Validation: Run the focused regression test and the repository's canonical validation; a subsequent full-PR review must find no remaining defect.
 
-Resolution: Confirmed and fixed in 581229c. `_redact_value({X()})` raised `TypeError: cannot use 'dict' as a set element`. Every `set`/`frozenset` now serializes as a plain tuple, so member hashability no longer matters. Regression test `test_set_of_structlog_hook_objects_with_unhashable_results_is_logged[set|frozenset]` failed before the fix and passes after.
+Resolution: Already fixed in 581229c; no code change. `_redact_value` rebuilds every `set`/`frozenset` as a plain `tuple`, so unhashable hook results cannot raise. The reviewer's `{X()}` probe yields `({'summary': 'safe'},)` at HEAD, and `test_set_of_structlog_hook_objects_with_unhashable_results_is_logged` passes.
 
