@@ -3,220 +3,77 @@
 ## Review Metadata
 
 - Repository: `/Users/jijopaul/workspace/ai_stock_trading_v2`
-- Branch: `migration/17-remove-approved-commodity-implementations`
-- Reviewed HEAD: `7594aca024ed08df11f8dfe75cb9804ddbe410b6`
-- Subject: PR 17 fix round 1: restore the one-return below-threshold Sortino ratio
-- Review scope: GitHub inline review threads on PR #35
-- Reviewed base: `39069350927e8c9663eaeec785423b0c24ad724e` (`origin/main`)
-- GitHub PR: #35
-- Fix round: 2
-- Trigger: [chatgpt-codex-connector review thread r4245830182](https://github.com/jijoece/ai_stock_trading_v2/pull/35#discussion_r4245830182)
-  (`commit_id` = `original_commit_id` = `7594aca`, `metrics.py:226`)
-- Review status: FIXED
-- Highest priority: P2 (confirmed, fixed)
-- Finding count: 2 across rounds (round 1 r4245456846, round 2
-  r4245830182), both confirmed and fixed
-- Fix commits: round 1 `7594aca024ed08df11f8dfe75cb9804ddbe410b6`.
-  Round 2 is the commit that adds this revision (subject "PR 17 fix round
-  2: tolerate float noise in the promotion drawdown gate"), the branch head
-  after `7594aca`.
-- GitHub threads: neither thread was replied to or resolved from a fix
-  session. Resolving them is left to the operator.
-
-This document previously held the PR #34 (`migration/16-opentelemetry-tracing`)
-record, whose header said `FIXES_APPLIED_PENDING_REVIEW` with no fix
-commit. PR #34 was merged into `main` as `3906935`, so that status was
-stale; its full record is preserved in git history at `987013a`.
-
-## Round 2: false promotion regressions from float noise (r4245830182)
-
-**Confirmed.** PR 17 changed `metrics.max_drawdown` from exact `Decimal`
-arithmetic to `empyrical.max_drawdown`, a float cumulative product.
-`research/promotion.py` fed both arms' drawdowns into a strict `<`
-safety-regression check. Two return sequences with the same exact
-drawdown can produce floats that differ in the last bit, so a tied
-enhanced arm could be failed as a safety regression. The production path
-is `cli.py:1760-1761`, which passes `comparison.{enhanced,baseline}.max_drawdown`
-straight into `PromotionMetricInput`.
-
-### Evidence: the reviewer's paired fixture through `evaluate_promotion`
-
-Enhanced returns were `[0.19, -0.20, 0.01, 0.01, 0.01]` and baseline
-returns `[-0.20, 0.01, 0.01, 0.01, 0.01]`. Both have an exact drawdown of
-`-0.20`. Everything else used the `test_promotion_gates.py` defaults
-(excess return 0.05 vs 0.01). `max_drawdown` from `3906935`
-(`git show`, loaded by file path) was compared with the current one:
-
-| `max_drawdown` source | enhanced / baseline | `currently_preferred` | Decision |
-|---|---|---|---|
-| `3906935` (Decimal) | `Decimal('-0.20')` / `Decimal('-0.20')` | False / True | `PREFERRED_FOR_PAPER` / `PREFERRED_FOR_PAPER` |
-| `7594aca` (empyrical) | `-0.2000000000000001` / `-0.2` | False | `REJECTED` |
-| `7594aca` (empyrical) | `-0.2000000000000001` / `-0.2` | True | `ROLLBACK_REQUIRED` |
-
-The reason recorded was `max_drawdown regressed: enhanced
--0.2000000000000001 worse than baseline -0.2`. This was a behavior
-regression introduced by PR 17. D15 ruling 3 had cleared this consumer on
-the grounds that "equal inputs still give equal results". That is true
-for identical sequences and false for different sequences with equal
-drawdowns, so the D15 entry and `STATUS.md` were corrected.
-
-The other promotion comparison, the excess return, is unaffected:
-`benchmark_relative_cumulative_return` is still `Decimal` arithmetic at
-this HEAD.
-
-### Fix (round 2)
-
-`research/promotion.py` adds `MAX_DRAWDOWN_REGRESSION_TOLERANCE = 1e-12`,
-the same value as `metrics._ZERO_DEVIATION_TOLERANCE`. The drawdown check
-now flags a regression only when `float(enhanced) < float(baseline) - 1e-12`.
-Converting to `float` keeps mixed `float`/`Decimal` inputs legal, which
-`PromotionMetricInput.value` allows. Rounding noise from the cumulative
-product is on the order of 1e-16 per step, far below the tolerance. A
-drawdown difference of 1e-12 is immaterial to a promotion decision.
-
-The tolerance only affects ties within 1e-12. Every other status path and
-gate is unchanged. The fix was made at the comparison point, not by
-rounding `max_drawdown`, so the metric's values and the PR 17 golden
-parity table stay unchanged.
-
-### Regression coverage (`tests/unit/test_promotion_gates.py`)
-
-- `test_equal_drawdowns_with_float_noise_are_not_a_safety_regression` runs
-  for `currently_preferred` False and True. It builds both arms through the
-  real `metrics.max_drawdown`, asserts the float noise is present, and
-  asserts `PREFERRED_FOR_PAPER`. Both cases failed before the fix, with
-  `REJECTED` and `ROLLBACK_REQUIRED` (verified red), and pass after it.
-- `test_small_real_drawdown_regression_beyond_tolerance_is_still_rejected`
-  has `float` and `Decimal` cases. `-0.2000001` vs `-0.2` is still
-  `REJECTED`, so the tolerance does not loosen the gate for a real
-  regression.
-- `test_equal_decimal_drawdowns_are_not_a_safety_regression` covers the
-  pre-PR `Decimal` input path.
-- The existing `test_drawdown_regression_is_a_safety_failure` (`-0.30` vs
-  `-0.05`) still passes.
-
-### Validation (round 2)
-
-- `nox -s tests -- tests/unit/test_promotion_gates.py tests/unit/test_metrics_library_authority.py tests/unit/test_metrics.py tests/unit/test_analytics_import_boundary.py -q`:
-  124 passed.
-- `nox -s ci` (exit 0): `tests` had 3397 passed and 107 skipped,
-  `paper_tests` had 160 passed, `safety_typecheck` reported 0 errors, 0
-  warnings and 0 informations, and `migration_smoke` reported "migration
-  schema smoke checks OK". The run started after the code and test changes
-  were final; only Markdown was edited after it began.
-- `scripts/check_links.sh`: 0 errors (185 OK, 2 excluded).
-
-## Round 1: one-sample downside Sortino handling (r4245456846)
-
-**Confirmed.** At `155b0a3`, `sortino_ratio` short-circuited the downside
-deviation to `0.0` whenever the series had fewer than two returns, so a
-single return below `risk_free_rate` was reported `UNDEFINED`. The removed
-implementation computed the downside deviation over that one observation
-and returned a valid ratio. That changed the public contract this PR
-promises to preserve.
-
-### Evidence (round 1)
-
-The pre-PR `sortino_ratio` was extracted with
-`git show 3906935:src/trading_research/evaluation/metrics.py` and run by
-file path with `min_sample_size=1`, using the test file's `_series`
-fixture builder:
-
-| Return(s) | `risk_free_rate` | `3906935` annualized / raw | `155b0a3` |
-|---|---|---|---|
-| `-0.05` | `0.0` | `OK -15.874507866387544` / `OK -1.0` | `UNDEFINED` |
-| `0.01` | `0.02` | `OK -15.874507866387544` / `OK -1.0` | `UNDEFINED` |
-| `0.05` | `0.0` | `UNDEFINED` / `UNDEFINED` | `UNDEFINED` (unchanged) |
-
-Library behavior (`empyrical-reloaded`, `empyrical/stats.py`):
-
-- `downside_risk` guards only `len(returns) < 1`. For `[-0.05]` it returns
-  `0.05`, so the deviation is defined for one return.
-- `sortino_ratio` returns `NaN` for `len(returns) < 2`, before it computes
-  anything.
-
-The PR's golden capture (`docs/library-migration/pr17/*_values.txt`)
-covered only a positive single return (`single_1` = `0.05`, which has no
-downside), so it missed this gap. D15 ruling 2 also said "fewer than two
-returns is `UNDEFINED`, as before" for both ratios. That is true for Sharpe
-and false for Sortino.
-
-### Fix (round 1)
-
-The finding asks to "remove the length shortcut". Removing it alone is not
-safe: the library's `sortino_ratio` would then return `NaN`, which would be
-reported as `status="OK", value=nan`. The minimal correction in
-`src/trading_research/evaluation/metrics.py` (`sortino_ratio`) is:
-
-1. Always compute the deviation with `empyrical.downside_risk`, with no
-   length shortcut. A deviation at or near zero is still `UNDEFINED`.
-2. For one return only, apply empyrical's own Sortino formula: annualized
-   mean excess return over `empyrical.downside_risk` at the same
-   annualization. For two or more returns, `empyrical.sortino_ratio` is
-   still called unchanged, so every existing golden value and
-   import-boundary rule holds. `math` is still not imported.
-
-Sharpe is unchanged, because one return has no sample variance (`ddof=1`),
-exactly as before.
-
-Docs corrected to match: the `metrics.py` module docstring (boundary 1),
-`docs/library-migration/DECISIONS.md` D15 ruling 2, and
-`docs/library-migration/STATUS.md`.
-
-### Regression coverage (round 1)
-
-`tests/unit/test_metrics_library_authority.py::test_single_return_below_required_return_sortino_matches_removed_formula`
-covers four cases: `[-0.05]` at `rf=0` and `[0.01]` at `rf=0.02`, each
-annualized and raw. Each asserts `OK`, `sample_size=1`, and the value
-captured from `3906935` above. All four failed before the fix, getting
-`UNDEFINED` (verified red), and pass after it. The existing
-`test_single_return_with_minimum_one_is_undefined` still pins the
-no-downside single return (`0.05`) to `UNDEFINED` for both ratios. Only its
-comment was clarified.
-
-### Validation (round 1)
-
-- `nox -s tests -- tests/unit/test_metrics_library_authority.py tests/unit/test_metrics.py tests/unit/test_analytics_import_boundary.py -q`:
-  94 passed.
-- `nox -s ci`: successful. `tests` had 3392 passed and 107 skipped,
-  `paper_tests` had 160 passed, `safety_typecheck` reported 0 errors, and
-  `migration_smoke` was OK.
-- `scripts/check_links.sh`: 0 errors.
+- Branch: `migration/18-final-authority-safety-audit`
+- Reviewed HEAD: `df6bb571cbc018c7ad3e7861692ed83090981540`
+- Subject: PR 18: final authority and safety audit
+- Claude commits reviewed: 4f261aa81b77117c711bc77c4a4045f58863d444,76b399d1a270388425fb28884962b8a4c852ddf6,82860bcb28f730d983f1100cc3639fb092883f68,7b9d88eb4e2d56f354f3d60e84fc8eb898ebeb2d,b388928ce6fdcba8a5d6c165ab92460118e6600d,409244ca6c80e369f9207892a2e0f7743070823c,23bc0192a627bd5fa88c061995ff864ded94f502,8722863703a0a4beac11a46242afe23fc4ba0821,ab8c755a0c1f4890e27a7abed9908ff812745222,8ab474fb0a67609d725b968d1660e874b393606e,4c2bead9a374390b34fe2c8482eafae1a695667b,6c62ba4632b53336ed735b0da5b77d123067c6da,e087fea72f15f8d4d9461b7c78f39ad99f3bb607,69f05a611ffd8d85e2e27543d60d76305ec6f8aa,7e523012072b6887e6bb4d9de61158e6df49d648,5840263d87fd53bf4561d8c444bc2135871435bd,6958cc72250572f16df50ac6ad5dfc6937fd9c3c,7f53240d254e0961e9808051161f82871e63d3f3,c355b37863fa6a536fd6391d7048be3c6de46a18,08d6a6fd4f8f672ef477bd8762c672abb66cd455,13d49ad3370eb9563ad0960cb0568086db6d87d5,30fdc546be223173e754ef637a2d0c1436b5dd5e,88d3cb55a5b4667e2e34fe3c1d89f57bc5c87672,177d2744c62314ec5bc709f55f696aaf6ff0ea1d,3e15923397f461d07b95ee8d8605c772e3521303,8f73889c146a78887415ae2731654539d76dd16e,9732aa1bc3571f772316231dc71e4dcdd7fec12c,59eb96d30868c15dab4dccb69ca3fb67bd4009a4,9bd7446febf54a3722970c9d6df57f5fd4540dc9,6f66e1e871cbfc51c7f56ff2f25a6aed6ce7191e,fdfb219d4f5308ce48921b496dcba3e8e66e8287,3a5b9dc4f3f8ac895e10f301b9ac934fd08ac413,987013aa173fae4962b1fef8e5e35a90e0968e9f,155b0a3f6326687e272dc6d4355a64254c4b65f6,7594aca024ed08df11f8dfe75cb9804ddbe410b6,445a3ec97cb3c76456d28ce9bc21cc29c9fd93bd,df6bb571cbc018c7ad3e7861692ed83090981540
+- Review scope: INCREMENTAL
+- Fix round: 0
+- Trigger: local Git `post-commit`
+- Review status: FIXES_APPLIED_PENDING_REVIEW
+- Highest priority: P1 (confirmed, fixed)
+- Finding count: 0
+- Fix commit: 27b7fcd410bf28ae055a4b7f870214f879762084
 
 ## Findings
 
-### [P2] Investigate false promotion regressions from float noise
+### [P1] Investigate: JSON logging can expose escaped registered secrets from arbitrary extra objects
 
-Location: `src/trading_research/evaluation/metrics.py:226` (at `7594aca`);
-the comparison is in `src/trading_research/research/promotion.py:156-158`
+Commit: 13d49ad3370eb9563ad0960cb0568086db6d87d5
 
-> When two arms have mathematically equal drawdowns, this conversion can
-> produce slightly different floats, while `research/promotion.py:156-158`
-> treats any strict `<` difference as a safety regression. For example,
-> enhanced returns `[0.19, -0.20, 0.01, 0.01, 0.01]` and baseline returns
-> `[-0.20, 0.01, 0.01, 0.01, 0.01]` both have an exact Decimal drawdown of
-> `-0.20`, but empyrical's cumulative-float calculation can report
-> approximately `-0.2000000000000001` and `-0.2`, causing an otherwise tied
-> enhanced arm to become `REJECTED` or `ROLLBACK_REQUIRED`. Please verify
-> this paired fixture through `evaluate_promotion`; if confirmed, use a
-> documented tolerance or normalized comparison and add regression
-> coverage, otherwise record the contrary evidence and leave the code
-> unchanged.
+Location: src/trading_research/logging_config.py:104-118
 
-Resolution: confirmed and fixed in round 2, as described above.
+Concern: Verify whether JSON logging still violates the module’s no-secret-leak contract when an arbitrary object supplied through `extra` renders a registered secret containing JSON-escaped characters.
 
-### [P2] Recheck one-sample downside Sortino handling
+Evidence: Commit `13d49ad…` replaced the fixed extra-field allowlist with `structlog.stdlib.ExtraAdder()`, allowing arbitrary objects into the JSON event. At HEAD, `_redact_value()` returns unrecognized objects unchanged. `JSONRenderer` subsequently serializes such an object through its representation, escaping quotes before the final string-level `redact()` pass. A focused probe registered `s3cr"et-value`, logged an object whose `__repr__` contained that value, and produced:
 
-Location: `src/trading_research/evaluation/metrics.py:188` (at `155b0a3`)
+```json
+{"details": "opaque s3cr\\\"et-value payload", "message": "event", ...}
+```
 
-> When a caller sets `min_sample_size=1` and the sole completed return is
-> below `risk_free_rate`, this branch forces `downside_deviation` to zero
-> solely because the series has fewer than two entries and reports
-> `UNDEFINED`. The removed implementation instead calculated downside
-> deviation over that one observation and returned a valid ratio (`-1`
-> unannualized or `-sqrt(252)` annualized), so this changes the stated
-> public contract. Verify with a one-element negative-return fixture; if
-> confirmed, remove the length shortcut and add regression coverage;
-> otherwise record evidence and leave code unchanged.
+The existing tests cover exceptions, mappings, sequences, sets, and bytes, but not arbitrary objects whose representation contains an escapable registered secret.
 
-Resolution: confirmed and fixed in round 1 (`7594aca`), as described above.
+Potential impact if confirmed: API credentials, tokens, account identifiers, or other registered secrets embedded in diagnostic/domain objects could be written to JSON logs despite the documented centralized-redaction guarantee.
+
+Investigation and conditional remediation: First verify the concern against the current logging pipeline using an arbitrary `extra` object whose `__repr__` contains registered secrets with a quote, backslash, and control character. If confirmed, ensure non-primitive values are converted and redacted before JSON serialization, or otherwise prevent arbitrary representations from entering rendered output, and add regression coverage for each escaping case. If the concern is disproved or already fixed through behavior not apparent in the current code, document that evidence and leave the code unchanged.
+
+Validation: Parse the emitted JSON and assert that neither the original secret nor its decoded value appears, while `[REDACTED]` does. Run `nox -s tests -- tests/unit/test_logging_config.py` and the canonical `nox -s ci`.
+
+Tests or diagnostics run:
+
+- Inspected every specified commit chronologically, including full code/test/configuration changes and relevant current ADR, migration, and runbook context.
+- Reproduced the JSON redaction leak with `.venv/bin/python` against reviewed HEAD.
+- Attempted the focused pytest suite, but the read-only environment had no writable temporary directory; pytest stopped during capture initialization before collecting tests.
+- `nox` was unavailable in the active environment.
+- No credentialed tests, broker operations, model calls, scheduler activation, or external order actions were performed.
+
+## Fix Record
+
+**Confirmed.** At `df6bb57`, logging an `extra` object whose `__repr__`
+contained a registered secret with a quote, backslash, or newline emitted the
+secret in JSON-escaped form (all three cases reproduced with
+`.venv/bin/python`). `_redact_value()` returned the object unchanged, and
+`JSONRenderer`'s `repr()` fallback escaped the secret before the final
+string-level `redact()` pass.
+
+Fix (`27b7fcd`): `_redact_value()` now passes JSON scalars
+(`int`/`float`/`bool`/`None`) through and replaces any other non-container
+object with `redact(repr(value))`, the same text `JSONRenderer` would have
+rendered, before serialization. `_redact_event_dict()` skips the
+`ProcessorFormatter` meta keys (`_record`, `_from_structlog`).
+
+Regression tests in `tests/unit/test_logging_config.py`:
+
+- `test_json_output_redacts_registered_secret_in_arbitrary_object_repr_with_json_escaped_characters`
+  (quote, backslash, newline; top-level and nested objects; parses the JSON
+  and asserts neither the raw nor decoded secret appears while `[REDACTED]`
+  does). It fails on `df6bb57` and passes with the fix.
+- `test_json_output_preserves_json_scalar_extra_fields`.
+
+Validation:
+
+- `nox -s tests -- tests/unit/test_logging_config.py`: 41 passed.
+- `nox -s ci`: passed (tests 3416 passed / 107 skipped; paper_tests 160
+  passed; safety_typecheck 0 errors; migration_smoke passed).
+- No credentialed tests, broker operations, model calls, scheduler
+  activation, or external order actions were performed.
