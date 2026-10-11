@@ -88,6 +88,9 @@ def _is_sensitive_key(key: object) -> bool:
 # before falling back to the object's redacted `repr()`.
 _MAX_STRUCTLOG_HOOK_DEPTH = 8
 
+# Sentinel distinguishing "no usable hook" from a hook that returned `None`.
+_NO_HOOK_RESULT = object()
+
 
 def _redact_value(value: Any, _hook_depth: int = 0) -> Any:
     """Redacts strings and recurses into mappings/sequences/sets, so a
@@ -113,13 +116,15 @@ def _redact_value(value: Any, _hook_depth: int = 0) -> Any:
     A `repr()` that raises is replaced by a fixed placeholder naming only
     the object's type, so a broken representation cannot drop the record.
 
-    An object whose type defines structlog's `__structlog__` serialization
-    hook is replaced by the hook's result, redacted recursively like any
-    other value, before the `repr()` fallback is considered. Without this,
+    An object exposing structlog's `__structlog__` serialization hook is
+    replaced by the hook's result, redacted recursively like any other
+    value, before the `repr()` fallback is considered. The hook is resolved
+    on the value itself, as structlog does, so a property-backed or
+    instance-assigned hook counts as well as a plain method. Without this,
     `JSONRenderer` would never see the hook, and a sensitive key in its
     structured result (e.g. `{"api_key": ...}`) would be rendered verbatim
-    inside the `repr()` instead of redacted by key. A hook that raises
-    falls through to the guarded `repr()` path, and nested hook results are
+    inside the `repr()` instead of redacted by key. A hook whose lookup or
+    call raises falls through to the guarded `repr()` path, and nested hook results are
     followed at most `_MAX_STRUCTLOG_HOOK_DEPTH` levels deep, so a hook that
     returns itself cannot recurse without bound."""
     if value is None or isinstance(value, (bool, int, float)):
@@ -138,12 +143,13 @@ def _redact_value(value: Any, _hook_depth: int = 0) -> Any:
         if type(value) in (list, tuple, set, frozenset):
             return type(value)(redacted_items)
         return tuple(redacted_items)
-    if callable(getattr(type(value), "__structlog__", None)) and _hook_depth < _MAX_STRUCTLOG_HOOK_DEPTH:
+    if _hook_depth < _MAX_STRUCTLOG_HOOK_DEPTH:
         try:
-            structured = value.__structlog__()
+            hook = getattr(value, "__structlog__", None)
+            structured = hook() if callable(hook) else _NO_HOOK_RESULT
         except Exception:
-            pass
-        else:
+            structured = _NO_HOOK_RESULT
+        if structured is not _NO_HOOK_RESULT:
             return _redact_value(structured, _hook_depth + 1)
     try:
         representation = repr(value)

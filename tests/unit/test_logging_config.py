@@ -341,6 +341,52 @@ def test_json_output_redacts_structlog_hook_result_instead_of_leaking_its_repr()
     }
 
 
+def test_json_output_honors_property_and_instance_structlog_hooks():
+    """PR 18 review round 4 (P2, r4261095847): the hook was looked up on
+    `type(value)` and required to be callable there, so a property-backed
+    or instance-assigned hook -- both of which structlog itself resolves
+    via `value.__structlog__()` -- was ignored and the repr, account number
+    included, was rendered instead of the hook's safe mapping. A property
+    whose getter raises must still fall back to the redacted repr."""
+
+    class PropertyHook:
+        @property
+        def __structlog__(self):
+            return lambda: {"summary": "safe"}
+
+        def __repr__(self) -> str:
+            return "PropertyHook(123456789)"
+
+    class InstanceHook:
+        def __init__(self) -> None:
+            self.__structlog__ = lambda: {"summary": "safe", "account": "123456789"}
+
+        def __repr__(self) -> str:
+            return "InstanceHook(123456789)"
+
+    class RaisingPropertyHook:
+        @property
+        def __structlog__(self):
+            raise RuntimeError("lookup failure text")
+
+        def __repr__(self) -> str:
+            return "RaisingPropertyHook()"
+
+    buffer = _configure_capturing(json_output=True)
+    log = logging_config.get_logger("unit_test")
+    log.info(
+        "event",
+        extra={"prop": PropertyHook(), "inst": InstanceHook(), "broken": RaisingPropertyHook()},
+    )
+    raw = buffer.getvalue()
+    payload = json.loads(raw.strip())
+    assert "123456789" not in raw
+    assert "lookup failure text" not in raw
+    assert payload["prop"] == {"summary": "safe"}
+    assert payload["inst"] == {"summary": "safe", "account": "[REDACTED]"}
+    assert payload["broken"] == "RaisingPropertyHook()"
+
+
 def test_raising_structlog_hook_falls_back_to_redacted_repr():
     class BrokenHook:
         def __structlog__(self):

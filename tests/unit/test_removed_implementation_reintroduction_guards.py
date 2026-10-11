@@ -155,13 +155,74 @@ def test_removed_formatter_classes_are_not_reintroduced_anywhere():
     assert offenders == []
 
 
+def _formatter_names(tree: ast.Module) -> set[str]:
+    """Every local name bound to a formatter class: the base name itself,
+    any `from ... import XFormatter as Alias`, and any `Alias = ...Formatter`
+    assignment chain, so an alias cannot hide a formatter base."""
+    names = {"Formatter"}
+    changed = True
+    while changed:
+        changed = False
+        for node in ast.walk(tree):
+            bound: list[str] = []
+            if isinstance(node, ast.ImportFrom):
+                bound = [alias.asname for alias in node.names if alias.asname and _is_formatter_name(alias.name, names)]
+            elif isinstance(node, ast.Assign) and _is_formatter_name(_base_name(node.value), names):
+                bound = [t.id for t in node.targets if isinstance(t, ast.Name)]
+            elif isinstance(node, ast.AnnAssign) and node.value and isinstance(node.target, ast.Name):
+                if _is_formatter_name(_base_name(node.value), names):
+                    bound = [node.target.id]
+            for name in bound:
+                if name not in names:
+                    names.add(name)
+                    changed = True
+    return names
+
+
+def _is_formatter_name(name: str, aliases: set[str]) -> bool:
+    return name in aliases or name.endswith("Formatter")
+
+
+def _formatter_subclass_offenders() -> list[str]:
+    offenders: list[str] = []
+    for path in _python_sources():
+        tree = _tree(path)
+        aliases = _formatter_names(tree)
+        offenders.extend(
+            f"{path}: {node.name}" for node in ast.walk(tree)
+            if isinstance(node, ast.ClassDef)
+            and any(_is_formatter_name(_base_name(base), aliases) for base in node.bases)
+        )
+    return offenders
+
+
 def test_no_custom_logging_formatter_subclass_exists():
-    offenders = [
-        f"{path}: {node.name}" for path in _python_sources()
-        for node in ast.walk(_tree(path))
-        if isinstance(node, ast.ClassDef) and any(_base_name(base) == "Formatter" for base in node.bases)
+    assert _formatter_subclass_offenders() == []
+
+
+def test_formatter_subclass_guard_resolves_aliases(tmp_path, monkeypatch):
+    """PR 18 review round 4 (P2, r4261095856): the guard compared only the
+    syntactic base name against `Formatter`, so
+    `from logging import Formatter as BaseFormatter` -- or any rebinding of
+    a formatter class to an innocuous name -- produced a second formatter
+    authority that passed every logging guard."""
+    script = tmp_path / "rogue_formatter.py"
+    script.write_text(
+        "import logging as lg\n"
+        "from logging import Formatter as BaseFormatter\n"
+        "from structlog.stdlib import ProcessorFormatter as PF\n"
+        "Base = BaseFormatter\n"
+        "Renamed: type = Base\n"
+        "class ImportAlias(BaseFormatter): ...\n"
+        "class AssignAlias(Renamed): ...\n"
+        "class ModuleAlias(lg.Formatter): ...\n"
+        "class Processor(PF): ...\n"
+        "class Unrelated(object): ...\n"
+    )
+    monkeypatch.setattr(sys.modules[__name__], "SCRIPTS_ROOT", tmp_path)
+    assert _formatter_subclass_offenders() == [
+        f"{script}: {name}" for name in ("ImportAlias", "AssignAlias", "ModuleAlias", "Processor")
     ]
-    assert offenders == []
 
 
 def _formatter_authority_offenders() -> list[str]:
