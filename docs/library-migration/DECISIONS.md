@@ -1714,9 +1714,15 @@ consumer was checked:
 - `research_comparison.py` stores the result.
 - The `paper-performance` CLI renders `str(value)`, so displayed digits
   can now show float noise (e.g. `-0.02000000000000008`).
-- `research/promotion.py` compares enhanced vs. baseline drawdown with
-  `<`, which is well-defined for `float`. Equal inputs still give equal
-  results because the computation is deterministic.
+- `research/promotion.py` compares enhanced vs. baseline drawdown.
+  Identical return sequences still give identical floats, but different
+  sequences with the same exact drawdown need not. For example,
+  `[0.19, -0.20, 0.01, 0.01, 0.01]` gives `-0.2000000000000001` and
+  `[-0.20, 0.01, 0.01, 0.01, 0.01]` gives `-0.2`, where the removed
+  `Decimal` formula gave `-0.20` for both. A strict `<` turned that tie
+  into a false `REJECTED`/`ROLLBACK_REQUIRED` (PR #35 review r4245830182).
+  The gate now reports a regression only when the enhanced drawdown is
+  worse by more than `MAX_DRAWDOWN_REGRESSION_TOLERANCE` (`1e-12`).
 - `cost_adjusted_enhanced_value` reads `benchmark_relative_cumulative_return`,
   which is out of scope and still `Decimal`.
 

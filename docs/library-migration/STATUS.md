@@ -3533,7 +3533,10 @@ Sortino always did. Every consumer was checked (D15 ruling 3):
 - `research_comparison.py` stores the result.
 - The `paper-performance` CLI prints `str(value)`, so output can now show
   float noise (e.g. `-0.02000000000000008` instead of `-0.02`).
-- `research/promotion.py` compares drawdowns with `<`.
+- `research/promotion.py` compares drawdowns. A strict `<` turned equal
+  drawdowns that differ only by float noise into a false safety
+  regression, so it now uses a `1e-12` tolerance
+  (`MAX_DRAWDOWN_REGRESSION_TOLERANCE`; PR #35 review r4245830182).
 - No accounting, sizing, order, or safety-limit path consumes these values.
 
 **Parity proof after the removal.** PR 11 compared the two implementations
