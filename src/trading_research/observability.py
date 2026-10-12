@@ -223,41 +223,52 @@ def build_meter_provider(resource: Resource, *, console_export: bool = False) ->
     return MeterProvider(resource=resource, metric_readers=readers)
 
 
-def _register_tracer_provider(
-    resource: Resource, *, console_export: bool
-) -> TracerProvider | None:
-    """Register a fresh `TracerProvider` globally; return it only if it won.
+def _register_tracer_provider(provider: TracerProvider) -> None:
+    """Register an already-built `TracerProvider` globally, recording ownership.
 
     Identity against `trace.get_tracer_provider()` after the call is the
     only reliable "did this actually become the global provider" signal:
     the API refuses to replace an existing global and reports that by log
-    line alone, not by return value or exception. A provider that lost is
-    shut down right away rather than returned -- it is an orphan that can
-    never receive a span, and under `console_export=True` it owns a live
-    span processor -- and `None` is returned to say "the global is
-    external".
+    line alone, not by return value or exception.
+
+    `_tracer_provider` is assigned *before* the API call and cleared only
+    once the race is known to have been lost, so this module's record of
+    what it owns is never optimistic-but-unrecorded: an exception raised
+    anywhere inside the registration leaves ownership of a provider that
+    may already have become the process global, which keeps
+    `shutdown_telemetry()` able to tear it down instead of abandoning it
+    as an unowned global that exports forever.
+
+    A provider that lost is shut down right away and disowned -- it is an
+    orphan that can never receive a span, and under `console_export=True`
+    it owns a live span processor -- leaving `_tracer_provider is None` to
+    say "the global is external".
     """
-    provider = build_tracer_provider(resource, console_export=console_export)
+    global _tracer_provider
+    _tracer_provider = provider
     trace.set_tracer_provider(provider)
     if trace.get_tracer_provider() is provider:
-        return provider
+        return
+    _tracer_provider = None
     provider.shutdown()
-    return None
 
 
-def _register_meter_provider(resource: Resource, *, console_export: bool) -> MeterProvider | None:
-    """Register a fresh `MeterProvider` globally; return it only if it won.
+def _register_meter_provider(provider: MeterProvider) -> None:
+    """Register an already-built `MeterProvider` globally, recording ownership.
 
-    See `_register_tracer_provider`; shutting down a provider that lost
-    matters even more here, since `console_export=True` attaches a
-    `PeriodicExportingMetricReader` with a background export thread.
+    See `_register_tracer_provider`. Both the early ownership record and
+    shutting down a provider that lost matter even more here, since
+    `console_export=True` attaches a `PeriodicExportingMetricReader` with
+    a background export thread: an unowned global meter provider would go
+    on exporting for the life of the process with nothing able to stop it.
     """
-    provider = build_meter_provider(resource, console_export=console_export)
+    global _meter_provider
+    _meter_provider = provider
     metrics.set_meter_provider(provider)
     if metrics.get_meter_provider() is provider:
-        return provider
+        return
+    _meter_provider = None
     provider.shutdown()
-    return None
 
 
 def configure_telemetry(
@@ -292,6 +303,17 @@ def configure_telemetry(
     `shutdown_telemetry()` (it belongs to its registrant), while any
     global still unset is registered from here as usual.
 
+    Failure never silently abandons a global provider. Both providers are
+    built before either is registered, so a construction failure leaves
+    the process-global registry untouched and this call fully retryable;
+    and a provider that *was* registered before a later failure stays
+    recorded as owned, so `shutdown_telemetry()` can tear it down and a
+    follow-up `adopt_existing_providers=True` call can adopt the external
+    winner of the race alongside it. Such a retry treats a global still
+    owned from the partial failure as this module's own rather than as an
+    external one, so it is never described -- or shut down -- as somebody
+    else's.
+
     `console_export` defaults to the `TRADING_RESEARCH_OTEL_CONSOLE`
     environment variable (`"1"` enables it) when not passed explicitly, so
     tests and default runs stay offline-safe without any code change.
@@ -311,24 +333,57 @@ def configure_telemetry(
             console_export = _console_export_from_env()
 
         tracer_external, meter_external = _external_global_providers()
+        # A global this module registered in an earlier call that then
+        # lost the race for the *other* one and raised is still owned
+        # here, but it reads as non-proxy and therefore "external" to
+        # `_external_global_providers()`, which can only inspect the
+        # registry. Mask those out so ownership, not registry contents,
+        # decides what "external" means: otherwise a retry would report
+        # that another party owns a provider this module itself
+        # registered and must still shut down.
+        tracer_external = tracer_external and _tracer_provider is None
+        meter_external = meter_external and _meter_provider is None
         if (tracer_external or meter_external) and not adopt_existing_providers:
             raise ExternalTelemetryProviderError(
                 _external_provider_message(tracer_external, meter_external)
             )
 
         resource = build_resource(service_name)
-        tracer_provider = (
-            None
-            if tracer_external
-            else _register_tracer_provider(resource, console_export=console_export)
-        )
-        meter_provider = (
-            None
-            if meter_external
-            else _register_meter_provider(resource, console_export=console_export)
-        )
 
-        if not adopt_existing_providers and (tracer_provider is None or meter_provider is None):
+        # Build both providers before registering either, and skip
+        # building one this module already owns from an earlier,
+        # partially failed call. Construction is the part that can fail
+        # outright, while OpenTelemetry's global registration is one-shot
+        # per process: building the second provider *after* registering
+        # the first would let a construction failure consume that one
+        # global slot with a provider this call then abandons -- unowned,
+        # never shut down, still exporting under `console_export=True`,
+        # and mistaken for an external provider by the next call. Nothing
+        # built here is registered yet, so a failure only has to dispose
+        # of what was built, with no process-global state to repair.
+        pending_tracer: TracerProvider | None = None
+        pending_meter: MeterProvider | None = None
+        try:
+            if not tracer_external and _tracer_provider is None:
+                pending_tracer = build_tracer_provider(resource, console_export=console_export)
+            if not meter_external and _meter_provider is None:
+                pending_meter = build_meter_provider(resource, console_export=console_export)
+        except BaseException:
+            for pending in (pending_tracer, pending_meter):
+                if pending is not None:
+                    pending.shutdown()
+            raise
+
+        # Each helper records ownership in `_tracer_provider`/
+        # `_meter_provider` itself, so a lost race or a failure partway
+        # through cannot orphan a provider that did become a process
+        # global.
+        if pending_tracer is not None:
+            _register_tracer_provider(pending_tracer)
+        if pending_meter is not None:
+            _register_meter_provider(pending_meter)
+
+        if not adopt_existing_providers and (_tracer_provider is None or _meter_provider is None):
             # The pre-check saw an unset global but registration still
             # lost it, so a provider was registered from outside this
             # module between the two -- another library on another thread,
@@ -336,19 +391,18 @@ def configure_telemetry(
             # `_state_lock`. Keep the fail-explicitly contract rather than
             # reporting a success that only half happened. Nothing is left
             # to clean up for the provider that lost (already shut down by
-            # its `_register_*` helper); a provider that *won* before the
-            # other lost stays registered as the process global, where it
-            # is harmless -- it exports nothing unless `console_export`
-            # was requested -- but it is deliberately not stored or shut
-            # down here, since a shut-down global provider would silently
-            # swallow everyone's spans.
+            # its `_register_*` helper). A provider that *won* before the
+            # other lost stays registered as the process global and stays
+            # owned here: it is not shut down now, since a shut-down
+            # global provider would silently swallow everyone's spans, but
+            # `shutdown_telemetry()` can still tear it down, and a
+            # follow-up `configure_telemetry(adopt_existing_providers=True)`
+            # can adopt the external winner alongside it.
             raise ExternalTelemetryProviderError(
-                _external_provider_message(tracer_provider is None, meter_provider is None)
+                _external_provider_message(_tracer_provider is None, _meter_provider is None)
             )
 
-        _tracer_provider = tracer_provider
-        _meter_provider = meter_provider
-        _adopted_external = tracer_provider is None or meter_provider is None
+        _adopted_external = _tracer_provider is None or _meter_provider is None
         _configured = True
 
 
@@ -383,6 +437,13 @@ def shutdown_telemetry() -> None:
     interpreter shutdown, can race a closed stdout -- until this is called.
     A no-op if `configure_telemetry` was never called.
 
+    Also the cleanup path for a `configure_telemetry` call that raised
+    after registering one of the two globals (a race lost to an external
+    registrant between the pre-check and the registration): that provider
+    is still owned here even though `is_configured()` is `False`, so this
+    runs rather than returning early and leaving it exporting with
+    nothing able to stop it.
+
     Shuts down the concrete SDK provider objects `configure_telemetry`
     itself built and registered as the process globals, rather than
     re-fetching through `trace.get_tracer_provider()`/
@@ -397,7 +458,7 @@ def shutdown_telemetry() -> None:
     """
     global _configured, _shutdown, _tracer_provider, _meter_provider, _adopted_external
     with _state_lock:
-        if not _configured:
+        if not _configured and _tracer_provider is None and _meter_provider is None:
             return
         if _tracer_provider is not None:
             _tracer_provider.shutdown()
