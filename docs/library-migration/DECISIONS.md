@@ -1680,9 +1680,14 @@ than a parallel module:
    *before* the library is called. The checks use a library estimator
    (`pandas.Series.std(ddof=1)`, the estimator `empyrical.sharpe_ratio`
    uses) and `empyrical.downside_risk(annualization=1)`. The hand-written
-   variance arithmetic is gone. Fewer than two returns is `UNDEFINED`, as
-   before (the old code computed zero variance for one return; `empyrical`
-   returns `NaN`).
+   variance arithmetic is gone. Fewer than two returns is `UNDEFINED` for
+   Sharpe, as before (the old code computed zero variance for one return;
+   `empyrical` returns `NaN`). For Sortino, one return is `UNDEFINED` only
+   when it is at or above the required return; one return below it has a
+   nonzero `downside_risk`, and the old code returned a valid ratio (`-1`
+   unannualized, `-sqrt(252)` annualized). `empyrical.sortino_ratio`
+   returns `NaN` for one return, so that case applies the library's own
+   formula over `empyrical.downside_risk` (PR #35 review fix).
 2. Calmar never calls `empyrical.calmar_ratio`, which divides a CAGR
    numerator by drawdown; this repository's Calmar is raw cumulative return
    over drawdown, for independent per-recommendation returns. Zero

@@ -176,10 +176,34 @@ def test_empty_sample_with_zero_minimum_is_exactly_zero_not_nan(metric):
 
 @pytest.mark.parametrize("metric", [metrics.sharpe_ratio, metrics.sortino_ratio])
 def test_single_return_with_minimum_one_is_undefined(metric):
-    # The removed formulas treated one return as zero deviation;
-    # empyrical would return NaN.
+    # One return at or above the required return: the removed formulas
+    # found zero deviation (no variance; no downside); empyrical would
+    # return NaN.
     result = metric(FIXTURES["single_1"], min_sample_size=1)
     assert (result.status, result.value, result.sample_size) == (UNDEFINED, None, 1)
+
+
+@pytest.mark.parametrize(
+    ("returns", "risk_free_rate", "annualize", "legacy"),
+    [
+        (("-0.05",), 0.0, True, "-15.874507866387544"),
+        (("-0.05",), 0.0, False, "-1.0"),
+        (("0.01",), 0.02, True, "-15.874507866387544"),
+        (("0.01",), 0.02, False, "-1.0"),
+    ],
+)
+def test_single_return_below_required_return_sortino_matches_removed_formula(
+    returns, risk_free_rate, annualize, legacy,
+):
+    # One return below the required return has a nonzero downside
+    # deviation, so the removed formula returned a valid ratio (captured by
+    # running `sortino_ratio` from `3906935`). `empyrical.sortino_ratio`
+    # returns NaN for fewer than two returns; `empyrical.downside_risk`
+    # does not.
+    result = metrics.sortino_ratio(
+        _series(*returns), risk_free_rate=risk_free_rate, min_sample_size=1, annualize=annualize,
+    )
+    _assert_matches_legacy(result, OK, 1, legacy)
 
 
 def test_flat_returns_sharpe_is_undefined_not_the_library_huge_finite_value():

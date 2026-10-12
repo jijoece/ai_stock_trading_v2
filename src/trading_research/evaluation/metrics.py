@@ -27,7 +27,11 @@ before the library is called, never inferred from its output:
 1. `empyrical.sharpe_ratio`/`sortino_ratio` do not special-case a zero (or
    floating-point-noise-near-zero) deviation — they return an enormous
    finite float (~1e17 for flat returns) or `inf`. A deviation within
-   `_ZERO_DEVIATION_TOLERANCE` of zero reports `UNDEFINED` instead.
+   `_ZERO_DEVIATION_TOLERANCE` of zero reports `UNDEFINED` instead. Both
+   also return `NaN` for one return; that is `UNDEFINED` for Sharpe (no
+   variance), but a single return below the required return has a nonzero
+   downside deviation, so Sortino applies the library's own formula over
+   `empyrical.downside_risk` for it.
 2. `empyrical.calmar_ratio` divides a CAGR-style annualized return by max
    drawdown; this module's Calmar is raw cumulative return over max
    drawdown, because these are independent per-recommendation returns, not
@@ -182,14 +186,25 @@ def sortino_ratio(
     if len(returns) < min_sample_size:
         return _insufficient(len(returns), f"need at least {min_sample_size} completed evaluations")
     series = _float_series(returns)
-    downside_deviation = (
-        float(empyrical.downside_risk(series, required_return=risk_free_rate, annualization=1))  # type: ignore[arg-type]
-        if len(series) >= 2 else 0.0
+    # `downside_risk` is defined for one return: a single return below
+    # `risk_free_rate` is a nonzero downside deviation, not an undefined one.
+    downside_deviation = float(
+        empyrical.downside_risk(series, required_return=risk_free_rate, annualization=1)  # type: ignore[arg-type]
     )
     if downside_deviation <= _ZERO_DEVIATION_TOLERANCE:
         return MetricsResult(
             status="UNDEFINED", value=None, sample_size=len(returns), reason="no downside deviation observed",
         )
+    if len(series) < 2:
+        # `empyrical.sortino_ratio` returns NaN for fewer than two returns;
+        # apply its own formula (annualized mean excess return over
+        # annualized `downside_risk`) for the single-return case.
+        annualization = _annualization(annualize)
+        annualized_downside = float(
+            empyrical.downside_risk(series, required_return=risk_free_rate, annualization=annualization)  # type: ignore[arg-type]
+        )
+        ratio = float(series.mean() - risk_free_rate) * annualization / annualized_downside
+        return MetricsResult(status="OK", value=ratio, sample_size=len(returns))
     ratio = float(
         empyrical.sortino_ratio(
             series, required_return=risk_free_rate, annualization=_annualization(annualize),  # type: ignore[arg-type]

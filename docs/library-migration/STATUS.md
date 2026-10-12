@@ -3514,7 +3514,10 @@ existed: `metrics.py` still held the hand-written formulas. See
 - The fail-closed boundaries the library lacks are applied before it is
   called (D15 ruling 2):
   - near-zero deviation → `UNDEFINED`;
-  - fewer than two returns → `UNDEFINED`;
+  - fewer than two returns → `UNDEFINED`, except a single Sortino return
+    below the required return, which is a valid ratio (`-1`, or
+    `-sqrt(252)` annualized) exactly as the removed formula returned (PR
+    #35 review fix);
   - empty sample → exact `0.0`;
   - `-0.0` drawdown → `0.0`.
 - `metrics.py` no longer imports `math`.
