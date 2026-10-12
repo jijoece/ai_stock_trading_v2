@@ -59,6 +59,20 @@ processor rather than reimplemented, and `tests/unit/test_logging_config.py`
 proves the redaction behavior matches (see `STATUS.md` "Completed work
 (PR 15)", `DECISIONS.md` D13).
 
+**PR 17 update:** the custom analytics formulas row — the only row still
+open when PR 17 began — is now **closed: removed in PR 17**.
+`evaluation/metrics.py`'s hand-written `cumulative_return`, `sharpe_ratio`,
+`sortino_ratio`, and `max_drawdown` formulas are deleted and replaced in
+place by `empyrical-reloaded` calls; `calmar_ratio` is composed from those
+two library-backed metrics. Public names, signatures, and `MetricsResult`
+statuses are unchanged; values are `float` (three were `Decimal`).
+`tests/unit/test_metrics_library_authority.py` pins every result to the
+removed formulas' own outputs, captured before deletion
+(`pr17/legacy_golden_values.txt`). PR 11's parallel
+`evaluation/analytics_parity.py` is deleted too, so no second
+implementation remains (`DECISIONS.md` D15). **This manifest now has no
+unresolved removal target.**
+
 **PR 8 update (2026-08-02):** `backtesting/engine.py` appeared in the
 "conditionally eligible" section below while this paragraph said not to add it
 — a real contradiction, since PR 0 opened a removal gate on a file this
@@ -72,7 +86,7 @@ process at the foot of this file (`DECISIONS.md` D7, `pr8/DECISION.md` §9).
 |---|---|---|---|---|
 | Custom market calendar | `src/trading_research/evaluation/market_calendar.py` | `exchange_calendars` fixture parity | **Done in PR 3** — all session/holiday/weekend/DST/pre-market/intraday/after-hours/previous-and-next-session/session-count fixture cases pass | Removed in PR 3 (not deferred to PR 17) |
 | Custom EMA/RSI/MACD/TRIX/Bollinger formulas | `scripts/indicators.py` | TA-Lib fixture parity | **Done in PR 4** — warm-up, null, and rounding semantics documented and matched for EMA/RSI/MACD/TRIX/Bollinger (one intentional preserved difference: flat-price RSI stays 100, not TA-Lib's default 0 — see `STATUS.md`) | Hand-written formulas removed in PR 4 (not deferred to PR 17); **the thin MACD/TRIX-composition and compatibility adapter is retained, not removed** — see `COMPONENT_MATRIX.md`, not tracked for further removal |
-| Custom analytics formulas | `src/trading_research/evaluation/metrics.py` — `sharpe_ratio`, `sortino_ratio`, `max_drawdown`, `calmar_ratio`, `cumulative_return` only | quantstats-lumi / empyrical-reloaded fixture parity | Annualization convention and insufficient-data status semantics matched | PR 17 (parity proven in PR 11) |
+| Custom analytics formulas | `src/trading_research/evaluation/metrics.py` — `sharpe_ratio`, `sortino_ratio`, `max_drawdown`, `calmar_ratio`, `cumulative_return` only | quantstats-lumi / empyrical-reloaded fixture parity | **Done in PR 11** — annualization convention (252 = empyrical `"daily"`) and insufficient-data/undefined status semantics matched | **Removed in PR 17** — formulas replaced in place by empyrical-reloaded; thin fail-closed adapter retained (zero-deviation `UNDEFINED`, composed Calmar, empty-sample `0.0`); `analytics_parity.py` deleted (`DECISIONS.md` D15) |
 | Custom logging formatter | `src/trading_research/logging_config.py` — `RedactingFormatter`, `JsonRedactingFormatter` | Structlog processor parity | **Done in PR 15** — redaction and secret-registration behavior matched exactly (`tests/unit/test_logging_config.py`); no secret ever logged during the transition | Removed in PR 15 (not deferred to PR 17) |
 
 ## Conditionally eligible — gated on a decision PR, not a parity PR

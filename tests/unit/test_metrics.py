@@ -1,3 +1,4 @@
+import math
 from datetime import date, datetime, timezone
 from decimal import Decimal
 
@@ -68,8 +69,10 @@ def test_gain_loss_ratio_undefined_without_any_losses():
 def test_cumulative_return_compounds():
     evaluations = [_completed("rec-1", "0.10"), _completed("rec-2", "0.10")]
     result = metrics.cumulative_return(evaluations)
-    expected = (Decimal("1.10") * Decimal("1.10")) - 1
-    assert result.value == expected
+    # empyrical-reloaded-backed since library-migration PR 17: a float, not
+    # the removed formula's exact Decimal (DECISIONS.md D15).
+    assert isinstance(result.value, float)
+    assert math.isclose(result.value, 0.21, rel_tol=1e-12)
 
 
 def test_max_drawdown_and_calmar():

@@ -28,6 +28,22 @@ dependencies = [
     # test environment -- an optional extra would break `nox -s tests`
     # rather than gate an opt-in feature. See DECISIONS.md D13.
     "structlog>=26.1,<27",
+    # PR 17 makes this the sole formula authority for evaluation/metrics.py's
+    # cumulative_return/sharpe_ratio/sortino_ratio/max_drawdown/calmar_ratio
+    # (custom formulas removed after PR 11's parity proof). Promoted from the
+    # `analytics` extra for the same reason as structlog above:
+    # evaluation/metrics.py is imported unconditionally by
+    # evaluation/research_comparison.py and the `paper-performance` CLI, all
+    # exercised by the default `.[dev]` test environment. See DECISIONS.md D15.
+    "empyrical-reloaded>=0.5.12,<0.6",
+    # Repository-controlled compatibility pin, not ours to need directly:
+    # empyrical-reloaded 0.5.12's `empyrical/utils.py` does `from pytz import
+    # UTC` but does not declare pytz, which pandas>=3 no longer pulls in
+    # transitively. Without it `import empyrical` fails in a clean `.[dev]`
+    # install (found by `nox -s tests` in PR 17; the old `analytics` extra
+    # masked it because quantstats-lumi's yfinance dependency installs pytz).
+    # Drop once empyrical-reloaded declares or removes the import.
+    "pytz>=2024.1",
 ]
 
 [project.optional-dependencies]
@@ -70,12 +86,12 @@ research = [
     "vectorbt>=1.1.0,<1.2",
     "plotly<7",
 ]
-# PR 11 candidate: empyrical-reloaded is the authoritative primitive-metrics
-# library (returns/annualization/Sharpe/Sortino/drawdown/alpha-beta);
 # quantstats-lumi is reporting/presentation only (tear sheets, tables,
-# charts) and must not become a second authority over the same primitives.
+# charts; evaluation/analytics_presentation.py) and must not become a second
+# authority over the primitives empyrical-reloaded owns. empyrical-reloaded
+# itself moved to base dependencies in PR 17 (DECISIONS.md D15), so this
+# extra is quantstats-lumi-only.
 analytics = [
-    "empyrical-reloaded>=0.5.12,<0.6",
     "quantstats-lumi>=1.1.5,<2",
 ]
 # Wired in by PR 16 (`observability.py`): additive tracing/metrics SDK only,

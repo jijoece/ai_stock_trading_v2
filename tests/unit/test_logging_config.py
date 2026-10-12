@@ -5,7 +5,7 @@ public API (`get_logger`, `configure_logging`, `register_secret`, `redact`)
 is unchanged in name and signature. `structlog` is a base dependency as of
 this PR (see `pyproject.toml`, `DECISIONS.md` D13), so this file has no
 `importorskip` guard -- unlike the optional-extra pattern in
-`test_indicators.py`/`test_analytics_parity.py`, a missing `structlog`
+`test_indicators.py`/`test_analytics_presentation.py`, a missing `structlog`
 import here is a real failure, not an expected skip.
 """
 from __future__ import annotations

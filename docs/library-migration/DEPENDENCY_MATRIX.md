@@ -105,6 +105,16 @@ base dependencies (not an extra):
                                "core" extra; required application
                                infrastructure once PR 3 removes the custom
                                calendar)
+  + structlog                 (PR 15 — promoted from `observability`; see
+                               the note below the `observability` group)
+  + empyrical-reloaded        (PR 17 — promoted from `analytics`; sole
+                               formula authority for evaluation/metrics.py's
+                               Sharpe/Sortino/drawdown/cumulative return,
+                               DECISIONS.md D15)
+  + pytz                      (PR 17 — compatibility pin only:
+                               empyrical-reloaded 0.5.12 imports pytz without
+                               declaring it, and pandas>=3 no longer installs
+                               it; drop once upstream declares or removes it)
 
 research:
   vectorbt>=1.1.0,<1.2         (PR 5 — added; explicit owner-approved
@@ -151,9 +161,15 @@ paper:
 analytics:
   empyrical-reloaded            (PR 1 — added; authoritative primitive
                                  metrics: returns, annualization, Sharpe,
-                                 Sortino, drawdown, alpha/beta)
+                                 Sortino, drawdown, alpha/beta. PR 17 moved
+                                 it to base dependencies when
+                                 evaluation/metrics.py adopted it, since that
+                                 module is imported by the default `.[dev]`
+                                 environment — DECISIONS.md D15)
   quantstats-lumi               (PR 1 — added; reporting/presentation only:
-                                 tear sheets, tables, charts)
+                                 tear sheets, tables, charts; since PR 17
+                                 the only package in this extra, used only
+                                 by evaluation/analytics_presentation.py)
   riskfolio-lib                 not added — evaluated and deferred in PR 12
                                  (docs/library-migration/pr12/EVALUATION.md,
                                  DECISIONS.md D10); pulls vectorbt>=0.28.0

@@ -7,22 +7,50 @@ undefined for the data available — see `MetricsResult.insufficient_data`.
 Annualization uses 252 trading days/year (documented below); this is a
 convention, not a measured constant.
 
-Deterministic Decimal arithmetic throughout except where the standard
-statistical definitions (Sharpe/Sortino standard deviation, square roots)
-are only practical in `float` — matching this repository's existing
-convention of Decimal at storage/monetary boundaries and float for derived
-statistics (e.g. `analysis/scorer.py`).
+Two arithmetic authorities, split by metric (library-migration PR 17,
+`docs/library-migration/DECISIONS.md` D15):
+
+* `empyrical-reloaded` is the sole formula authority for
+  `cumulative_return`, `sharpe_ratio`, `sortino_ratio`, `max_drawdown`, and
+  `calmar_ratio` (composed from the first two of those). Their values are
+  `float`. The hand-written formulas they replace were removed after PR 11
+  proved fixture parity; `tests/unit/test_metrics_library_authority.py`
+  pins every result to the values the removed formulas produced.
+* Every other metric here has no library equivalent and stays
+  deterministic `Decimal` arithmetic, matching this repository's convention
+  of Decimal at storage/monetary boundaries and float for derived
+  statistics (e.g. `analysis/scorer.py`).
+
+Fail-closed boundaries the library does not provide are applied here,
+before the library is called, never inferred from its output:
+
+1. `empyrical.sharpe_ratio`/`sortino_ratio` do not special-case a zero (or
+   floating-point-noise-near-zero) deviation — they return an enormous
+   finite float (~1e17 for flat returns) or `inf`. A deviation within
+   `_ZERO_DEVIATION_TOLERANCE` of zero reports `UNDEFINED` instead.
+2. `empyrical.calmar_ratio` divides a CAGR-style annualized return by max
+   drawdown; this module's Calmar is raw cumulative return over max
+   drawdown, because these are independent per-recommendation returns, not
+   a fixed-frequency bar series. `calmar_ratio` is therefore composed from
+   `cumulative_return`/`max_drawdown`, and `empyrical.calmar_ratio` is
+   never called. A zero max drawdown is `UNDEFINED`, never `inf`.
+3. `empyrical.cum_returns_final`/`max_drawdown` return `NaN` for an empty
+   series. An empty sample (reachable only with `min_sample_size=0`) is an
+   exact `0.0` for both: an empty product, and a flat equity curve.
 """
 from __future__ import annotations
 
-import math
 from dataclasses import dataclass
 from decimal import Decimal
+
+import empyrical
+import pandas as pd
 
 from .models import RecommendationEvaluation
 
 ANNUALIZATION_TRADING_DAYS = 252
 MIN_SAMPLE_SIZE = 5
+_ZERO_DEVIATION_TOLERANCE = 1e-12
 
 
 class InsufficientDataError(ValueError):
@@ -43,6 +71,16 @@ def _completed_returns(evaluations: list[RecommendationEvaluation]) -> list[Deci
 
 def _insufficient(sample_size: int, reason: str) -> MetricsResult:
     return MetricsResult(status="INSUFFICIENT_DATA", value=None, sample_size=sample_size, reason=reason)
+
+
+def _float_series(returns: list[Decimal]) -> pd.Series:
+    return pd.Series([float(r) for r in returns], dtype="float64")
+
+
+def _annualization(annualize: bool) -> int:
+    # 252 is exactly empyrical's own `period="daily"` convention; 1 leaves
+    # the ratio unannualized.
+    return ANNUALIZATION_TRADING_DAYS if annualize else 1
 
 
 def hit_rate(evaluations: list[RecommendationEvaluation], *, min_sample_size: int = MIN_SAMPLE_SIZE) -> MetricsResult:
@@ -92,10 +130,10 @@ def cumulative_return(evaluations: list[RecommendationEvaluation], *, min_sample
     returns = _completed_returns(evaluations)
     if len(returns) < min_sample_size:
         return _insufficient(len(returns), f"need at least {min_sample_size} completed evaluations")
-    total = Decimal("1")
-    for r in returns:
-        total *= (Decimal("1") + r)
-    return MetricsResult(status="OK", value=total - 1, sample_size=len(returns))
+    if not returns:
+        return MetricsResult(status="OK", value=0.0, sample_size=0)
+    value = float(empyrical.cum_returns_final(_float_series(returns), starting_value=0))
+    return MetricsResult(status="OK", value=value, sample_size=len(returns))
 
 
 def benchmark_relative_cumulative_return(
@@ -120,17 +158,19 @@ def sharpe_ratio(
     evaluations: list[RecommendationEvaluation], *, risk_free_rate: float = 0.0, min_sample_size: int = MIN_SAMPLE_SIZE,
     annualize: bool = True,
 ) -> MetricsResult:
-    returns = [float(r) for r in _completed_returns(evaluations)]
+    returns = _completed_returns(evaluations)
     if len(returns) < min_sample_size:
         return _insufficient(len(returns), f"need at least {min_sample_size} completed evaluations")
-    mean = sum(returns) / len(returns)
-    variance = sum((r - mean) ** 2 for r in returns) / (len(returns) - 1) if len(returns) > 1 else 0.0
-    std = math.sqrt(variance)
-    if math.isclose(std, 0.0, abs_tol=1e-12):
+    series = _float_series(returns)
+    # Sample standard deviation (ddof=1), the same estimator empyrical uses;
+    # fewer than two returns has no variance to measure.
+    if len(series) < 2 or float(series.std(ddof=1)) <= _ZERO_DEVIATION_TOLERANCE:
         return MetricsResult(status="UNDEFINED", value=None, sample_size=len(returns), reason="zero return variance")
-    ratio = (mean - risk_free_rate) / std
-    if annualize:
-        ratio *= math.sqrt(ANNUALIZATION_TRADING_DAYS)
+    # empyrical-reloaded's stub types `risk_free`/`required_return` as `int`;
+    # the library itself accepts a float rate at runtime without issue.
+    ratio = float(
+        empyrical.sharpe_ratio(series, risk_free=risk_free_rate, annualization=_annualization(annualize))  # type: ignore[arg-type]
+    )
     return MetricsResult(status="OK", value=ratio, sample_size=len(returns))
 
 
@@ -138,39 +178,38 @@ def sortino_ratio(
     evaluations: list[RecommendationEvaluation], *, risk_free_rate: float = 0.0, min_sample_size: int = MIN_SAMPLE_SIZE,
     annualize: bool = True,
 ) -> MetricsResult:
-    returns = [float(r) for r in _completed_returns(evaluations)]
+    returns = _completed_returns(evaluations)
     if len(returns) < min_sample_size:
         return _insufficient(len(returns), f"need at least {min_sample_size} completed evaluations")
-    mean = sum(returns) / len(returns)
-    downside = [min(0.0, r - risk_free_rate) for r in returns]
-    downside_variance = sum(d ** 2 for d in downside) / len(downside)
-    downside_std = math.sqrt(downside_variance)
-    if math.isclose(downside_std, 0.0, abs_tol=1e-12):
+    series = _float_series(returns)
+    downside_deviation = (
+        float(empyrical.downside_risk(series, required_return=risk_free_rate, annualization=1))  # type: ignore[arg-type]
+        if len(series) >= 2 else 0.0
+    )
+    if downside_deviation <= _ZERO_DEVIATION_TOLERANCE:
         return MetricsResult(
             status="UNDEFINED", value=None, sample_size=len(returns), reason="no downside deviation observed",
         )
-    ratio = (mean - risk_free_rate) / downside_std
-    if annualize:
-        ratio *= math.sqrt(ANNUALIZATION_TRADING_DAYS)
+    ratio = float(
+        empyrical.sortino_ratio(
+            series, required_return=risk_free_rate, annualization=_annualization(annualize),  # type: ignore[arg-type]
+        )
+    )
     return MetricsResult(status="OK", value=ratio, sample_size=len(returns))
 
 
 def max_drawdown(evaluations: list[RecommendationEvaluation], *, min_sample_size: int = 1) -> MetricsResult:
     """Drawdown of the cumulative-return equity curve built purely from
     sequential completed-evaluation returns (ordered as given — callers
-    must pass evaluations in chronological order)."""
+    must pass evaluations in chronological order). Zero or negative."""
     returns = _completed_returns(evaluations)
     if len(returns) < min_sample_size:
         return _insufficient(len(returns), f"need at least {min_sample_size} completed evaluations")
-    equity = Decimal("1")
-    peak = equity
-    worst = Decimal("0")
-    for r in returns:
-        equity *= (Decimal("1") + r)
-        peak = max(peak, equity)
-        drawdown = (equity - peak) / peak if peak != 0 else Decimal("0")
-        worst = min(worst, drawdown)
-    return MetricsResult(status="OK", value=worst, sample_size=len(returns))
+    if not returns:
+        return MetricsResult(status="OK", value=0.0, sample_size=0)
+    # empyrical reports a never-below-peak curve as -0.0; normalize to 0.0.
+    value = float(empyrical.max_drawdown(_float_series(returns))) + 0.0
+    return MetricsResult(status="OK", value=value, sample_size=len(returns))
 
 
 def calmar_ratio(evaluations: list[RecommendationEvaluation], *, min_sample_size: int = MIN_SAMPLE_SIZE) -> MetricsResult:
@@ -178,12 +217,16 @@ def calmar_ratio(evaluations: list[RecommendationEvaluation], *, min_sample_size
     drawdown = max_drawdown(evaluations, min_sample_size=min_sample_size)
     if cumulative.status != "OK" or drawdown.status != "OK":
         return _insufficient(cumulative.sample_size, "need sufficient data for both cumulative return and drawdown")
+    # status == "OK" guarantees both are the float set above, never None.
+    assert cumulative.value is not None and drawdown.value is not None
     if drawdown.value == 0:
         return MetricsResult(
             status="UNDEFINED", value=None, sample_size=cumulative.sample_size,
             reason="Calmar ratio is undefined with zero max drawdown",
         )
-    return MetricsResult(status="OK", value=cumulative.value / abs(drawdown.value), sample_size=cumulative.sample_size)
+    return MetricsResult(
+        status="OK", value=float(cumulative.value) / abs(float(drawdown.value)), sample_size=cumulative.sample_size,
+    )
 
 
 def recommendation_to_fill_rate(
