@@ -1,33 +1,47 @@
 # Migration Status
 
-**Current phase: PR 16 — OpenTelemetry migration — IMPLEMENTED, NOT MERGED**
-(branch `migration/16-opentelemetry-tracing`; `MASTER_PLAN.md` row 16,
-`DECISIONS.md` D14). New, additive `src/trading_research/observability.py`
-wires the OpenTelemetry SDK: `build_resource`/`build_tracer_provider`/
-`build_meter_provider`/`configure_telemetry`/`is_configured`/
-`shutdown_telemetry`. This is a from-scratch new-capability adoption, not a
-migration — `COMPONENT_MATRIX.md`'s "Tracing/metrics (spans)" row's
-pre-migration state was "None," so there was no existing implementation to
-replace or prove parity against. Default-built providers attach no span
-processor or metric reader at all, so creating spans/metrics has zero
-network, filesystem, or stdout side effect unless `console_export=True` (or
-`TRADING_RESEARCH_OTEL_CONSOLE=1`) opts into local `Console*Exporter`
-output — no OTLP/network exporter exists in this module. `opentelemetry-sdk`
-stays an optional `observability` extra, not a base dependency (unlike
-`structlog` in PR 15): nothing imports `observability.py` unconditionally,
-enforced by `tests/unit/test_observability_import_boundary.py`, which also
-proves domain telemetry (`research/cycle_telemetry.py`,
-`paper_books/metrics.py`) stays untouched. See "Completed work (PR 16)"
-below for the full record.
+**Current phase: PR 17 — Remove only approved commodity implementations —
+IMPLEMENTED, NOT MERGED** (branch
+`migration/17-remove-approved-commodity-implementations`; `MASTER_PLAN.md`
+row 17, `DECISIONS.md` D15). `REMOVAL_MANIFEST.md` carried exactly one
+unresolved removal target into this PR — the custom analytics formulas row
+(PR 11 parity) — because PR 3, PR 4, and PR 15 closed their rows in place
+and PR 8 approved no removal. That row is now executed and closed:
+`evaluation/metrics.py`'s hand-written `cumulative_return`, `sharpe_ratio`,
+`sortino_ratio`, and `max_drawdown` formulas are deleted and replaced in
+place by `empyrical-reloaded` calls, `calmar_ratio` is composed from the
+two library-backed metrics (never `empyrical.calmar_ratio`, a different
+CAGR convention), and every public name and signature is unchanged.
+`empyrical-reloaded` is promoted from the `analytics` extra to a base
+dependency (the D13 `structlog` precedent: `metrics.py` is imported by the
+default `.[dev]` test environment). PR 11's parallel
+`evaluation/analytics_parity.py` is deleted rather than left as a second
+empyrical-backed copy; its presentation-only `quantstats-lumi` function
+moves to `evaluation/analytics_presentation.py`. **Contract change:** the
+three formerly `Decimal`-valued results (`cumulative_return`,
+`max_drawdown`, `calmar_ratio`) are now `float`, like Sharpe/Sortino
+already were. Statuses are unchanged on every fixture;
+`tests/unit/test_metrics_library_authority.py` pins all values to the
+removed formulas' own outputs, captured before the removal. See
+"Completed work (PR 17)" below for the full record.
 
-**Next phase: PR 17 — Remove only approved commodity implementations**
-(`MASTER_PLAN.md` row 17), which depends on PR 3, PR 4, PR 11, and PR 15
-(PR 15 implemented above, not yet merged; PR 8's conditional contribution
-is already resolved and contributes nothing to this row — see
-`DECISIONS.md` D7).
+**Next phase: PR 18 — Final authority and safety audit**
+(`MASTER_PLAN.md` row 18), which depends on all prior PRs. As of PR 17,
+`REMOVAL_MANIFEST.md` has no unresolved removal target.
 
-PR 15 — Structlog migration — is **IMPLEMENTED, NOT MERGED**
-(branch `migration/15-structlog-migration`; `MASTER_PLAN.md` row 15,
+PR 16 — OpenTelemetry migration — is **merged** (PR #34, `3906935`, branch
+`migration/16-opentelemetry-tracing`; `MASTER_PLAN.md` row 16,
+`DECISIONS.md` D14). This entry previously read "IMPLEMENTED, NOT MERGED";
+it is corrected here because `AUTOMATION.md` treats GitHub as
+authoritative for merge status. New, additive
+`src/trading_research/observability.py` wires the OpenTelemetry SDK with
+no span processor, metric reader, or network exporter by default;
+`opentelemetry-sdk` stays an optional `observability` extra. See
+"Completed work (PR 16)" below.
+
+PR 15 — Structlog migration — is **merged** (PR #33, `ea1168d`, branch
+`migration/15-structlog-migration`, corrected from "IMPLEMENTED, NOT MERGED"
+under the same GitHub-is-authoritative rule; `MASTER_PLAN.md` row 15,
 `DECISIONS.md` D13). `logging_config.py`'s `RedactingFormatter`/
 `JsonRedactingFormatter` are replaced in place by
 `structlog.stdlib.ProcessorFormatter`; `get_logger`/`configure_logging`
@@ -3456,3 +3470,164 @@ market-data service was called; no live data was fetched; the scheduler was
 not enabled; no external paper order of any kind was submitted or
 referenced; no network call was made by any code this PR added (`console_
 export=True`'s exporters write to local stdout only).
+
+## Completed work (PR 17)
+
+**Scope:** `src/trading_research/evaluation/metrics.py` (five functions,
+module docstring, imports); new
+`src/trading_research/evaluation/analytics_presentation.py`; deleted
+`src/trading_research/evaluation/analytics_parity.py`,
+`tests/unit/test_analytics_parity.py`; new
+`tests/unit/test_metrics_library_authority.py` and
+`tests/unit/test_analytics_presentation.py`;
+`tests/unit/test_analytics_parity_import_boundary.py` rewritten and renamed
+to `tests/unit/test_analytics_import_boundary.py`; one assertion in
+`tests/unit/test_metrics.py`; `pyproject.toml` (base dependencies and the
+`analytics` extra); the `analytics-tests` and `dependency-extras-smoke`
+jobs in `.github/workflows/ci.yml`; capture script and outputs under
+`docs/library-migration/pr17/`; stale `analytics_parity` references in the
+docstrings of `vector_research/adapter.py`, `test_observability.py`,
+`test_observability_import_boundary.py`, and `test_logging_config.py`
+(prose only); plus this file, `MASTER_PLAN.md` row 17, `DECISIONS.md` (new
+D15), `REMOVAL_MANIFEST.md`, `COMPONENT_MATRIX.md`, and
+`DEPENDENCY_MATRIX.md`. No file under `paper_books/`, `backtesting/`,
+`storage/`, `research/`, `paper_runtime/`, `backtest_runtime/`, or
+`config/` was modified.
+
+**What was executable.** Each source `MASTER_PLAN.md` row 17 names was
+checked against `REMOVAL_MANIFEST.md`. PR 3, PR 4, and PR 15 had already
+closed their rows in place. PR 8 approved no removal (D7). The only
+remaining entry was PR 11's analytics-formulas row, and the issue still
+existed: `metrics.py` still held the hand-written formulas. See
+`DECISIONS.md` D15.
+
+**Removal executed.**
+
+- `cumulative_return`, `sharpe_ratio`, `sortino_ratio`, and `max_drawdown`
+  now delegate to `empyrical.cum_returns_final`, `sharpe_ratio`,
+  `sortino_ratio`, and `max_drawdown`.
+- `calmar_ratio` is composed from the two library-backed metrics. It never
+  calls `empyrical.calmar_ratio`, whose CAGR numerator is a different
+  convention.
+- Function names, signatures, `MetricsResult` statuses, and reasons are
+  unchanged, so no caller was edited.
+- The fail-closed boundaries the library lacks are applied before it is
+  called (D15 ruling 2):
+  - near-zero deviation → `UNDEFINED`;
+  - fewer than two returns → `UNDEFINED`, except a single Sortino return
+    below the required return, which is a valid ratio (`-1`, or
+    `-sqrt(252)` annualized) exactly as the removed formula returned (PR
+    #35 review fix);
+  - empty sample → exact `0.0`;
+  - `-0.0` drawdown → `0.0`.
+- `metrics.py` no longer imports `math`.
+- `evaluation/analytics_parity.py` is deleted, so no second implementation
+  remains. Its `quantstats-lumi` `presentation_summary` moved unchanged to
+  `evaluation/analytics_presentation.py`, which has zero production
+  callers.
+
+**Contract change: `float` instead of `Decimal`.** `cumulative_return`,
+`max_drawdown`, and `calmar_ratio` now return `float` values, as Sharpe and
+Sortino always did. Every consumer was checked (D15 ruling 3):
+
+- `research_comparison.py` stores the result.
+- The `paper-performance` CLI prints `str(value)`, so output can now show
+  float noise (e.g. `-0.02000000000000008` instead of `-0.02`).
+- `research/promotion.py` compares drawdowns. A strict `<` turned equal
+  drawdowns that differ only by float noise into a false safety
+  regression, so it now uses a `1e-12` tolerance
+  (`MAX_DRAWDOWN_REGRESSION_TOLERANCE`; PR #35 review r4245830182).
+- No accounting, sizing, order, or safety-limit path consumes these values.
+
+**Parity proof after the removal.** PR 11 compared the two implementations
+side by side, which is impossible once the custom formulas are gone.
+Instead, `docs/library-migration/pr17/capture_metrics_scratch.py` recorded
+the removed formulas' outputs at `origin/main` `3906935` before any edit
+(`pr17/legacy_golden_values.txt`), and the same script recorded the
+library-backed outputs afterward (`pr17/library_backed_values.txt`).
+
+- Coverage: 8 fixtures × 7 metric variants, plus edge cases for a non-zero
+  risk-free rate, `min_sample_size=0`, and `min_sample_size=1`.
+- Every status and sample size is identical.
+- Values differ only by float noise; the largest relative difference is
+  ~1e-14 (e.g. drawdown `-0.2` vs `-0.19999999999999998`).
+- `tests/unit/test_metrics_library_authority.py` pins all 56
+  fixture × metric cells and every edge case to the legacy values
+  (`rel_tol=1e-9`, `abs_tol=1e-12`).
+- It also proves the boundaries are still needed: raw `empyrical` gives a
+  huge or infinite Sharpe/Sortino and a divergent Calmar on these fixtures.
+- It has no `importorskip`, so it runs in `main-tests`.
+
+**Structural guard.** `tests/unit/test_analytics_import_boundary.py`
+(unconditional AST parsing) asserts:
+
+- `empyrical` is imported only by `metrics.py`;
+- `quantstats_lumi` is imported only by `analytics_presentation.py`;
+- no production module imports `analytics_presentation`;
+- `analytics_parity.py` is gone and unreferenced;
+- the four functions reference `empyrical`, and `calmar_ratio` calls
+  `cumulative_return` and `max_drawdown`;
+- `empyrical.calmar_ratio` never appears;
+- `metrics.py` does not import `math`.
+
+**Dependencies.** `empyrical-reloaded>=0.5.12,<0.6` moves from the
+`analytics` extra to base dependencies, following the D13 `structlog`
+precedent, because `metrics.py` is imported by the default `.[dev]`
+environment. The `analytics` extra now contains only `quantstats-lumi`.
+
+**Validation finding: undeclared `pytz`.** The first `nox -s ci` run failed
+to collect 4 test modules with `ModuleNotFoundError: No module named
+'pytz'`.
+
+- Cause: `empyrical/utils.py` imports `pytz`, empyrical-reloaded 0.5.12
+  does not declare it, and pandas 3.0.6 (resolved in the nox environment)
+  no longer installs it.
+- Why it was hidden: the old `analytics` extra pulled `pytz` in through
+  quantstats-lumi → yfinance, and the developer `.venv` had it the same
+  way.
+- Fix: `pytz>=2024.1` is declared as a commented compatibility pin with an
+  explicit removal condition (D15).
+
+**CI.** `analytics-tests` now runs `test_analytics_presentation.py`,
+`test_metrics_library_authority.py`, and `test_analytics_import_boundary.py`
+with `.[dev,analytics]`. The `dependency-extras-smoke` analytics import
+check now imports `quantstats_lumi` only.
+
+**Tests run:**
+- Focused, developer `.venv` (Python 3.14):
+  - `pytest tests/unit/test_metrics_library_authority.py
+    tests/unit/test_analytics_import_boundary.py
+    tests/unit/test_analytics_presentation.py tests/unit/test_metrics.py
+    tests/unit/test_research_comparison_extensions.py
+    tests/unit/test_promotion_gates.py` — **131 passed**.
+  - Full `pytest tests/` — **3476 passed, 57 skipped**.
+- Python 3.10 floor: a fresh `uv` virtualenv with `.[dev]` only (pandas
+  2.3.3, numpy 2.2.6), running the metrics/authority/boundary/
+  research-comparison tests — **108 passed, 1 skipped** (the presentation
+  file, as expected without the extra).
+- `analytics` extra on Python 3.11: a fresh `uv` virtualenv with
+  `.[dev,analytics]`, mirroring the CI job. `uv pip check` reports all
+  packages compatible, and the three analytics-focused files —
+  **78 passed**.
+- `nox -s ci`, after the `pytz` fix — all four sessions passed:
+  - `tests`: **3388 passed, 107 skipped**;
+  - `paper_tests`: **160 passed**;
+  - `safety_typecheck`: **0 errors, 0 warnings**;
+  - `migration_smoke`: OK.
+- Pyright (basic mode) on every changed Python file: no new errors.
+  `metrics.py`, `analytics_presentation.py`, and the three new or rewritten
+  test files have 0 errors. The 3 errors in `vector_research/adapter.py`
+  are pre-existing, in untouched code. `test_metrics.py` has 26
+  pre-existing `**base` fixture-typing errors, the same count before and
+  after this PR.
+- `python scripts/migration_helper.py status --offline` reads
+  `Current phase: PR 17` / `Next phase: PR 18` correctly.
+- `scripts/check_links.sh` — 189 links checked, 187 OK, **0 errors**, 2
+  excluded.
+
+**Safety:** no trading limit, authorization rule, `paper_books` accounting
+code, external-broker state machine, research boundary, or scheduling
+behavior was modified. No broker, provider, model, or market-data service
+was called; no credential was read; no order of any kind was submitted;
+the scheduler was not enabled. The only network access was package
+resolution from PyPI for the nox and scratch virtualenvs.

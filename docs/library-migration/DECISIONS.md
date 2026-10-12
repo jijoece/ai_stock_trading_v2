@@ -1638,3 +1638,141 @@ evaluation is recommended after a feasibility question was open; here
 adoption was the plan's own instruction (`MASTER_PLAN.md` row 16) and no
 architectural conflict with any Accepted ADR was found, so no ADR is
 drafted.
+
+---
+
+## D15 — PR 17: analytics formulas removed; empyrical-reloaded is the sole authority and a base dependency
+
+**Context.** `MASTER_PLAN.md` row 17 says "execute only removal-manifest
+entries that passed parity in PR 3/4/11/15." Each of the four sources was
+checked against `REMOVAL_MANIFEST.md` before editing anything:
+
+- PR 3 (market calendar), PR 4 (indicator formulas), and PR 15 (logging
+  formatter): each row was explicitly closed in its own PR ("Removed in
+  PR 3/PR 4/PR 15, not deferred to PR 17"). The PR 4 row's retained
+  MACD/TRIX-composition adapter is recorded as "not tracked for further
+  removal." **Nothing to execute.**
+- PR 8: approved no removal (D7). **Nothing to execute.**
+- PR 11 (analytics formulas): parity proven, row still reads "PR 17 (parity
+  proven in PR 11)" (D9). **The only executable entry.**
+
+Before removal, `evaluation/metrics.py` still had its hand-written
+compounding, sample-standard-deviation Sharpe, downside-deviation Sortino,
+equity-curve drawdown, and Calmar formulas, so the row's precondition
+still applied.
+
+**Ruling 1: replace in place, keep the public contract.** `cumulative_return`,
+`sharpe_ratio`, `sortino_ratio`, and `max_drawdown` now delegate to
+`empyrical.cum_returns_final`, `sharpe_ratio`, `sortino_ratio`, and
+`max_drawdown`. `calmar_ratio` is composed from the two library-backed
+metrics. Names, keyword arguments, defaults, `MetricsResult` shape,
+statuses, and reasons are unchanged, so `research_comparison.py`, the
+`paper-performance` CLI, and the research promotion gate need no edits.
+This is the PR 3/PR 4/PR 15 replace-in-place pattern, applied at the
+removal PR the manifest assigned.
+
+**Ruling 2: keep only the fail-closed boundaries the library lacks.** These
+were PR 11's documented corrections (D9), now inside `metrics.py` rather
+than a parallel module:
+
+1. Zero or near-zero deviation (`<= 1e-12`): `empyrical` returns ~1e17 for
+   flat returns and `inf` with no downside, so `UNDEFINED` is decided
+   *before* the library is called. The checks use a library estimator
+   (`pandas.Series.std(ddof=1)`, the estimator `empyrical.sharpe_ratio`
+   uses) and `empyrical.downside_risk(annualization=1)`. The hand-written
+   variance arithmetic is gone. Fewer than two returns is `UNDEFINED` for
+   Sharpe, as before (the old code computed zero variance for one return;
+   `empyrical` returns `NaN`). For Sortino, one return is `UNDEFINED` only
+   when it is at or above the required return; one return below it has a
+   nonzero `downside_risk`, and the old code returned a valid ratio (`-1`
+   unannualized, `-sqrt(252)` annualized). `empyrical.sortino_ratio`
+   returns `NaN` for one return, so that case applies the library's own
+   formula over `empyrical.downside_risk` (PR #35 review fix).
+2. Calmar never calls `empyrical.calmar_ratio`, which divides a CAGR
+   numerator by drawdown; this repository's Calmar is raw cumulative return
+   over drawdown, for independent per-recommendation returns. Zero
+   drawdown stays `UNDEFINED`.
+3. An empty sample (reachable only with `min_sample_size=0`) is exactly
+   `0.0` for cumulative return and drawdown; `empyrical` returns `NaN`.
+4. `empyrical.max_drawdown` reports a never-declining curve as `-0.0`;
+   it is normalized to `0.0`.
+
+`tests/unit/test_analytics_import_boundary.py` enforces this structurally:
+four functions must reference `empyrical`, `calmar_ratio` must call
+`cumulative_return` and `max_drawdown`, `empyrical.calmar_ratio` must not
+appear, and `metrics.py` may not import `math` (the removed formulas' only
+user).
+
+**Ruling 3: those three values become `float`, accepted as a contract
+change.** `cumulative_return`, `max_drawdown`, and `calmar_ratio` returned
+`Decimal`; the library computes in `float`. Converting back to `Decimal`
+would only dress float noise up as exact. These are dimensionless return
+ratios, not money, and `MetricsResult.value` was already
+`float | Decimal | None` (Sharpe/Sortino were always `float`). Every
+consumer was checked:
+
+- `research_comparison.py` stores the result.
+- The `paper-performance` CLI renders `str(value)`, so displayed digits
+  can now show float noise (e.g. `-0.02000000000000008`).
+- `research/promotion.py` compares enhanced vs. baseline drawdown.
+  Identical return sequences still give identical floats, but different
+  sequences with the same exact drawdown need not. For example,
+  `[0.19, -0.20, 0.01, 0.01, 0.01]` gives `-0.2000000000000001` and
+  `[-0.20, 0.01, 0.01, 0.01, 0.01]` gives `-0.2`, where the removed
+  `Decimal` formula gave `-0.20` for both. A strict `<` turned that tie
+  into a false `REJECTED`/`ROLLBACK_REQUIRED` (PR #35 review r4245830182).
+  The gate now reports a regression only when the enhanced drawdown is
+  worse by more than `MAX_DRAWDOWN_REGRESSION_TOLERANCE` (`1e-12`).
+- `cost_adjusted_enhanced_value` reads `benchmark_relative_cumulative_return`,
+  which is out of scope and still `Decimal`.
+
+No accounting, sizing, order, or safety-limit path consumes these values.
+
+**Ruling 4: `empyrical-reloaded` is a base dependency.** `metrics.py` is
+imported by `evaluation/research_comparison.py` at module level and by the
+CLI, both exercised by the default `.[dev]` test environment, so an
+optional extra would break `nox -s tests` rather than gate an opt-in
+feature. This is the D13 `structlog` precedent, and the PR 1
+`exchange_calendars` one before it. `quantstats-lumi` stays in the
+`analytics` extra, which now contains only it.
+
+**Finding during validation: `empyrical-reloaded` has an undeclared `pytz`
+import.** The first `nox -s ci` run failed to collect four test modules in
+the clean `.[dev]` environment:
+`empyrical/utils.py` does `from pytz import UTC`, but empyrical-reloaded
+0.5.12 does not declare `pytz`, and pandas 3.x (resolved there, 3.0.6) no
+longer installs it. The old `analytics` extra masked this because
+quantstats-lumi's `yfinance` dependency installs `pytz`. Python 3.10
+resolves pandas 2.x, which still pulls `pytz`, so it was unaffected.
+`pytz>=2024.1` is therefore declared as a base dependency with a comment
+naming the reason and the removal condition. This is a repository-controlled
+compatibility pin, the same kind as the `research` extra's `plotly<7`.
+
+**Ruling 5: delete `evaluation/analytics_parity.py`.** Once `metrics.py`
+is empyrical-backed, the module's `*_parity` functions would be a second
+empyrical-backed copy of the same five metrics. `DEPENDENCY_MATRIX.md`
+Section 6 calls that kind of duplicate authority a defect, and PR 18 must
+confirm "no dual authorities remain." Its side-by-side parity test cannot
+outlive the removed formulas, so it is replaced by
+`tests/unit/test_metrics_library_authority.py`. That file pins every
+fixture × metric result (plus non-zero risk-free, `min_sample_size=0`, and
+`min_sample_size=1` edge cases) to the removed formulas' own outputs,
+captured at `3906935` before deletion
+(`pr17/legacy_golden_values.txt`, script
+`pr17/capture_metrics_scratch.py`). Statuses and sample sizes match
+exactly; values match within float noise (largest relative difference
+~1e-14). Its presentation-only `presentation_summary` (`quantstats-lumi`)
+moves unchanged to `evaluation/analytics_presentation.py`, which has zero
+production callers, enforced by the same AST test.
+
+**Out of scope, by the manifest row's own wording.** `hit_rate`,
+`average_return`, `median_return`, `gain_loss_ratio`,
+`benchmark_relative_cumulative_return`, `recommendation_to_fill_rate`, and
+`group_by` stay custom `Decimal` code. `benchmark_relative_cumulative_return`
+still uses `cumulative_return` only for its status gate.
+`paper_books/metrics.py` is domain telemetry (`PRESERVATION_MANIFEST.md`)
+and is untouched.
+
+**No ADR.** No Accepted ADR governs performance analytics. Per the
+single-ADR rule (D2, reapplied at D9–D14), executing a manifest row the
+plan already scheduled needs no ADR.

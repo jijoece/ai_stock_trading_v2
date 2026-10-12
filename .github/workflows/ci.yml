@@ -139,25 +139,24 @@ jobs:
   analytics-tests:
     name: analytics-tests (Python ${{ matrix.python-version }})
     runs-on: ubuntu-latest
-    # Blocking job proving empyrical-reloaded/quantstats-lumi fixture parity
-    # for real (library-migration PR 11): main-tests above only installs
-    # `.[dev]`, so tests/unit/test_analytics_parity.py skips there (its
-    # module-level `pytest.importorskip("empyrical")`/`("quantstats_lumi")`)
-    # rather than exercising either library. This job installs the
-    # `analytics` extra and asserts it resolves cleanly, then runs the same
-    # file with both libraries actually present, so a real regression in
-    # evaluation/analytics_parity.py cannot be masked by the skip in
-    # main-tests. Matrixed over the declared `requires-python = ">=3.10"`
-    # floor and CI's historical 3.11 choice, matching `indicators-tests`
-    # above -- neither empyrical-reloaded (`>=3.9`) nor quantstats-lumi
-    # (`>=3.6`) narrows this project's floor.
-    #
-    # `evaluation/analytics_parity.py` is not authoritative -- see its
-    # module docstring and `docs/library-migration/REMOVAL_MANIFEST.md` --
-    # so this job proves the parity claim only; it does not run the full
-    # offline suite, since no other module imports either library
-    # (`tests/unit/test_analytics_parity_import_boundary.py` enforces
-    # that unconditionally, without either library installed).
+    # Blocking job for the `analytics` extra (quantstats-lumi). Since
+    # library-migration PR 17, empyrical-reloaded is a base dependency and
+    # the sole authority for evaluation/metrics.py's Sharpe/Sortino/
+    # drawdown/cumulative-return/Calmar (DECISIONS.md D15), so
+    # tests/unit/test_metrics_library_authority.py already runs for real in
+    # main-tests with no skip. quantstats-lumi stays optional and
+    # presentation-only: main-tests only installs `.[dev]`, so
+    # tests/unit/test_analytics_presentation.py skips there (its module-level
+    # `pytest.importorskip("quantstats_lumi")`). This job installs the
+    # `analytics` extra, asserts it resolves cleanly alongside the base
+    # empyrical-reloaded pin, and runs the presentation tests with the
+    # library present, plus the authority tests and the unconditional AST
+    # boundary (`tests/unit/test_analytics_import_boundary.py`) to prove the
+    # extra does not disturb the authoritative path. Matrixed over the
+    # declared `requires-python = ">=3.10"` floor and CI's historical 3.11
+    # choice, matching `indicators-tests` above -- neither
+    # empyrical-reloaded (`>=3.9`) nor quantstats-lumi (`>=3.6`) narrows
+    # this project's floor.
     strategy:
       fail-fast: false
       matrix:
@@ -171,8 +170,8 @@ jobs:
         run: pip install -e ".[dev,analytics]"
       - name: pip check
         run: pip check
-      - name: Run analytics-parity-focused tests
-        run: pytest tests/unit/test_analytics_parity.py tests/unit/test_analytics_parity_import_boundary.py -q --tb=short
+      - name: Run analytics-focused tests
+        run: pytest tests/unit/test_analytics_presentation.py tests/unit/test_metrics_library_authority.py tests/unit/test_analytics_import_boundary.py -q --tb=short
 
   observability-tests:
     name: observability-tests (Python ${{ matrix.python-version }})
@@ -268,7 +267,9 @@ jobs:
           - extra: indicators
             import_check: "import talib; print(talib.__version__)"
           - extra: analytics
-            import_check: "import empyrical, quantstats_lumi; print(empyrical.__version__, quantstats_lumi.__version__)"
+            # empyrical-reloaded moved to base dependencies in PR 17
+            # (DECISIONS.md D15); this extra is quantstats-lumi-only.
+            import_check: "import quantstats_lumi; print(quantstats_lumi.__version__)"
           - extra: observability
             # structlog moved to base dependencies in PR 15 (DECISIONS.md
             # D13); this extra is opentelemetry-only now, wired in by PR 16

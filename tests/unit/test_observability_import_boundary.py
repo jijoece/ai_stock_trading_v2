@@ -2,7 +2,7 @@
 `observability.py`, analogous to the existing VectorBT/empyrical/
 quantstats_lumi AST import-boundary tests
 (`tests/unit/test_vector_research_import_boundary.py`,
-`tests/unit/test_analytics_parity_import_boundary.py`).
+`tests/unit/test_analytics_import_boundary.py`).
 
 `observability.py` is new, additive OpenTelemetry tracing/metrics SDK
 wiring (`docs/library-migration/MASTER_PLAN.md` row 16); it is not called

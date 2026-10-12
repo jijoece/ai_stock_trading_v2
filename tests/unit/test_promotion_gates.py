@@ -2,8 +2,13 @@
 Step 22 category K."""
 from __future__ import annotations
 
+from datetime import date, datetime, timezone
+from decimal import Decimal
+
 import pytest
 
+from trading_research.evaluation import metrics
+from trading_research.evaluation.models import RecommendationEvaluation
 from trading_research.research.promotion import (
     PromotionConfigError,
     PromotionGateConfig,
@@ -77,6 +82,67 @@ def test_drawdown_regression_is_a_safety_failure():
         _config(),
     )
     assert decision.status == STATUS_REJECTED
+
+
+def _completed(rec_id: str, net_return: str) -> RecommendationEvaluation:
+    now = datetime(2026, 7, 15, 12, 0, tzinfo=timezone.utc)
+    return RecommendationEvaluation(
+        recommendation_id=rec_id, horizon_trading_days=1, status="COMPLETED", evaluation_date=date(2026, 7, 14),
+        benchmark_symbol="SPY", recommendation_price=Decimal("10"), execution_price=Decimal("10"),
+        ending_symbol_price=Decimal("11"), ending_benchmark_price=Decimal("11"),
+        benchmark_price_at_execution=Decimal("10"), gross_return=Decimal(net_return),
+        net_return=Decimal(net_return), benchmark_return=Decimal("0"), excess_return=Decimal(net_return),
+        evaluated_at=now,
+    )
+
+
+def _drawdown_input(*returns: str) -> PromotionMetricInput:
+    result = metrics.max_drawdown([_completed(f"rec-{i}", r) for i, r in enumerate(returns)])
+    return PromotionMetricInput(status=result.status, value=result.value)
+
+
+@pytest.mark.parametrize(("currently_preferred", "regression_status"), [
+    (False, STATUS_REJECTED), (True, STATUS_ROLLBACK_REQUIRED),
+])
+def test_equal_drawdowns_with_float_noise_are_not_a_safety_regression(currently_preferred, regression_status):
+    # PR #35 review r4245830182: both curves have an exact -0.20 drawdown,
+    # but empyrical's float cumulative product reports -0.2000000000000001
+    # for one of them. The removed Decimal formula reported -0.20 for both.
+    enhanced = _drawdown_input("0.19", "-0.20", "0.01", "0.01", "0.01")
+    baseline = _drawdown_input("-0.20", "0.01", "0.01", "0.01", "0.01")
+    assert enhanced.value != baseline.value  # the float noise is real
+    decision = evaluate_promotion(
+        _inputs(max_drawdown_enhanced=enhanced, max_drawdown_baseline=baseline, currently_preferred=currently_preferred),
+        _config(),
+    )
+    assert decision.status == STATUS_PREFERRED_FOR_PAPER
+    assert decision.status != regression_status
+
+
+@pytest.mark.parametrize(("enhanced", "baseline"), [
+    (-0.2000001, -0.2),
+    (Decimal("-0.2000001"), Decimal("-0.2")),
+])
+def test_small_real_drawdown_regression_beyond_tolerance_is_still_rejected(enhanced, baseline):
+    decision = evaluate_promotion(
+        _inputs(
+            max_drawdown_enhanced=PromotionMetricInput(status="OK", value=enhanced),
+            max_drawdown_baseline=PromotionMetricInput(status="OK", value=baseline),
+        ),
+        _config(),
+    )
+    assert decision.status == STATUS_REJECTED
+
+
+def test_equal_decimal_drawdowns_are_not_a_safety_regression():
+    decision = evaluate_promotion(
+        _inputs(
+            max_drawdown_enhanced=PromotionMetricInput(status="OK", value=Decimal("-0.20")),
+            max_drawdown_baseline=PromotionMetricInput(status="OK", value=Decimal("-0.20")),
+        ),
+        _config(),
+    )
+    assert decision.status == STATUS_PREFERRED_FOR_PAPER
 
 
 def test_shadow_only_when_excess_return_not_computable():

@@ -1,0 +1,64 @@
+# Output of docs/library-migration/pr17/capture_metrics_scratch.py on migration/17, AFTER the removal
+# (empyrical-reloaded-backed). Statuses identical to legacy_golden_values.txt; values differ only by float noise.
+oscillating_6    cumulative_return               OK                n=6   float    0.10215457352000001 0.10215457352000001
+oscillating_6    max_drawdown                    OK                n=6   float    -0.02000000000000008 -0.02000000000000008
+oscillating_6    calmar_ratio                    OK                n=6   float    5.10772867599998 5.10772867599998
+oscillating_6    sharpe_ratio[annualize=True]    OK                n=6   float    9.43308278599619 9.43308278599619
+oscillating_6    sharpe_ratio[annualize=False]   OK                n=6   float    0.5942283606769104 0.5942283606769104
+oscillating_6    sortino_ratio[annualize=True]   OK                n=6   float    28.98275349237888 28.98275349237888
+oscillating_6    sortino_ratio[annualize=False]  OK                n=6   float    1.8257418583505538 1.8257418583505538
+increasing_5     cumulative_return               OK                n=5   float    2.6036 2.6036
+increasing_5     max_drawdown                    OK                n=5   float    0.0 0.0
+increasing_5     calmar_ratio                    UNDEFINED         n=5   NoneType None None
+increasing_5     sharpe_ratio[annualize=True]    OK                n=5   float    30.11976095522672 30.11976095522672
+increasing_5     sharpe_ratio[annualize=False]   OK                n=5   float    1.8973665961010275 1.8973665961010275
+increasing_5     sortino_ratio[annualize=True]   UNDEFINED         n=5   NoneType None None
+increasing_5     sortino_ratio[annualize=False]  UNDEFINED         n=5   NoneType None None
+drawdown_5       cumulative_return               OK                n=5   float    0.018710000000000226 0.018710000000000226
+drawdown_5       max_drawdown                    OK                n=5   float    -0.19999999999999998 -0.19999999999999998
+drawdown_5       calmar_ratio                    OK                n=5   float    0.09355000000000115 0.09355000000000115
+drawdown_5       sharpe_ratio[annualize=True]    OK                n=5   float    1.3298199324087374 1.3298199324087374
+drawdown_5       sharpe_ratio[annualize=False]   OK                n=5   float    0.0837707816583391 0.0837707816583391
+drawdown_5       sortino_ratio[annualize=True]   OK                n=5   float    1.7748239349298844 1.7748239349298844
+drawdown_5       sortino_ratio[annualize=False]  OK                n=5   float    0.11180339887498947 0.11180339887498947
+mixed_20         cumulative_return               OK                n=20  float    0.05812284125233669 0.05812284125233669
+mixed_20         max_drawdown                    OK                n=20  float    -0.030000000000000027 -0.030000000000000027
+mixed_20         calmar_ratio                    OK                n=20  float    1.9374280417445546 1.9374280417445546
+mixed_20         sharpe_ratio[annualize=True]    OK                n=20  float    2.5044937777861285 2.5044937777861285
+mixed_20         sharpe_ratio[annualize=False]   OK                n=20  float    0.15776827847930378 0.15776827847930378
+mixed_20         sortino_ratio[annualize=True]   OK                n=20  float    4.197086368015617 4.197086368015617
+mixed_20         sortino_ratio[annualize=False]  OK                n=20  float    0.26439158954353903 0.26439158954353903
+flat_6           cumulative_return               OK                n=6   float    0.3400956406250004 0.3400956406250004
+flat_6           max_drawdown                    OK                n=6   float    0.0 0.0
+flat_6           calmar_ratio                    UNDEFINED         n=6   NoneType None None
+flat_6           sharpe_ratio[annualize=True]    UNDEFINED         n=6   NoneType None None
+flat_6           sharpe_ratio[annualize=False]   UNDEFINED         n=6   NoneType None None
+flat_6           sortino_ratio[annualize=True]   UNDEFINED         n=6   NoneType None None
+flat_6           sortino_ratio[annualize=False]  UNDEFINED         n=6   NoneType None None
+below_minimum_3  cumulative_return               OK                n=3   float    0.15762500000000013 0.15762500000000013
+below_minimum_3  max_drawdown                    OK                n=3   float    0.0 0.0
+below_minimum_3  calmar_ratio                    INSUFFICIENT_DATA n=3   NoneType None None
+below_minimum_3  sharpe_ratio[annualize=True]    INSUFFICIENT_DATA n=3   NoneType None None
+below_minimum_3  sharpe_ratio[annualize=False]   INSUFFICIENT_DATA n=3   NoneType None None
+below_minimum_3  sortino_ratio[annualize=True]   INSUFFICIENT_DATA n=3   NoneType None None
+below_minimum_3  sortino_ratio[annualize=False]  INSUFFICIENT_DATA n=3   NoneType None None
+single_1         cumulative_return               OK                n=1   float    0.050000000000000044 0.050000000000000044
+single_1         max_drawdown                    OK                n=1   float    0.0 0.0
+single_1         calmar_ratio                    INSUFFICIENT_DATA n=1   NoneType None None
+single_1         sharpe_ratio[annualize=True]    INSUFFICIENT_DATA n=1   NoneType None None
+single_1         sharpe_ratio[annualize=False]   INSUFFICIENT_DATA n=1   NoneType None None
+single_1         sortino_ratio[annualize=True]   INSUFFICIENT_DATA n=1   NoneType None None
+single_1         sortino_ratio[annualize=False]  INSUFFICIENT_DATA n=1   NoneType None None
+empty            cumulative_return               INSUFFICIENT_DATA n=0   NoneType None None
+empty            max_drawdown                    INSUFFICIENT_DATA n=0   NoneType None None
+empty            calmar_ratio                    INSUFFICIENT_DATA n=0   NoneType None None
+empty            sharpe_ratio[annualize=True]    INSUFFICIENT_DATA n=0   NoneType None None
+empty            sharpe_ratio[annualize=False]   INSUFFICIENT_DATA n=0   NoneType None None
+empty            sortino_ratio[annualize=True]   INSUFFICIENT_DATA n=0   NoneType None None
+empty            sortino_ratio[annualize=False]  INSUFFICIENT_DATA n=0   NoneType None None
+empty min=0 cumulative         OK                0.0
+empty min=0 max_drawdown       OK                0.0
+single min=1 sharpe            UNDEFINED         None
+single min=1 sortino           UNDEFINED         None
+oscillating rf=0.01 sharpe     OK                3.773233114398475
+oscillating rf=0.01 sortino    OK                7.1897362741833355

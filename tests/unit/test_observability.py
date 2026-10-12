@@ -5,7 +5,7 @@
 D13) since no production module imports it unconditionally
 (`tests/unit/test_observability_import_boundary.py` enforces that). This
 file therefore skips without the extra installed, the same pattern as
-`test_indicators.py`/`test_analytics_parity.py`.
+`test_indicators.py`/`test_analytics_presentation.py`.
 
 Guarded on `opentelemetry.sdk` specifically, not just `opentelemetry`: the
 `mcp` package (a base dependency) requires `opentelemetry-api` on its own,

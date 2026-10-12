@@ -27,6 +27,13 @@ PROMOTION_STATUSES = (
     STATUS_ELIGIBLE_FOR_PAPER, STATUS_PREFERRED_FOR_PAPER, STATUS_ROLLBACK_REQUIRED,
 )
 
+# `evaluation.metrics.max_drawdown` is an `empyrical` float built from a
+# cumulative product, so two mathematically equal drawdowns can differ by
+# float rounding (e.g. -0.2000000000000001 vs -0.2). Only an enhanced
+# drawdown worse than baseline by more than this is a safety regression;
+# it matches `evaluation.metrics._ZERO_DEVIATION_TOLERANCE`.
+MAX_DRAWDOWN_REGRESSION_TOLERANCE = 1e-12
+
 
 class PromotionConfigError(RuntimeError):
     pass
@@ -154,7 +161,9 @@ def evaluate_promotion(inputs: PromotionGateInputs, config: PromotionGateConfig)
         safety_regressions.append(f"reproducibility_rate {inputs.reproducibility_rate:.3f} < min {config.min_reproducibility_rate:.3f}")
     if (
         inputs.max_drawdown_enhanced.status == "OK" and inputs.max_drawdown_baseline.status == "OK"
-        and inputs.max_drawdown_enhanced.value < inputs.max_drawdown_baseline.value  # drawdown is negative; more negative = worse
+        # drawdown is negative; more negative = worse
+        and float(inputs.max_drawdown_enhanced.value)
+        < float(inputs.max_drawdown_baseline.value) - MAX_DRAWDOWN_REGRESSION_TOLERANCE
     ):
         safety_regressions.append(
             f"max_drawdown regressed: enhanced {inputs.max_drawdown_enhanced.value} worse than baseline {inputs.max_drawdown_baseline.value}"
