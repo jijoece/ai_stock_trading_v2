@@ -4,172 +4,191 @@
 
 - Repository: `/Users/jijopaul/workspace/ai_stock_trading_v2`
 - Branch: `migration/16-opentelemetry-tracing`
-- Reviewed HEAD: `94397bc8cb4eac19fd9f2e64f78e00cf8f9e065e`
-- Subject: PR 16: wire in OpenTelemetry as new, additive, offline-safe instrumentation
-- Review scope: INCREMENTAL
-- Fix round: 2
-- Trigger: GitHub review threads on PR #34
+- Reviewed HEAD: `59eb96d30868c15dab4dccb69ca3fb67bd4009a4`
+- Subject: PR 16: record fix round 2 resolution in REVIEW_FINDINGS.md
+- Claude commits reviewed: 8f73889c146a78887415ae2731654539d76dd16e,9732aa1bc3571f772316231dc71e4dcdd7fec12c,59eb96d30868c15dab4dccb69ca3fb67bd4009a4
+- Review scope: FULL_PR
+- Reviewed base: `ea1168df782c5e07e961657ea947ec0724aa6e72`
+- GitHub PR: #34
+- Fix round: 3
+- Trigger: local Git `post-commit`, plus GitHub review thread on PR #34
 - Review status: FIXES_APPLIED_PENDING_REVIEW
 - Highest priority: none
 - Finding count: 0
-- Fix commit: `9732aa1bc3571f772316231dc71e4dcdd7fec12c`
-- Prior round: the P1 JSON-exception-secret finding and the P2
-  configure-after-shutdown finding recorded at HEAD
-  `8f73889c146a78887415ae2731654539d76dd16e` were fixed in
-  `6c9019b5542d6db57d58efae0711871f5dd672db`; both remain fixed at the
-  HEAD reviewed here, and this round's two findings are new and distinct
+- Fix commit: `9bd7446febf54a3722970c9d6df57f5fd4540dc9`
+- Prior rounds: the P1 JSON-exception-secret and P2 configure-after-shutdown
+  findings from round 1 were fixed in
+  `6c9019b5542d6db57d58efae0711871f5dd672db`; the P2 external-provider and
+  P2 concurrent-initialization findings from round 2 were fixed in
+  `9732aa1bc3571f772316231dc71e4dcdd7fec12c`. All four remain fixed at the
+  HEAD reviewed here. This round's findings are new and distinct: they are
+  defects in round 2's own fix, on the partial-outcome paths that the
+  single-owner lifecycle introduced.
 
 ## Resolution
 
-Both P2 findings below are fixed in
-`9732aa1bc3571f772316231dc71e4dcdd7fec12c`
+Both findings below are fixed in
+`9bd7446febf54a3722970c9d6df57f5fd4540dc9`
 (`src/trading_research/observability.py`,
 `tests/unit/test_observability.py`). The finding bodies are kept verbatim
 as the record of what was reviewed and confirmed.
 
-1. External global providers -- `configure_telemetry()` now refuses to
-   report success it cannot deliver. A pre-registration check plus a
-   post-registration identity check against
-   `trace.get_tracer_provider()`/`metrics.get_meter_provider()` (the only
-   reliable signal, since the API refuses replacement by log line alone)
-   decide whether this module actually owns each global. If another party
-   owns one, it raises the new `ExternalTelemetryProviderError`;
-   `adopt_existing_providers=True` is the explicit opt-in to run under
-   the already-registered provider(s), which are left untouched,
-   excluded from `shutdown_telemetry()`, and reported by the new
-   `uses_adopted_providers()`. A provider that loses a registration race
-   is shut down rather than leaked.
-2. Concurrent initialization -- a module `threading.Lock` now serializes
-   `configure_telemetry`/`shutdown_telemetry` in full, including the
-   `_configured` check, so exactly one concurrent first call builds and
-   registers providers and the rest are no-ops; the stored references
-   are therefore always the process globals.
-   `is_configured`/`uses_adopted_providers` stay lock-free single-`bool`
-   reads so a status query never blocks on someone else's call.
+Both were independently reproduced against the reviewed HEAD before any
+code was changed, so both are confirmed rather than speculative. A third
+defect, not raised by either finding, was found while validating the fix
+and is fixed in the same commit; it is recorded under "Additional defect
+found while fixing" below.
 
-Regression coverage runs each lifecycle scenario in a fresh subprocess
-with a hermetic environment, because OpenTelemetry's global registry is
-per-process and one-shot and is already consumed by the existing
-in-process test: external-provider refusal, full adoption,
-adopt-one/register-the-other, post-shutdown reconfiguration behavior in
-each case, and a deterministic two-thread serialization test asserting
-global identity and that shutdown shuts down the global providers.
+1. Partial split registration -- an external registrant can take one
+   global provider between `configure_telemetry()`'s external-provider
+   pre-check and its own `set_*_provider` call, so this module loses one
+   global while winning the other. The provider it successfully
+   registered was previously discarded without being recorded as owned:
+   the caller saw `ExternalTelemetryProviderError` and
+   `is_configured() == False` while that provider remained the process
+   global, `shutdown_telemetry()` was a no-op, and under
+   `console_export=True` its `PeriodicExportingMetricReader` kept
+   exporting for the life of the process with nothing able to stop it.
+   `_register_tracer_provider`/`_register_meter_provider` now record
+   ownership in `_tracer_provider`/`_meter_provider` themselves, before
+   the API call, and clear it only once the race is known to be lost --
+   in which case the losing provider is shut down, since it can never
+   receive a span or metric. `shutdown_telemetry()` no longer returns
+   early when `_configured` is false but a provider is owned, so it is
+   the cleanup path for a configuration that raised after registering one
+   global. An external provider is still never retained and never shut
+   down from here, and the mixed outcome is still reported as the failure
+   it is rather than as success.
+2. Construction failure after registration -- the providers were built
+   and registered in sequence, so a `build_meter_provider` failure after
+   the tracer provider was already registered consumed OpenTelemetry's
+   one-shot tracer slot with a provider the call then abandoned: unowned,
+   never shut down, and mistaken for an external provider by any retry.
+   Both providers are now built before either is registered, so a build
+   failure has to dispose only of what it built, leaving the
+   process-global registry untouched and the call fully retryable.
+
+### Additional defect found while fixing
+
+Follow-on configuration after a partial registration reported ownership
+untruthfully. `_external_global_providers()` can only inspect the
+registry, so a global this module registered in an earlier, partially
+failed call reads back as "external". A plain retry therefore raised
+`ExternalTelemetryProviderError` naming *both* providers as belonging to
+another party, including the one this module had registered itself and
+was still responsible for shutting down. Such a global is now masked out
+of the pre-check, so the retry still refuses -- correctly, since the
+one-shot slots are spoken for -- but names only the provider that
+genuinely belongs to another party.
+
+Follow-on behavior is now coherent with the one-shot globals in every
+partial outcome: an `adopt_existing_providers=True` retry adopts the
+external winner alongside the still-owned provider, and
+`shutdown_telemetry()` sets the terminal `_shutdown` flag only when a
+provider was actually registered from here -- so an adoption-only
+configuration stays re-runnable, while a partial registration correctly
+makes reconfiguration in this process impossible.
+
+Regression coverage, each scenario in a fresh subprocess with a hermetic
+environment because OpenTelemetry's global registry is per-process,
+one-shot, and already consumed by the existing in-process test:
+
+- `test_split_registration_keeps_the_winning_meter_provider_owned` -- a
+  barrier-synchronized external registrant takes the tracer global from
+  inside this module's registration call under `console_export=True`
+  (the review thread's exact scenario), asserting the error names only
+  the tracer, that the won meter provider stays owned and is the global
+  with a live metric reader, that `shutdown_telemetry()` shuts it down,
+  that the external provider is *not* shut down, and that reconfiguration
+  afterwards raises `TelemetryReconfigurationError`.
+- `test_split_registration_keeps_the_winning_tracer_provider_owned` --
+  the mirror case, asserting the won tracer provider's span processor is
+  shut down and the external meter provider is not.
+- `test_configure_telemetry_after_a_lost_race_describes_only_the_external_global`
+  -- retry semantics: a plain retry refuses and names only the genuinely
+  external global, rebuilds nothing, and leaves the owned provider as the
+  live global; the opt-in retry adopts the external winner alongside it.
+- `test_configure_telemetry_registers_nothing_when_provider_construction_fails`
+  -- construction-failure atomicity: both globals still unset, nothing
+  owned, `_shutdown` not burnt, and the retry gets the configuration it
+  asked for.
+
+All four fail against the reviewed HEAD `59eb96d` and pass against the
+fix commit, verified in a throwaway `git worktree` so the working tree
+was never reverted. These tests run in CI's `observability-tests` job,
+which installs the `observability` extra; under a plain `.[dev]` install
+(and therefore under `nox -s tests`) the whole file skips by design, per
+the import-boundary policy.
 
 Validation after the fix:
 
-- `pytest tests/` with the opt-in gates disabled -- 3454 passed,
-  57 skipped.
 - `pytest tests/unit/test_observability.py
-  tests/unit/test_observability_import_boundary.py` -- 15 passed.
-- `scripts/check_links.sh` -- 184 OK, 0 errors.
+  tests/unit/test_observability_import_boundary.py` in the
+  `observability`-extra virtualenv -- 19 passed.
 - `nox -s ci` (`tests`, `paper_tests`, `safety_typecheck`,
-  `migration_smoke`) -- all succeeded on this change set.
+  `migration_smoke`) -- all successful; `tests` reported 3315 passed,
+  107 skipped.
+- `scripts/check_links.sh` -- 186 OK, 0 errors.
+- Pyright diagnostics for `src/trading_research/observability.py` --
+  none at warning severity or above. (The file is outside
+  `pyright-safety.json`'s include list, so `nox -s safety_typecheck`
+  does not cover it.)
 - No broker access, credentialed tests, schedulers, model calls, or order
   operations were performed.
 
 ## Findings
 
-### [P2] Confirmed: `configure_telemetry()` reports success while externally registered global providers stay in place
+### [P2] Investigate: failed configuration can permanently leave an unowned tracer provider registered
 
-Commit: 8f73889c146a78887415ae2731654539d76dd16e
+Commit: 9732aa1bc3571f772316231dc71e4dcdd7fec12c
 
-Location: src/trading_research/observability.py:111
+Location: src/trading_research/observability.py:319-329
 
-Concern: If OpenTelemetry auto-instrumentation or another library has
-already registered the global tracer/meter providers,
-`configure_telemetry()` may still mark itself configured and store
-providers that never become global.
+Concern: Investigate whether `configure_telemetry()` can fail after registering the tracer provider but before registering the meter provider, leaving a process-global provider that the module neither records nor shuts down.
 
-Evidence: CONFIRMED by a fresh-subprocess probe that registered an
-external `TracerProvider`/`MeterProvider` before importing this module,
-then called `configure_telemetry("probe-service")`. The call returned
-normally (exit code 0) and printed:
+Evidence: The function now registers providers sequentially: `_register_tracer_provider()` installs the process-global tracer before `_register_meter_provider()` constructs the meter provider. A read-only probe made `build_meter_provider()` raise after successful tracer registration. The call raised as expected, but produced:
 
-```
-is_configured True
-global_tracer_is_external True
-global_meter_is_external True
-stored_tracer_is_global False
-stored_meter_is_global False
+```text
+configured False
+stored_tracer None
+global_tracer_type TracerProvider
+global_tracer_service partial-registration-probe
+retry_raised ExternalTelemetryProviderError
 ```
 
-with only `Overriding of current TracerProvider is not allowed` /
-`Overriding of current MeterProvider is not allowed` on stderr --
-OpenTelemetry's `set_tracer_provider`/`set_meter_provider` log a warning
-and keep the existing global. So `is_configured()` claimed success while
-both globals belonged to the external registrant and the two providers
-this module stored and would later `shutdown()` could never receive a
-span or metric. This is the same class of lie `TelemetryReconfigurationError`
-was added to prevent after shutdown, on the not-yet-covered
-pre-registration path.
+Thus the failed call consumed OpenTelemetry’s one-shot tracer slot while `_configured` remained false and `_tracer_provider` remained `None`. A retry treated this module’s orphaned provider as externally owned. This partial-registration window was introduced by commit `9732aa1...`; the original implementation built both providers before registering either.
 
-Potential impact if confirmed: Under `opentelemetry-instrument` or
-alongside any library that configures OpenTelemetry first, callers
-believe this module's resource/exporter settings are in effect while
-spans and metrics go to the foreign provider; `shutdown_telemetry()` then
-flushes and shuts down the wrong (unused) providers and leaves the live
-global ones running.
+Potential impact if confirmed: A meter-provider construction or registration failure can make telemetry unrecoverable for the lifetime of the process. With console export enabled, the orphaned global tracer may continue exporting output, while `shutdown_telemetry()` is a no-op because the module reports itself unconfigured. Callers receive an exception suggesting configuration failed completely even though process-global state was irreversibly changed.
 
-Investigation and conditional remediation: Verify provider identity in a
-fresh subprocess with pre-registered providers. If confirmed, fail
-explicitly or implement a defined existing-provider policy, and test it.
+Investigation and conditional remediation: Verify the concern against the current code first by forcing meter construction or registration to fail after tracer registration and inspecting global-provider identity, module state, retry behavior, and shutdown behavior. If confirmed, make configuration failure atomic where possible, or retain truthful ownership and lifecycle state for any provider successfully registered before the failure; add regression coverage for partial construction and registration failures. If disproved or already fixed, document the evidence and leave the code unchanged.
 
-Validation: Subprocess regression tests asserting the raised error, the
-untouched external globals, and the documented adoption policy. Run
-`nox -s tests -- tests/unit/test_observability.py`, then `nox -s ci`.
-
-### [P2] Confirmed: concurrent first calls to `configure_telemetry()` leave globals and stored provider references inconsistent
-
-Commit: 8f73889c146a78887415ae2731654539d76dd16e
-
-Location: src/trading_research/observability.py:131
-
-Concern: Concurrent first calls to `configure_telemetry()` may interleave
-because the `_configured` check and the provider construction/
-registration/assignment that follow it are not protected by any lock.
-
-Evidence: CONFIRMED by a fresh-subprocess probe with deterministic
-synchronization: `build_tracer_provider` was wrapped so that both threads
-block on a 2-thread `threading.Barrier` after passing the `_configured`
-guard and building their own provider. Two threads then called
-`configure_telemetry("svc-a")` and `configure_telemetry("svc-b")`. No
-exception was raised in either thread, and the probe printed:
-
-```
-errors []
-is_configured True
-stored_tracer_is_global False
-stored_meter_is_global False
-stored_tracer_service svc-a
-global_tracer_service svc-b
-```
-
-Both calls passed the unguarded `_configured` check, both built
-providers, one won the global registration (`svc-b`) and the other's
-assignment to `_tracer_provider`/`_meter_provider` landed last (`svc-a`),
-so the module's stored references are not the process globals.
-
-Potential impact if confirmed: In a process that configures telemetry
-from more than one thread, the globals carry one service resource while
-`is_configured()` reports success and `shutdown_telemetry()` shuts down
-the losing providers -- leaving the real global providers live (including
-a `PeriodicExportingMetricReader` export thread under
-`console_export=True`) while the module believes telemetry is torn down.
-
-Investigation and conditional remediation: Verify with deterministic
-synchronization around provider construction/registration. If confirmed,
-serialize configuration and shutdown and test global identity plus
-shutdown behavior.
-
-Validation: Subprocess regression test asserting serialization, that the
-stored providers are the globals, which service name won, and that
-`shutdown_telemetry()` shuts down the global provider. Run
-`nox -s tests -- tests/unit/test_observability.py`, then `nox -s ci`.
+Validation: Add fresh-subprocess tests covering failure after tracer registration, asserting global identity, ownership state, retry semantics, and cleanup behavior. Run `nox -s tests -- tests/unit/test_observability.py`, followed by `nox -s ci`.
 
 Tests or diagnostics run:
 
-- Fresh-subprocess external-provider probe — confirmed finding 1.
-- Fresh-subprocess barrier-synchronized concurrency probe — confirmed
-  finding 2.
-- No broker access, credentialed tests, schedulers, model calls, or order
-  operations were performed.
+- `git diff --check 3e15923397f461d07b95ee8d8605c772e3521303..59eb96d30868c15dab4dccb69ca3fb67bd4009a4` — passed.
+- Read-only forced meter-construction failure probe — confirmed partial global tracer registration and failed retry.
+- Focused pytest invocation could not start because the read-only sandbox provided no writable temporary directory.
+- No broker access, credentialed tests, schedulers, model calls, or order operations were performed.
+
+### [P2] Investigate: Investigate orphaned provider after split registration
+
+Commit: `59eb96d30868c15dab4dccb69ca3fb67bd4009a4`
+
+Location: `/Users/jijopaul/workspace/ai_stock_trading_v2/src/trading_research/observability.py:347`
+
+Concern: An active GitHub review thread raises the following potentially valid issue:
+
+> **<sub><sub>![P2 Badge](https://img.shields.io/badge/P2-yellow?style=flat)</sub></sub>  Investigate orphaned provider after split registration**
+> 
+> When another thread registers the tracer after the external-provider pre-check but before `_register_tracer_provider`, investigate this partial-success path: tracer registration loses, `_register_meter_provider` can still successfully install this module's meter, and this raise exits before `_meter_provider` or `_configured` is assigned. Fresh evidence in this revision is the new split-registration branch that deliberately discards the winning provider reference. With `console_export=True`, the caller sees an exception and `is_configured() == False`, while `shutdown_telemetry()` becomes a no-op and the process-global `PeriodicExportingMetricReader` continues background exports. Verify this using barriers around tracer registration and assertions on subsequent shutdown; if confirmed, preserve ownership and cleanup state for the provider that won (or treat the mixed result as configured) and add regression coverage.
+> 
+> Useful? React with 👍 / 👎.
+
+Evidence: [chatgpt-codex-connector review thread](https://github.com/jijoece/ai_stock_trading_v2/pull/34#discussion_r4243105806) is current, unresolved, and not outdated. Independently reproduced against the reviewed HEAD by registering an external tracer provider from inside this module's own `set_tracer_provider` call: the call raised `ExternalTelemetryProviderError`, `is_configured()` was `False`, and the meter provider this module had registered was the process global while `_meter_provider` was `None`, leaving `shutdown_telemetry()` a no-op.
+
+Potential impact if confirmed: Merging would carry the reported defect into main.
+
+Investigation and conditional remediation: Verify the comment against the current code and reproduce the behavior where practical. If confirmed, fix it and add regression coverage. If it is invalid or already fixed, document the evidence and do not make an unnecessary code change.
+
+Validation: Run the focused regression test and the repository's canonical validation; a subsequent full-PR review must find no remaining defect.
