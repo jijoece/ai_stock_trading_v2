@@ -174,6 +174,42 @@ jobs:
       - name: Run analytics-parity-focused tests
         run: pytest tests/unit/test_analytics_parity.py tests/unit/test_analytics_parity_import_boundary.py -q --tb=short
 
+  observability-tests:
+    name: observability-tests (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    # Blocking job proving the OpenTelemetry SDK wiring for real
+    # (library-migration PR 16): main-tests above only installs `.[dev]`, so
+    # tests/unit/test_observability.py skips there (its module-level
+    # `pytest.importorskip("opentelemetry")`) rather than exercising the
+    # SDK. This job installs the `observability` extra and asserts it
+    # resolves cleanly, then runs the same file with opentelemetry-sdk
+    # actually present, so a real regression in observability.py cannot be
+    # masked by the skip in main-tests. Matrixed over the declared
+    # `requires-python = ">=3.10"` floor and CI's historical 3.11 choice,
+    # matching `indicators-tests`/`analytics-tests` above.
+    #
+    # `observability.py` is additive, offline-safe-by-default instrumentation
+    # -- see its module docstring and `docs/library-migration/
+    # REMOVAL_MANIFEST.md` -- so this job proves the wiring only; it does
+    # not run the full offline suite, since no other module imports
+    # `opentelemetry` (`tests/unit/test_observability_import_boundary.py`
+    # enforces that unconditionally, without the extra installed).
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install dependencies + observability extra
+        run: pip install -e ".[dev,observability]"
+      - name: pip check
+        run: pip check
+      - name: Run observability-focused tests
+        run: pytest tests/unit/test_observability.py tests/unit/test_observability_import_boundary.py -q --tb=short
+
   research-tests:
     name: research-tests
     runs-on: ubuntu-latest
@@ -235,7 +271,8 @@ jobs:
             import_check: "import empyrical, quantstats_lumi; print(empyrical.__version__, quantstats_lumi.__version__)"
           - extra: observability
             # structlog moved to base dependencies in PR 15 (DECISIONS.md
-            # D13); this extra is opentelemetry-only now (PR 16 candidate).
+            # D13); this extra is opentelemetry-only now, wired in by PR 16
+            # (observability.py; see the observability-tests job above).
             import_check: "import opentelemetry.sdk; from opentelemetry.sdk import trace; print(trace.__name__)"
           - extra: research
             import_check: "import vectorbt; print(vectorbt.__version__)"

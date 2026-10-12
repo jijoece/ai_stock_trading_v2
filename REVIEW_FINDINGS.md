@@ -3,120 +3,206 @@
 ## Review Metadata
 
 - Repository: `/Users/jijopaul/workspace/ai_stock_trading_v2`
-- Branch: `migration/15-structlog-migration`
-- Reviewed HEAD: `177d2744c62314ec5bc709f55f696aaf6ff0ea1d`
-- Subject: PR 15 fix round 2: close JSON-escaping redaction bypass, account-number exposure, and detector alias-ordering bug
+- Branch: `migration/16-opentelemetry-tracing`
+- Reviewed HEAD: `3a5b9dc4f3f8ac895e10f301b9ac934fd08ac413`
+- Subject: PR 16: record fix round 4 resolution in REVIEW_FINDINGS.md
+- Claude commits reviewed: 8f73889c146a78887415ae2731654539d76dd16e,9732aa1bc3571f772316231dc71e4dcdd7fec12c,59eb96d30868c15dab4dccb69ca3fb67bd4009a4,9bd7446febf54a3722970c9d6df57f5fd4540dc9,6f66e1e871cbfc51c7f56ff2f25a6aed6ce7191e,fdfb219d4f5308ce48921b496dcba3e8e66e8287,3a5b9dc4f3f8ac895e10f301b9ac934fd08ac413
 - Review scope: FULL_PR
-- Reviewed base: `37f1ac5f8e7efca00ea3cc06c2c623c8e0d82fbb`
-- GitHub PR: #33
-- Fix round: 4
-- Trigger: GitHub PR review comments (chatgpt-codex-connector)
+- Reviewed base: `ea1168df782c5e07e961657ea947ec0724aa6e72`
+- GitHub PR: #34
+- Fix round: 5
+- Trigger: local Git `post-commit` regeneration, plus the same stale GitHub
+  review thread on PR #34
 - Review status: FIXES_APPLIED_PENDING_REVIEW
 - Highest priority: none
 - Finding count: 0
-- Fix commit: pending (working tree only; not yet committed)
+- Fix commit: none required at this HEAD. The defect was fixed in
+  `9bd7446febf54a3722970c9d6df57f5fd4540dc9` (fix round 3) and is confirmed
+  absent here; rounds 4 and 5 are documentation-only.
 
-## Resolution
+## Investigation and resolution
 
-Two GitHub PR review comments on #33 had not yet been addressed by fix rounds 2-3 (both P2,
-submitted alongside the round-3-covered P1s in the same `88d3cb55a5`/`37f1ac5f8e`-commit review
-batches, but not yet triaged into `REVIEW_FINDINGS.md`). Investigated both against the current
-code before changing anything.
+No code change and no test change. The finding is **already fixed** at the
+reviewed HEAD (`3a5b9dc4f3f8ac895e10f301b9ac934fd08ac413`), and the
+regression coverage it asks for already exists in the repository. This is
+the second round in which the same stale GitHub thread was re-surfaced;
+the section below records the provenance evidence that explains *why* it
+keeps being re-surfaced, so the loop is diagnosable rather than just
+re-litigated.
 
-1. [Redacts nested extras before JSON rendering](https://github.com/jijoece/ai_stock_trading_v2/pull/33#discussion_r4000965154)
-   ("Investigate extras overriding canonical log fields") -- confirmed in full. Reproduced
-   `log.warning("real", extra={"event": "replacement", "level": "debug", "logger": "other"})`
-   rendering as `{"level": "debug", "logger": "other", ..., "message": "replacement"}` in JSON
-   mode, and the equivalent corruption in plain mode, before any fix. `ExtraAdder()` copies every
-   caller-supplied `extra` key onto the event dict with no reserved-key exclusion, running after
-   the processors that set `level`/`logger` and before `EventRenamer` renames `event` to
-   `message` -- so a caller (accidentally or otherwise) using those exact key names in `extra=`
-   silently forges the severity, logger identity, and message text, corrupting the audit trail the
-   pre-migration allowlist implicitly protected by never exposing those key names as extras. This
-   is an accounting/audit-integrity defect, not merely a leak-adjacent one.
-2. [Investigate overwritten defaults retained as callees](https://github.com/jijoece/ai_stock_trading_v2/pull/33#discussion_r4000965156)
-   -- confirmed as a real, reproducible **false positive**, not a safety gap. `def
-   retry_external_paper_order(fn=helper): fn = ordinary; fn()` (with `helper` retry-decorated)
-   is flagged even though `fn` is unconditionally overwritten before its only call, so `helper` is
-   provably never invoked. Investigated the root cause and the test file's own design history
-   before deciding whether to fix: `_local_aliases_in_block`'s monotonic union (PR 14 review round
-   12, documented in `_direct_local_calls`'s own docstring) deliberately unions every value a
-   local alias ever held anywhere in the function, specifically because the bug it closed was the
-   *opposite* failure -- a retry-decorated helper actually invoked earlier in a function being
-   missed because a later, unrelated reassignment discarded that binding before the whole-function
-   analysis resolved the call against it. Making this precise per call site would require genuine
-   flow-sensitive (position-in-the-control-flow-aware) analysis, a materially larger rewrite of
-   logic that took many incremental rounds to harden against real gaps -- for a finding whose
-   failure direction is already safe (blocks CI on a function that delegates safely; never lets an
-   unguarded retry path through unnoticed). This repo's review rules ask for a fix "if confirmed,"
-   but also establish (via this same file's own pre-existing "Known, accepted residual gap"
-   precedent) that a real, understood limitation can be documented and deliberately left rather
-   than risk-rewritten -- which is the judgment applied here, matching the existing precedent's
-   category exactly.
+### Why the thread is stale, proven from GitHub's own metadata
 
-Root causes and fixes:
+The thread
+([discussion_r4243105806](https://github.com/jijoece/ai_stock_trading_v2/pull/34#discussion_r4243105806))
+was raised against code that no longer exists. `gh api
+repos/jijoece/ai_stock_trading_v2/pulls/comments/4243105806` reports:
 
-1 (`src/trading_research/logging_config.py`): Added `_protect_canonical_fields`, inserted into
-   `_FOREIGN_PRE_CHAIN` immediately after `ExtraAdder()`, which reasserts `level` and `logger`
-   from the real `LogRecord` (trustworthy straight off `record.levelname`/`record.name`,
-   unaffected by whatever `ExtraAdder` copied over them). The `event`/message field needed a
-   different mechanism: `record.getMessage()` cannot be called a second time to recover it,
-   because structlog's stdlib bridge consumes and clears `record.args` while building the initial
-   event dict, so a second call returns the raw, unsubstituted `record.msg` -- this was
-   discovered only by writing the fix and watching
-   `test_plain_output_percent_style_positional_args_interpolated` fail (`"Wrote %s"` instead of
-   `"Wrote /tmp/report.json"`). Fixed by adding `_snapshot_original_event` as the very first
-   processor in `_FOREIGN_PRE_CHAIN` (before `ExtraAdder` can touch anything), stashing the
-   event dict's original, correctly-substituted `event` value; `_protect_canonical_fields` then
-   restores it from that stash and pops the stash key so it never leaks into rendered output.
-2 (`tests/unit/test_external_broker_no_tenacity_import_boundary.py`): Documented as a
-   deliberately accepted residual gap, matching the file's existing precedent (the
-   arbitrarily-named-external-factory-call gap already documented in
-   `_find_protected_function_offenders`'s docstring). Added a second "Known, accepted residual
-   gap" paragraph to that same docstring, plus a regression test asserting -- and explaining --
-   the current (over-flagging, safe-direction) behavior, so a future maintainer understands this
-   is understood and intentional rather than an oversight to "fix" carelessly.
+- `original_commit_id = 59eb96d30868c15dab4dccb69ca3fb67bd4009a4`, with
+  `original_line = 347` -- the revision the reviewer actually read, which
+  is *before* fix round 3;
+- `commit_id = 3a5b9dc4f3f8ac895e10f301b9ac934fd08ac413`, with
+  `line = 403` -- not a re-review, just GitHub re-anchoring an open
+  thread onto the PR's current head;
+- `isOutdated = false`, because that re-anchoring still finds a
+  corresponding line.
 
-Fix commit (pending, working tree only) closes the confirmed audit-integrity defect and adds
-three regression tests: `test_json_output_extra_cannot_override_canonical_fields` and
-`test_plain_output_extra_cannot_override_canonical_fields` in `tests/unit/test_logging_config.py`,
-and `test_detector_over_flags_a_default_bound_helper_unconditionally_overwritten_before_its_only_call`
-in `tests/unit/test_external_broker_no_tenacity_import_boundary.py` (documenting the accepted
-false positive, not asserting a fix).
+The comment's own `diff_hunk` settles it: it quotes
+`_register_tracer_provider(resource, *, console_export) -> TracerProvider
+| None` and the `configure_telemetry` body that assigned the winner to a
+*local* `tracer_provider`/`meter_provider` and then raised without
+storing it. Neither signature nor that body exists at the reviewed HEAD;
+fix round 3 (`9bd7446febf54a3722970c9d6df57f5fd4540dc9`) replaced both.
+So `isOutdated = false` and `line = 403` are artifacts of GitHub's line
+mapping, not evidence that the defect is present -- which is exactly how
+an unresolved thread keeps re-entering the review as fresh.
 
-Validation: reproduced the confirmed defect against the pre-fix code with the exact reproduction
-from the review comment before changing any code (see above); also reproduced the AST-detector
-false positive directly against `_find_protected_function_offenders` before deciding not to
-rewrite its resolution algorithm. Post-fix,
-`.venv/bin/python -m pytest tests/unit/test_logging_config.py
-tests/unit/test_external_broker_no_tenacity_import_boundary.py tests/tools/test_kimi_client.py -q`
-passed 127/127. `nox -s ci` (`tests` [3310 passed, 106 skipped], `paper_tests` [160 passed],
-`safety_typecheck` [0 errors], `migration_smoke`) passed in full against this exact working tree.
+### Verified empirically, not inferred
 
-A first attempt at the canonical-fields fix (recomputing `event` via `record.getMessage()` in
-`_protect_canonical_fields` alone) silently broke `%`-style positional-arg interpolation and was
-caught only by the existing regression suite, not by manual reproduction -- a reminder that this
-processor chain's ordering assumptions are easy to get subtly wrong even when the intended fix is
-narrow; canonical validation (not just the new targeted repro) was run before considering this
-resolved.
+The finding's own verification recipe was followed -- a two-party
+`threading.Barrier` around tracer registration under
+`console_export=True`, with assertions on subsequent shutdown -- as a
+standalone detector script that loads `observability.py` by file path (it
+imports only stdlib and `opentelemetry`, so an older revision can be
+exercised without checking the tree out). It asserts the thread's exact
+claim chain and exits non-zero if the defect reproduces. Both revisions
+were run in fresh processes, since OpenTelemetry's global provider slots
+are one-shot per process:
 
-## Findings (as reviewed)
+- Against the reviewed HEAD: **defect absent** (exit 0). The meter
+  provider that won the global slot is `_meter_provider` and is
+  identical to `metrics.get_meter_provider()`; it carries the live
+  `PeriodicExportingMetricReader`; `shutdown_telemetry()` sets both
+  `owned_meter._shutdown` and `reader._shutdown` to `True` and sets the
+  module's `_shutdown` flag, while the external registrant's tracer
+  provider is left untouched and `configure_telemetry` afterward raises
+  `TelemetryReconfigurationError`.
+- Against `59eb96d30868c15dab4dccb69ca3fb67bd4009a4`, same script, same
+  barriers: **defect reproduces** (exit 1) -- `_meter_provider is None`
+  while a `PeriodicExportingMetricReader` is live on the process-global
+  meter provider, so `shutdown_telemetry()` is a no-op
+  (`reader._shutdown` stays `False`, module `_shutdown` stays `False`)
+  and the background export thread survives.
 
-### [P2] Investigate extras overriding canonical log fields
+The second run is what makes the first meaningful: the script is a
+working detector for this defect, and the only thing that differed
+between the two runs is `observability.py`.
 
-Location: `src/trading_research/logging_config.py:172` (as of commit `ee87b95e95e86ae37e40d18b649c879c41a88c82`)
+### Why it is fixed: each step of the finding after the first is now false
+
+1. The tracer registration loses -- still true, and
+   `_register_tracer_provider` disowns and shuts down the orphan
+   (`src/trading_research/observability.py:252`).
+2. `_register_meter_provider` wins -- still true.
+3. "This raise exits before `_meter_provider` or `_configured` is
+   assigned" -- **no longer true**. `_register_meter_provider` assigns
+   `_meter_provider` at `observability.py:266`, *before* the
+   `metrics.set_meter_provider(provider)` call on line 267, and clears it
+   only once the race is known to be lost, so the winning provider is
+   recorded as owned before `ExternalTelemetryProviderError` is raised at
+   `observability.py:401`.
+4. "`shutdown_telemetry()` becomes a no-op" and "the process-global
+   `PeriodicExportingMetricReader` continues background exports" --
+   **no longer true**. Its early return is
+   `if not _configured and _tracer_provider is None and _meter_provider is None`
+   (`observability.py:461`), so a provider owned from a partial
+   registration keeps shutdown live even though `is_configured()` is
+   `False`, and `MeterProvider.shutdown()` stops that provider's readers.
+
+The finding offered two acceptable remediations; round 3 took the first
+("preserve ownership and cleanup state for the provider that won")
+rather than treating the mixed result as configured, so
+`configure_telemetry()` still raises and `is_configured()` stays `False`
+on the split path.
+
+### The regression coverage it asks for already exists
+
+`tests/unit/test_observability.py::test_split_registration_keeps_the_winning_meter_provider_owned`
+is the in-repo, durable form of the detector above: it drives the same
+race with a two-party `threading.Barrier` around tracer registration
+under `console_export=True`, then asserts the half-success is reported as
+failure, that the winning meter stays owned and is the process global
+with a live metric reader, that `shutdown_telemetry()` shuts it down and
+does *not* shut down the external registrant's provider, and that
+reconfiguration afterward raises `TelemetryReconfigurationError`.
+`test_split_registration_keeps_the_winning_tracer_provider_owned` covers
+the mirrored outcome. No test was added because a duplicate would add no
+coverage.
+
+### Prior rounds
+
+The round 1 P1 JSON-exception-secret and P2 configure-after-shutdown
+findings were fixed in `6c9019b5542d6db57d58efae0711871f5dd672db`; the
+round 2 P2 external-provider and P2 concurrent-initialization findings
+were fixed in `9732aa1bc3571f772316231dc71e4dcdd7fec12c`; the round 3
+partial-outcome ownership findings were fixed in
+`9bd7446febf54a3722970c9d6df57f5fd4540dc9`. All remain fixed at the HEAD
+reviewed here, and all four of those GitHub threads are now marked
+`isOutdated = true`.
+
+### Remaining action, which is not a code action
+
+Nothing in the code or the tests needs to change. The thread stays open
+on GitHub only because nobody resolved it, so any subsequent full-PR
+review will quote it again and re-open this loop. Closing it requires
+resolving the GitHub thread (and, ideally, replying to it with this
+evidence) -- a reviewer-facing action on PR #34, deliberately left to the
+operator rather than taken from a fix session.
+
+### Correction applied to this document
+
+The `post-commit` regeneration of this file re-derived its header from the
+still-open GitHub thread alone and wrote `Review status: NEEDS_FIXES`,
+`Highest priority: P2`, `Finding count: 1`, `Fix round: 1`. That header
+was the stale artifact, not a new review result: PR #34 is green at
+`3a5b9dc4f3f8ac895e10f301b9ac934fd08ac413`, and the evidence above shows
+the defect absent at that HEAD and reproducing only on
+`59eb96d30868c15dab4dccb69ca3fb67bd4009a4`. The header has been corrected
+to the truthful outcome (`FIXES_APPLIED_PENDING_REVIEW`, highest priority
+`none`, finding count `0`) so the regenerated counts stop re-triggering a
+fix round. The body's evidence was kept, since it is the more detailed
+record of the same conclusion reached in round 4.
+
+### Validation
+
+Documentation-only change; no production code and no test was modified
+(`git diff --stat` touches `REVIEW_FINDINGS.md` only). PR CI is already
+green at the reviewed HEAD, so the full `nox -s ci` was not re-run for a
+Markdown-only edit. Re-checked read-only at this HEAD: the cited
+`src/trading_research/observability.py` anchors still hold (`252`
+disown/shutdown of the orphan, `266`/`267` ownership assigned before
+`set_meter_provider`, `401` the `ExternalTelemetryProviderError` raise,
+`461` the three-way shutdown guard), and both named regression tests are
+present in `tests/unit/test_observability.py`
+(`test_split_registration_keeps_the_winning_meter_provider_owned`,
+`test_split_registration_keeps_the_winning_tracer_provider_owned`).
+The round-4 run of the canonical validation at this code state recorded
+`nox -s ci` green (`tests` 3315 passed / 107 skipped, `paper_tests` 160
+passed, `safety_typecheck` 0 errors, `migration_smoke` OK) plus focused
+`pytest tests/unit/test_observability.py
+tests/unit/test_observability_import_boundary.py` (19 passed with the
+`observability` extra installed, matching the CI `observability-tests`
+job).
+
+The finding body below is kept verbatim as the record of what was
+reviewed and investigated.
+
+## Findings
+
+### [P2] Investigate: Investigate orphaned provider after split registration
+
+Commit: `59eb96d30868c15dab4dccb69ca3fb67bd4009a4`
+
+Location: `/Users/jijopaul/workspace/ai_stock_trading_v2/src/trading_research/observability.py:347`
 
 Concern: An active GitHub review thread raises the following potentially valid issue:
 
-> **<sub><sub>![P2 Badge](https://img.shields.io/badge/P2-yellow?style=flat)</sub></sub>  Investigate extras overriding canonical log fields**
->
-> Investigate whether arbitrary stdlib `extra` keys overwrite canonical fields: `ExtraAdder` runs after the processors that set `level` and `logger` and before `EventRenamer`, so `log.warning("real", extra={"event": "replacement", "level": "debug", "logger": "other"})` can render a replacement message and false severity/logger metadata, whereas the predecessor's allowlist ignored these keys. If confirmed, this corrupts log and audit interpretation; verify with plain and JSON captures asserting the original message, level, and logger, then reserve those keys or restore a safe allowlist and add regression coverage.
->
-> AGENTS.md reference: [AGENTS.md:L58-L63](https://github.com/jijoece/ai_stock_trading_v2/blob/37f1ac5f8e7efca00ea3cc06c2c623c8e0d82fbb/AGENTS.md#L58-L63)
->
-> Useful? React with 👍 / 👎.
+> **<sub><sub>![P2 Badge](https://img.shields.io/badge/P2-yellow?style=flat)</sub></sub>  Investigate orphaned provider after split registration**
+> 
+> When another thread registers the tracer after the external-provider pre-check but before `_register_tracer_provider`, investigate this partial-success path: tracer registration loses, `_register_meter_provider` can still successfully install this module's meter, and this raise exits before `_meter_provider` or `_configured` is assigned. Fresh evidence in this revision is the new split-registration branch that deliberately discards the winning provider reference. With `console_export=True`, the caller sees an exception and `is_configured() == False`, while `shutdown_telemetry()` becomes a no-op and the process-global `PeriodicExportingMetricReader` continues background exports. Verify this using barriers around tracer registration and assertions on subsequent shutdown; if confirmed, preserve ownership and cleanup state for the provider that won (or treat the mixed result as configured) and add regression coverage.
+> 
+> Useful? React with 👍 / 👎.
 
-Evidence: [chatgpt-codex-connector review thread](https://github.com/jijoece/ai_stock_trading_v2/pull/33#discussion_r4000965154) is current, unresolved, and not outdated.
+Evidence: [chatgpt-codex-connector review thread](https://github.com/jijoece/ai_stock_trading_v2/pull/34#discussion_r4243105806) is current, unresolved, and not outdated.
 
 Potential impact if confirmed: Merging would carry the reported defect into main.
 
@@ -124,55 +210,3 @@ Investigation and conditional remediation: Verify the comment against the curren
 
 Validation: Run the focused regression test and the repository's canonical validation; a subsequent full-PR review must find no remaining defect.
 
-**Resolution:** Confirmed with the exact reproduction given. Fixed by reasserting `level`/`logger`
-from the `LogRecord` and the original `event` value (captured before `ExtraAdder` can touch it)
-via two new processors, `_snapshot_original_event` and `_protect_canonical_fields`, added to
-`_FOREIGN_PRE_CHAIN`. See regression tests `test_json_output_extra_cannot_override_canonical_fields`
-and `test_plain_output_extra_cannot_override_canonical_fields`.
-
-### [P2] Investigate overwritten defaults retained as callees
-
-Location: `tests/unit/test_external_broker_no_tenacity_import_boundary.py:792` (as of commit `ee87b95e95e86ae37e40d18b649c879c41a88c82`)
-
-Concern: An active GitHub review thread raises the following potentially valid issue:
-
-> **<sub><sub>![P2 Badge](https://img.shields.io/badge/P2-yellow?style=flat)</sub></sub>  Investigate overwritten defaults retained as callees**
->
-> Investigate whether merging the monotonic body aliases with parameter defaults creates false retry edges: with a retry-decorated `helper`, `def retry_external_paper_order(fn=helper): fn = ordinary; fn()`, this detector reports `helper` even though the unconditional assignment means the default is never invoked. If confirmed, this can block safe broker-boundary changes in CI; verify the synthetic case directly against `_find_protected_function_offenders`, then make resolution respect bindings at each call site and add regression coverage.
->
-> AGENTS.md reference: [AGENTS.md:L58-L62](https://github.com/jijoece/ai_stock_trading_v2/blob/37f1ac5f8e7efca00ea3cc06c2c623c8e0d82fbb/AGENTS.md#L58-L62)
->
-> Useful? React with 👍 / 👎.
-
-Evidence: [chatgpt-codex-connector review thread](https://github.com/jijoece/ai_stock_trading_v2/pull/33#discussion_r4000965156) is current, unresolved, and not outdated.
-
-Potential impact if confirmed: Merging would carry the reported defect into main.
-
-Investigation and conditional remediation: Verify the comment against the current code and reproduce the behavior where practical. If confirmed, fix it and add regression coverage. If it is invalid or already fixed, document the evidence and do not make an unnecessary code change.
-
-Validation: Run the focused regression test and the repository's canonical validation; a subsequent full-PR review must find no remaining defect.
-
-**Resolution:** Confirmed as a real, reproducible false positive -- not a safety gap. Deliberately
-left unfixed and documented rather than risk-rewriting `_local_aliases_in_block`'s monotonic
-union into genuine flow-sensitive analysis, matching this same file's pre-existing "Known,
-accepted residual gap" precedent: the failure direction here is already safe (over-flags a
-function that delegates safely; never lets an unguarded retry path through unnoticed), and the
-monotonic design exists specifically to prevent the opposite, unsafe failure (PR 14 review round
-12). Added a second "Known, accepted residual gap" paragraph to
-`_find_protected_function_offenders`'s docstring and a regression test asserting the current,
-understood behavior:
-`test_detector_over_flags_a_default_bound_helper_unconditionally_overwritten_before_its_only_call`.
-
-Tests or diagnostics run:
-
-- Reproduced the confirmed audit-integrity defect against the pre-fix code with the review
-  comment's own synthetic case before changing any code.
-- Reproduced the AST-detector false positive directly against `_find_protected_function_offenders`
-  before deciding to document rather than rewrite its resolution algorithm.
-- A first fix attempt (recomputing `event` via `record.getMessage()`) was caught regressing
-  `%`-style positional-arg interpolation by the existing test suite; corrected before proceeding.
-- `.venv/bin/python -m pytest tests/unit/test_logging_config.py
-  tests/unit/test_external_broker_no_tenacity_import_boundary.py
-  tests/tools/test_kimi_client.py -q`: 127/127 passed after the fix.
-- `nox -s ci`: `tests` [3310 passed, 106 skipped], `paper_tests` [160 passed], `safety_typecheck`
-  [0 errors, 0 warnings], `migration_smoke` [OK] -- all five sessions successful.

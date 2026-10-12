@@ -95,6 +95,30 @@ def test_plain_output_preserves_and_redacts_exception_traceback():
     assert "exception-secret-value" not in line
 
 
+def test_json_output_preserves_and_redacts_exception_with_json_escaped_characters():
+    # Regression for REVIEW_FINDINGS.md P1: a registered secret containing a
+    # character JSON must escape (a quote here) previously survived JSON
+    # exception logging verbatim. `_redact_event_dict`'s per-field redaction
+    # never saw the raw `exc_info` tuple (only `_add_plain_diagnostics`,
+    # wired into the plain-output path only, formatted it), so `JSONRenderer`
+    # serialized the tuple's own `str()`/`repr()` unredacted; the escaped
+    # quote (`\"` instead of `"`) then also broke the final verbatim
+    # `redact()` pass over the rendered line, exposing the secret raw.
+    secret = 'secret"withquote'
+    logging_config.register_secret(secret)
+    buffer = _configure_capturing(json_output=True)
+    log = logging_config.get_logger("unit_test")
+    try:
+        raise ValueError(secret)
+    except ValueError:
+        log.exception("operation failed")
+    line = buffer.getvalue()
+    payload = json.loads(line.strip())
+    assert secret not in line
+    assert "[REDACTED]" in json.dumps(payload)
+    assert secret not in json.dumps(payload)
+
+
 def test_plain_output_preserves_stack_info():
     buffer = _configure_capturing(json_output=False)
     log = logging_config.get_logger("unit_test")

@@ -55,7 +55,7 @@ end of this file.
 | APScheduler | 3.11.3 stable (v4 alpha, not production-ready; re-verified live, PR 14, 2026-08-30) | 3.8-3.14 | MIT | Active | No issues | Yes | Light (SQLite jobstore reuses SQLAlchemy) | SQLite jobstore documented unsuitable for multiple concurrent schedulers (re-confirmed at the source level, PR 14: `BaseScheduler`'s locks are in-process only, not a distributed lease); no distributed lease/fencing | **Defer** (PR 14, evaluated 2026-08-30 — not added; conflicts with ADR 0005 Decision 1's no-daemon architecture, and its stateless trigger classes alone solve none of this repository's market-calendar/catch-up/idempotency complexity, see `pr14/EVALUATION.md`) |
 | Tenacity | 9.1.4 (2026-02, re-verified live, PR 14, 2026-08-30) | `>=3.10` | Apache-2.0 | Active | No issues | Yes | Negligible | None | **Defer** (PR 14, evaluated 2026-08-30 — not added; no existing capability gap, see `pr14/EVALUATION.md`; a structural AST test guards `external_broker.py` against future accidental use regardless) |
 | Structlog | 26.1.0 (2026-06) | `>=3.10` | MIT/Apache-2.0 | Active | No issues | Yes | Minimal | None | **Adopt** (PR 15) |
-| OpenTelemetry SDK/API | 1.44.0 | `>=3.10` | Apache-2.0 | Active | No issues | Yes | Light core, exporters opt-in | None | **Adopt** (PR 16, additive) |
+| OpenTelemetry SDK/API | 1.44.0 | `>=3.10` | Apache-2.0 | Active | No issues | Yes | Light core, exporters opt-in | None | **Adopted** (PR 16, additive — `DECISIONS.md` D14) |
 | Hypothesis | 6.161.5 (2026-07) | 3.10-3.14 | MPL-2.0 | Very active | No issues | Yes | Light | None | **Adopt** (dev group) |
 | time-machine | 3.2.0 (2025-12) | `>=3.10` | MIT | Active | Prebuilt wheels | Yes | Light | None | **Adopt** (dev group, preferred over freezegun) |
 | freezegun | 1.5.5 (2025-08) | 3.8-3.13 (no 3.14) | Apache-2.0 | Active, weaker for pandas C-extension time | No issues | Yes | Light | None | **Reject as primary**, fallback note only |
@@ -165,7 +165,9 @@ analytics:
                                  outstanding
 
 observability:
-  opentelemetry-sdk, opentelemetry-api   (PR 1 — added; PR 16 wires them in)
+  opentelemetry-sdk, opentelemetry-api   (PR 1 — added; PR 16 wired them in,
+                                          src/trading_research/observability.py,
+                                          DECISIONS.md D14)
 
 structlog moved from the `observability` extra to a base dependency in
 PR 15 (DECISIONS.md D13): logging_config.get_logger is imported

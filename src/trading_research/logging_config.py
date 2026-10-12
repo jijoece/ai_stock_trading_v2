@@ -156,14 +156,24 @@ def _protect_canonical_fields(logger: Any, method_name: str, event_dict: Mutable
     return event_dict
 
 
-def _add_plain_diagnostics(
+def _format_diagnostics(
     logger: Any, method_name: str, event_dict: MutableMapping[str, Any]
 ) -> MutableMapping[str, Any]:
-    """Preserve stdlib Formatter's exception and stack-info behavior."""
-    exc_info = event_dict.get("exc_info")
+    """Formats stdlib exception/stack-info into plain strings and removes
+    the raw `exc_info`/`stack_info` keys, before `_redact_event_dict` runs.
+    `JSONRenderer` stringifies non-JSON-serializable values (like the
+    `(exc_type, exc_value, traceback)` tuple stdlib attaches) itself, after
+    serialization -- so a registered secret embedded in an exception
+    message would otherwise reach the renderer unredacted, then come out
+    JSON-escaped (e.g. a `"` becomes `\\"`), which breaks `redact()`'s
+    final verbatim-substring pass over the fully rendered line. Formatting
+    here first turns the diagnostic into an ordinary string field that
+    `_redact_event_dict` redacts like any other, before any serializer can
+    escape it out from under that verbatim match."""
+    exc_info = event_dict.pop("exc_info", None)
     if isinstance(exc_info, tuple):
         event_dict["_exception_text"] = logging.Formatter().formatException(exc_info)
-    stack_info = event_dict.get("stack_info")
+    stack_info = event_dict.pop("stack_info", None)
     if isinstance(stack_info, str):
         event_dict["_stack_info"] = stack_info
     return event_dict
@@ -205,6 +215,7 @@ _FOREIGN_PRE_CHAIN = [
     structlog.stdlib.ExtraAdder(),
     _protect_canonical_fields,
     _add_timestamp,
+    _format_diagnostics,
     _redact_event_dict,
     structlog.processors.EventRenamer("message"),
 ]
@@ -213,8 +224,6 @@ _FOREIGN_PRE_CHAIN = [
 def configure_logging(level: str = "INFO", json_output: bool = False) -> None:
     renderer = _render_json if json_output else _render_plain
     processors = [structlog.stdlib.ProcessorFormatter.remove_processors_meta, renderer]
-    if not json_output:
-        processors.insert(0, _add_plain_diagnostics)
     formatter = structlog.stdlib.ProcessorFormatter(
         foreign_pre_chain=_FOREIGN_PRE_CHAIN,
         processors=processors,

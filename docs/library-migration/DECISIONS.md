@@ -1548,3 +1548,93 @@ evaluation is recommended after a feasibility question was open; here
 adoption was the plan's own instruction (`MASTER_PLAN.md` row 15) and no
 architectural conflict with any Accepted ADR was found (unlike APScheduler/
 D12), so no ADR is drafted.
+
+## D14 — PR 16: OpenTelemetry SDK wired in as new, additive, offline-safe-by-default instrumentation
+
+**Context.** `MASTER_PLAN.md` row 16 scopes this PR as "Additive tracing/
+metrics SDK only; no exporter configured by default in tests (offline-safe);
+domain telemetry (`cycle_telemetry.py`, `paper_books/metrics.py`) is
+unaffected and stays." Unlike PR 15 (a replace-in-place migration of an
+existing implementation) or PR 11 (parity proof against an existing
+authority), PR 16 has no existing implementation to replace or prove parity
+against: `COMPONENT_MATRIX.md`'s "Tracing/metrics (spans)" row lists the
+pre-migration state as "None (domain telemetry only, not spans)." This is
+therefore a from-scratch new-capability adoption, not a migration.
+
+**Adoption.** New module `src/trading_research/observability.py` provides:
+`build_resource(service_name)`, `build_tracer_provider(resource,
+console_export=False)`, `build_meter_provider(resource,
+console_export=False)`, `configure_telemetry(service_name, console_export)`,
+`is_configured()`, and `shutdown_telemetry()`. `configure_telemetry` is the
+process-wide entry point — idempotent (mirroring `logging_config
+.configure_logging`'s idempotent-reconfiguration contract, D13), since the
+OpenTelemetry API itself silently refuses to re-register a global provider
+once set. `build_tracer_provider`/`build_meter_provider` are pure factories
+with no global side effect, used both by `configure_telemetry` internally
+and directly by tests, avoiding any dependency on OpenTelemetry's
+process-global registry for anything other than the one real
+`configure_telemetry` entry point.
+
+**Offline-safe by default, no OTLP/network exporter added.** A
+default-built provider (`console_export=False`, the default) attaches no
+span processor and no metric reader at all — spans and metrics can be
+created safely with zero network, filesystem, or stdout side effect, which
+is what makes this additive-only change safe to exercise in the default
+test environment. `console_export=True` (or the
+`TRADING_RESEARCH_OTEL_CONSOLE=1` environment variable) attaches
+`ConsoleSpanExporter`/`ConsoleMetricExporter` — local stdout output only,
+still no network. **No OTLP or other network exporter exists in this
+module.** Adding one (and the credential/endpoint configuration it would
+need) is explicitly out of this PR's additive-only bound and is left for a
+future PR if the repository owner wants a real tracing backend.
+
+**Correctness fix found during implementation: late-bound `sys.stdout`.**
+`ConsoleSpanExporter`/`ConsoleMetricExporter` default their `out=` parameter
+to `sys.stdout`, evaluated once when `opentelemetry` is first imported —
+not at call time. Left as the library default, `build_tracer_provider`/
+`build_meter_provider` would permanently write to whatever stream
+`sys.stdout` was at first import, not the current one, silently breaking
+any caller that redirects `sys.stdout` afterward (this surfaced first as a
+test failure: `pytest`'s `capsys`/`capfd` fixtures redirect `sys.stdout`
+per test, after `opentelemetry` is already imported at collection time, so
+the default bound to the pre-redirection stream). Fixed by passing
+`out=sys.stdout` explicitly inside `build_tracer_provider`/
+`build_meter_provider`, evaluated fresh on every call.
+
+**`opentelemetry-sdk` stays an optional `observability` extra, not a base
+dependency — unlike `structlog` in PR 15 (D13).** No production module
+imports `observability.py` (`tests/unit/test_observability_import_boundary
+.py` enforces this by AST parsing, unconditionally, matching the
+`analytics_parity`/`vector_research` import-boundary precedent), so a plain
+`.[dev]` install must keep working without OpenTelemetry's SDK installed at
+all. **Caveat found during focused testing:** `pytest.importorskip
+("opentelemetry")` alone is insufficient to gate `tests/unit/
+test_observability.py` — the `mcp` package (a base dependency) itself
+requires `opentelemetry-api`, so the top-level `opentelemetry` package (API
+only, no SDK) is already importable under a plain `.[dev]` install. The
+skip guard uses `pytest.importorskip("opentelemetry.sdk")` instead — the
+actual dependency this module needs (`TracerProvider`/`MeterProvider`),
+matching the `dependency-extras-smoke` CI job's own `import
+opentelemetry.sdk` check. A blocking `observability-tests` CI job (matrixed
+over Python 3.10/3.11, matching `indicators-tests`/`analytics-tests`)
+installs the extra and runs the real behavioral tests, since `main-tests`
+only installs `.[dev]` and would otherwise never exercise the SDK for real.
+
+**Domain telemetry stays untouched, proven by construction.**
+`tests/unit/test_observability_import_boundary.py` also asserts
+`research/cycle_telemetry.py` and `paper_books/metrics.py` do not import
+`opentelemetry` — not just documented, but enforced, so a future change
+cannot silently blur the boundary `MASTER_PLAN.md` row 16 draws between
+this new tracing/metrics capability and the existing domain-specific
+telemetry modules.
+
+**No removal-manifest entry.** PR 16 replaces nothing — there is no
+pre-migration tracing/metrics implementation to close out in
+`REMOVAL_MANIFEST.md`, unlike PR 3/PR 4/PR 15's replace-in-place rows.
+
+**Ruling: adopt, no ADR required.** Per the single-ADR rule (D2, reapplied
+at D9-D13), an ADR is required only when adoption of a Category-B-style
+evaluation is recommended after a feasibility question was open; here
+adoption was the plan's own instruction (`MASTER_PLAN.md` row 16) and no
+architectural conflict with any Accepted ADR was found, so no ADR is
+drafted.
