@@ -18,11 +18,18 @@ checks all eleven `plan.md` completion criteria and makes four changes:
   regression coverage is in `tests/unit/test_standing_paper_limits_policy.py`.
 
 One tooling fix makes `scripts/migration_helper.py` read only this header
-block, so it treats PR 18 as the final phase (D16 ruling 3a). One
-review-found source fix in `src/trading_research/logging_config.py` redacts
-arbitrary log `extra` objects' `repr()` before JSON serialization (D16
-ruling 5). No other code under `src/`, and nothing under `config/`, is
-modified. See "Completed work (PR 18)" below.
+block, so it treats PR 18 as the final phase (D16 ruling 3a). Review found
+two source fixes:
+
+- `src/trading_research/logging_config.py` redacts arbitrary log `extra`
+  objects before JSON serialization. It uses the `__structlog__` hook's
+  structured result when one exists, and otherwise the object's `repr()`
+  (D16 ruling 5).
+- `src/trading_research/cli.py` lets `external-paper-refresh-retry-preview`
+  take `--paper-books-config` (D16 ruling 6).
+
+No other code under `src/`, and nothing under `config/`, is modified. See
+"Completed work (PR 18)" below.
 
 PR 17 — Remove only approved commodity implementations — is **merged**
 (PR #35, `bd95d2c`, branch
@@ -3680,18 +3687,28 @@ Record at `pr18/AUDIT.md`; rulings at `DECISIONS.md` D16. All eleven
 
 - `scripts/migration_helper.py`: `parse_status` reads only the header block
   (D16 ruling 3a). A new test covers it in `tests/unit/test_migration_helper.py`.
-- `src/trading_research/logging_config.py` (the only `src/` change, found in
-  review): `_redact_value()` redacts any non-scalar object's `repr()`, with
-  a type-only placeholder when `repr()` raises (D16 ruling 5). Covered by
-  three new tests in `tests/unit/test_logging_config.py`.
+- `src/trading_research/logging_config.py` (found in review), D16
+  ruling 5:
+  - `_redact_value()` redacts any non-scalar object's `repr()`, with a
+    type-only placeholder when `repr()` raises.
+  - From review round 3, a `__structlog__` hook's structured result is
+    redacted recursively instead of being replaced by its `repr()`. A hook
+    that raises falls back to the `repr()` path, and nesting is bounded.
+
+  Covered by six new tests in `tests/unit/test_logging_config.py`.
+- `src/trading_research/cli.py` (found in review round 3):
+  `external-paper-refresh-retry-preview` accepts `--paper-books-config`
+  through the fail-closed override loader (D16 ruling 6). Covered by
+  `tests/unit/test_external_paper_refresh_cli_config_override.py` (new,
+  4 tests) and a runbook-procedure test.
 - `tests/unit/test_alpaca_runbook_approval_gates.py` (new, found in review):
   pins the approval-phrase gate beside both broker-transmitting runbook
   commands (D16 ruling 2a).
 - `PRESERVATION_MANIFEST.md`: corrected the approval-phrase row and recorded
   policy B on the hard-limits row.
 - `docs/runbooks/alpaca-paper-operations.md`: use an override file instead
-  of editing the tracked config; added the approval-phrase gate and the
-  standing limits.
+  of editing the tracked config; added the approval-phrase gate, the
+  standing limits, and the read-only retry-preview refresh step.
 - `MASTER_PLAN.md` rows 9–18, this file's header and drifted merge-status
   paragraphs, and `REMOVAL_MANIFEST.md` (PR 18 note).
 
@@ -3720,9 +3737,18 @@ This audit confirms the existing authorities and adds guards around them.
   helper's `Next phase: PR <id>` pattern does not match.
 - `scripts/check_links.sh`: 188 links checked, 186 OK, **0 errors**, 2
   excluded.
+- After the review-round-3 fixes (D16 rulings 5 and 6), `nox -s ci` passed:
+  - `tests`: **3439 passed, 107 skipped**.
+  - `paper_tests`: **160 passed**.
+  - `safety_typecheck`: **0 errors**.
+  - `migration_smoke`: OK.
 
-**Safety:** apart from the log-redaction hardening above, no trading limit,
-limit value, authorization rule, `paper_books` accounting code, external-broker state machine, research boundary, or
-scheduling behavior was modified. Real model calls: 0. Real provider
+  `scripts/check_links.sh` reported **0 errors**.
+
+**Safety:** two things changed: the log-redaction hardening above, and
+the refresh command now accepts the same override file its sibling commands
+already accept. Nothing else was modified: no trading limit, limit value,
+authorization rule, `paper_books` accounting code, external-broker state
+machine, research boundary, or scheduling behavior. Real model calls: 0. Real provider
 calls: 0. Broker calls: 0. Paper orders: 0. Live orders: 0. Scheduler
 enabled: no.

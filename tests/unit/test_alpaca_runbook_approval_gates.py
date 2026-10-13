@@ -34,6 +34,17 @@ def test_broker_transmitting_command_is_preceded_by_the_approval_gate(command):
     assert APPROVAL_PHRASE in _prose_before_command(RUNBOOK_PATH.read_text(), command)
 
 
+def test_retry_preview_refresh_is_documented_before_the_retry_and_needs_the_override():
+    """PR 18 review round 3 (P2, r4255587023): under the override-only
+    procedure, the read-only refresh is the documented way past an expired
+    preview, and it must be listed among the commands that take the
+    override file."""
+    text = RUNBOOK_PATH.read_text()
+    assert text.index("cli external-paper-refresh-retry-preview") < text.index("cli external-paper-retry-submit")
+    enable_section = " ".join(text.split("## Enable deliberately", 1)[1].split("\n## ", 1)[0].split())
+    assert "retry-preview refresh" in enable_section
+
+
 def test_retry_requires_fresh_approval_rather_than_the_original_submit_approval():
     """PR 18 review round 2 (P1): the runbook gated only the first submit,
     so an agent could run the retry on `NOT_FOUND` evidence and CLI

@@ -8,7 +8,8 @@ default. Do not use a live account or live endpoint.
 Do not edit the tracked `config/paper_books.yaml`. Copy it to a file outside
 the repository and pass it with `--paper-books-config <path>` to every
 external-paper command that accepts the flag (account check, baseline
-activation, preview, submit, retry, reconcile, cancel). A missing or invalid override fails closed
+activation, preview, submit, retry-preview refresh, retry, reconcile,
+cancel). A missing or invalid override fails closed
 and never falls back to the tracked default. In the copy, set
 `paper_books.enabled: true`, enable exactly one book, then set
 `external_broker.enabled: true`, `allow_order_submission: true`, and
@@ -93,6 +94,18 @@ Never rerun submit after `UNKNOWN_REQUIRES_RECONCILIATION`. Reconcile first.
 If the deterministic client order ID is found, local state is repaired without
 submission. If and only if reconciliation persists authoritative `NOT_FOUND`,
 perform the bounded explicit retry.
+
+If the original preview expired during reconciliation, the retry rejects
+it. Refresh it first. The refresh is read-only: it makes no
+broker call, does not consume the `NOT_FOUND` lookup, and is not an approval.
+Like every other external-paper command, it needs the operator's override
+file, because the tracked config has submission disabled.
+
+```bash
+python -m trading_research.cli external-paper-refresh-retry-preview \
+  --book-id BASELINE --intent-id <intent-id> \
+  --operator <name> --reason "original preview expired during reconciliation"
+```
 
 `external-paper-retry-submit` transmits a new broker attempt, so it needs
 fresh approval. The original submit approval does not carry over: it covered

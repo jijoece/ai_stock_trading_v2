@@ -307,6 +307,75 @@ def test_extra_object_with_raising_repr_does_not_drop_record(json_output, capsys
         assert payload["nested"] == [placeholder]
 
 
+def test_json_output_redacts_structlog_hook_result_instead_of_leaking_its_repr():
+    """PR 18 review round 3 (P1, r4255488351): the round-1 `repr()`
+    fallback bypassed structlog's `__structlog__` hook, so an object whose
+    hook returns `{"api_key": ...}` rendered its repr, secret included,
+    instead of the hook's structured result with the key redacted (the
+    `bd95d2c` behavior). The hook's result must be preserved and redacted
+    recursively, by key and by registered secret."""
+
+    class Structured:
+        def __structlog__(self):
+            return {"api_key": "abcd1234efgh", "note": "ok"}
+
+        def __repr__(self) -> str:
+            return "Structured(api_key='abcd1234efgh')"
+
+    class Nested:
+        def __structlog__(self):
+            return {"inner": Structured(), "items": ["registered-hook-secret"]}
+
+    logging_config.register_secret("registered-hook-secret")
+    buffer = _configure_capturing(json_output=True)
+    log = logging_config.get_logger("unit_test")
+    log.info("event", extra={"payload": Structured(), "nested": Nested()})
+    raw = buffer.getvalue()
+    payload = json.loads(raw.strip())
+    assert "abcd1234efgh" not in raw
+    assert "registered-hook-secret" not in raw
+    assert payload["payload"] == {"api_key": "[REDACTED]", "note": "ok"}
+    assert payload["nested"] == {
+        "inner": {"api_key": "[REDACTED]", "note": "ok"},
+        "items": ["[REDACTED]"],
+    }
+
+
+def test_raising_structlog_hook_falls_back_to_redacted_repr():
+    class BrokenHook:
+        def __structlog__(self):
+            raise RuntimeError("hook failure text")
+
+        def __repr__(self) -> str:
+            return "BrokenHook(registered-hook-secret)"
+
+    logging_config.register_secret("registered-hook-secret")
+    buffer = _configure_capturing(json_output=True)
+    log = logging_config.get_logger("unit_test")
+    log.info("must survive", extra={"details": BrokenHook()})
+    raw = buffer.getvalue()
+    payload = json.loads(raw.strip())
+    assert payload["message"] == "must survive"
+    assert payload["details"] == "BrokenHook([REDACTED])"
+    assert "hook failure text" not in raw
+
+
+def test_self_returning_structlog_hook_is_bounded():
+    class SelfReferential:
+        def __structlog__(self):
+            return self
+
+        def __repr__(self) -> str:
+            return "SelfReferential()"
+
+    buffer = _configure_capturing(json_output=True)
+    log = logging_config.get_logger("unit_test")
+    log.info("must survive", extra={"details": SelfReferential()})
+    payload = json.loads(buffer.getvalue().strip())
+    assert payload["message"] == "must survive"
+    assert payload["details"] == "SelfReferential()"
+
+
 def test_json_output_preserves_json_scalar_extra_fields():
     buffer = _configure_capturing(json_output=True)
     log = logging_config.get_logger("unit_test")

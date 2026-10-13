@@ -2,14 +2,22 @@
 
 Branch `migration/18-final-authority-safety-audit`, based on `origin/main`
 `bd95d2c` (PR 17 merged). Rulings: [`DECISIONS.md`](../DECISIONS.md) D16.
-This PR changes tests and documents, one line in the migration tooling,
-`scripts/migration_helper.py` (D16 ruling 3a), and one source file,
-`src/trading_research/logging_config.py` (D16 ruling 5): review found that
-arbitrary objects in log `extra` fields bypassed redaction, and the fix
-redacts their `repr()` before JSON serialization. No other code under
-`src/`, and no code under `paper_runtime/src/`, `backtest_runtime/`, or
-`config/`, is modified. No trading, limit, authorization, or accounting
-behavior changes.
+This PR changes tests and documents, one line in the migration tooling
+(`scripts/migration_helper.py`, D16 ruling 3a), and two source files:
+
+- `src/trading_research/logging_config.py` (D16 ruling 5): review found
+  that arbitrary objects in log `extra` fields bypassed redaction. The fix
+  redacts the `__structlog__` hook's structured result, or otherwise the
+  object's `repr()`, before JSON serialization.
+- `src/trading_research/cli.py` (D16 ruling 6):
+  `external-paper-refresh-retry-preview` now accepts `--paper-books-config`
+  through the existing fail-closed loader.
+
+No other code under `src/`, and no code under `paper_runtime/src/`,
+`backtest_runtime/`, or `config/`, is modified. No trading, limit,
+authorization, or accounting behavior changes. The refresh remains
+read-only and still requires submission to be enabled in the config it is
+given.
 
 ## Merge status (GitHub-authoritative, checked 2026-10-12)
 
@@ -75,6 +83,17 @@ numbered sequence and is not a precondition for this audit.
    it past the line-level redaction. It now redacts every non-scalar
    object's `repr()`, and a `repr()` that raises becomes a type-only
    placeholder so the record is still emitted (D16 ruling 5).
+7. **The `repr()` fallback bypassed structlog's `__structlog__` hook (found
+   in review round 3).** A hook's structured result, whose sensitive keys
+   `bd95d2c` redacted, was rendered as its `repr()` instead, and a secret in
+   that `repr()` leaked. The hook's result is now redacted recursively,
+   with a guarded fallback and a bounded depth (D16 ruling 5).
+8. **The retry-preview refresh ignored the override file (found in review
+   round 3).** `external-paper-refresh-retry-preview` always loaded the
+   tracked, submission-disabled config, so the override-only procedure
+   could not refresh an expired retry preview. It now takes
+   `--paper-books-config` through the same fail-closed loader, and the
+   runbook documents the step (D16 ruling 6).
 
 ## Residual items (not blockers)
 

@@ -51,6 +51,19 @@ def test_pr18_scope_record_names_the_logging_config_source_change(section):
 
 @pytest.mark.parametrize(
     "section",
+    [_audit_scope, _status_header, _status_pr18_record],
+    ids=["audit-scope", "status-header", "status-pr18-record"],
+)
+def test_pr18_scope_record_names_the_refresh_cli_source_change(section):
+    """Review round 3 (r4255587023) changed `src/trading_research/cli.py`;
+    the scope records must not go stale again."""
+    text = section()
+    assert "`src/trading_research/cli.py`" in text
+    assert "ruling 6" in text
+
+
+@pytest.mark.parametrize(
+    "section",
     [_audit_scope, _status_header],
     ids=["audit-scope", "status-header"],
 )
@@ -62,3 +75,5 @@ def test_d16_records_the_logging_redaction_ruling():
     text = DECISIONS_PATH.read_text()
     d16 = text[text.index("## D16 — ") :]
     assert "**Ruling 5: redact arbitrary log `extra` objects before serialization.**" in d16
+    assert "`__structlog__`" in d16[d16.index("**Ruling 5:") : d16.index("**Ruling 6:")]
+    assert "**Ruling 6: `external-paper-refresh-retry-preview` honors" in d16

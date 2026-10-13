@@ -1897,14 +1897,55 @@ these tests, not a reinterpretation of them.
 Review found that `logging_config._redact_value()` returned objects other
 than strings, bytes, mappings, and sequences unchanged. `JSONRenderer` then
 serialized them through `repr()`, and JSON escaping could hide a registered
-secret from the line-level redaction. This is the PR's one change under
-`src/`. JSON scalars (`None`, `bool`, `int`, `float`) pass through
-unchanged; any other object is replaced by its redacted `repr()`. A
-`repr()` that raises is replaced by `<unrepresentable TypeName>`, so the
-record is still emitted in both plain and JSON modes. `ProcessorFormatter`
-bookkeeping keys (`_record`, `_from_structlog`) are left raw because they
-are removed before rendering. `tests/unit/test_logging_config.py` pins
-this behavior.
+secret from the line-level redaction. JSON scalars (`None`, `bool`, `int`,
+`float`) pass through unchanged; any other object is replaced by its
+redacted `repr()`. A `repr()` that raises is replaced by
+`<unrepresentable TypeName>`, so the record is still emitted in both plain
+and JSON modes. `ProcessorFormatter` bookkeeping keys (`_record`,
+`_from_structlog`) are left raw because they are removed before rendering.
+`tests/unit/test_logging_config.py` pins this behavior.
+
+Review round 3 (r4255488351) found that the `repr()` fallback bypassed
+structlog's `__structlog__` serialization hook. On `bd95d2c`, `JSONRenderer`
+serialized the hook's structured result, and its sensitive keys were
+redacted. After the first fix, the same object rendered as its `repr()`.
+A hook returning `{"api_key": "abcd1234efgh"}` whose `repr()` was
+`Structured(api_key='abcd1234efgh')` leaked the key in JSON output (a probe
+showed this). An object whose type defines a callable `__structlog__` is
+now replaced by the hook's result, which is redacted recursively by key
+and by registered secret, before the `repr()` fallback is considered. A
+hook that raises falls back to the guarded redacted `repr()`. Nested hook
+results are followed at most 8 levels deep, so a hook that returns itself
+cannot recurse without bound. The hook is looked up on the type, not the
+instance, so an object with a catch-all `__getattr__` is not mistaken for
+one. Three regression tests in `test_logging_config.py` cover this. The
+leak test fails without the fix.
+
+**Ruling 6: `external-paper-refresh-retry-preview` honors
+`--paper-books-config`.** Review round 3 (r4255587023) found that the
+refresh command's parser had no override flag, and its handler always
+loaded the tracked config. `refresh_retry_preview` requires external
+submission to be enabled, which the tracked config never is, so under this
+PR's override-only runbook procedure an order whose preview expired during
+reconciliation could not be refreshed. It stayed stranded in
+`UNKNOWN_REQUIRES_RECONCILIATION`. The refresh now loads config through the
+same fail-closed `_load_config_or_error` as the other external commands:
+
+- a missing or invalid override returns an error;
+- it never falls back to the tracked default;
+- it never calls the refresh.
+
+The refresh is still read-only, makes no broker call, and does not consume
+the `NOT_FOUND` lookup. The runbook documents the step before the retry,
+and the retry's approval gate still sits directly before the retry command.
+
+Coverage:
+
+- `tests/unit/test_external_paper_refresh_cli_config_override.py`, 4 tests:
+  the tracked config is rejected; the override reaches the refresh; a
+  missing override fails closed; the parser threads the flag through. Three
+  of the four fail without the fix.
+- A runbook-procedure test in `test_alpaca_runbook_approval_gates.py`.
 
 **Out of scope, recorded.**
 
@@ -1919,6 +1960,7 @@ this behavior.
   `talib.MACD`/`TRIX`), not by an AST guard. That is sufficient to catch a
   reintroduced hand-written formula, and the owner did not ask for more.
 
-**No ADR.** This PR adds tests, corrects documents, and hardens log
-redaction within the existing `structlog` authority (ruling 5). Policy B
-keeps the existing behavior.
+**No ADR.** This PR adds tests and corrects documents. It also hardens log
+redaction within the existing `structlog` authority (ruling 5) and threads
+the existing override loader through one more CLI command (ruling 6).
+Policy B keeps the existing behavior.

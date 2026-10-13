@@ -84,7 +84,12 @@ def _is_sensitive_key(key: object) -> bool:
     return isinstance(key, str) and any(marker in key.lower() for marker in _SENSITIVE_KEY_SUBSTRINGS)
 
 
-def _redact_value(value: Any) -> Any:
+# How many nested `__structlog__` hook results `_redact_value` follows
+# before falling back to the object's redacted `repr()`.
+_MAX_STRUCTLOG_HOOK_DEPTH = 8
+
+
+def _redact_value(value: Any, _hook_depth: int = 0) -> Any:
     """Redacts strings and recurses into mappings/sequences/sets, so a
     secret or sensitive field nested inside an `extra` value is redacted on
     the raw Python object -- before `JSONRenderer` escapes it -- rather than
@@ -106,7 +111,17 @@ def _redact_value(value: Any) -> Any:
     fallback would render -- so a registered secret inside an arbitrary
     object's representation is redacted before serialization can escape it.
     A `repr()` that raises is replaced by a fixed placeholder naming only
-    the object's type, so a broken representation cannot drop the record."""
+    the object's type, so a broken representation cannot drop the record.
+
+    An object whose type defines structlog's `__structlog__` serialization
+    hook is replaced by the hook's result, redacted recursively like any
+    other value, before the `repr()` fallback is considered. Without this,
+    `JSONRenderer` would never see the hook, and a sensitive key in its
+    structured result (e.g. `{"api_key": ...}`) would be rendered verbatim
+    inside the `repr()` instead of redacted by key. A hook that raises
+    falls through to the guarded `repr()` path, and nested hook results are
+    followed at most `_MAX_STRUCTLOG_HOOK_DEPTH` levels deep, so a hook that
+    returns itself cannot recurse without bound."""
     if value is None or isinstance(value, (bool, int, float)):
         return value
     if isinstance(value, str):
@@ -115,14 +130,21 @@ def _redact_value(value: Any) -> Any:
         return redact(str(value))
     if isinstance(value, Mapping):
         return {
-            key: "[REDACTED]" if _is_sensitive_key(key) else _redact_value(item)
+            key: "[REDACTED]" if _is_sensitive_key(key) else _redact_value(item, _hook_depth)
             for key, item in value.items()
         }
     if isinstance(value, (list, tuple, set, frozenset)):
-        redacted_items = (_redact_value(item) for item in value)
+        redacted_items = (_redact_value(item, _hook_depth) for item in value)
         if type(value) in (list, tuple, set, frozenset):
             return type(value)(redacted_items)
         return tuple(redacted_items)
+    if callable(getattr(type(value), "__structlog__", None)) and _hook_depth < _MAX_STRUCTLOG_HOOK_DEPTH:
+        try:
+            structured = value.__structlog__()
+        except Exception:
+            pass
+        else:
+            return _redact_value(structured, _hook_depth + 1)
     try:
         representation = repr(value)
     except Exception:
