@@ -91,6 +91,16 @@ def test_next_phase_is_parsed_across_a_wrapped_line() -> None:
     assert following == "10"
 
 
+def test_history_sections_are_not_read_as_phase_declarations() -> None:
+    # The final phase declares no next phase; a "Completed work" section's
+    # recap of an older `Next phase:` line must not be mistaken for one.
+    status = (
+        "# Migration Status\n\n**Current phase: PR 18 — final audit — IMPLEMENTED, NOT MERGED**\n\n"
+        "## Completed work (PR 17)\n\n- helper reads `Current phase: PR 17` / `Next phase: PR 18` correctly.\n"
+    )
+    assert helper.parse_status(status) == ("18", None)
+
+
 def test_master_plan_rows_are_looked_up_by_phase_id_in_document_order() -> None:
     rows = helper.parse_master_plan(MASTER_PLAN)
     assert [row.phase_id for row in rows] == ["8", "8a", "9", "10"]

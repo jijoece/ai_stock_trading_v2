@@ -5,11 +5,26 @@ default. Do not use a live account or live endpoint.
 
 ## Enable deliberately
 
-In `config/paper_books.yaml`, set `paper_books.enabled: true`, enable exactly
-one book, then set `external_broker.enabled: true`,
-`allow_order_submission: true`, and `enabled_book_ids` to that one book. Keep
-`execution.provider: local_simulated`; recurring execution uses that path and
-never mutates Alpaca.
+Do not edit the tracked `config/paper_books.yaml`. Copy it to a file outside
+the repository and pass it with `--paper-books-config <path>` to every
+external-paper command that accepts the flag (account check, baseline
+activation, preview, submit, retry, reconcile, cancel). A missing or invalid override fails closed
+and never falls back to the tracked default. In the copy, set
+`paper_books.enabled: true`, enable exactly one book, then set
+`external_broker.enabled: true`, `allow_order_submission: true`, and
+`enabled_book_ids` to that one book. Keep `execution.provider:
+local_simulated`; recurring execution uses that path and never mutates
+Alpaca.
+
+Keep the standing limits in the copy: `maximum_order_notional_usd: "50.00"`,
+`maximum_daily_notional_usd: "150.00"`, and `max_symbol_concentration_weight`
+`"0.10"`. These are configured values, not hard-coded ceilings (owner policy
+B, `docs/library-migration/DECISIONS.md` D16). Raising one is a
+single-validation exception that the operator approves explicitly, as
+Milestone 22 did with a `$400` cap. It belongs only in that operator's
+override file, never in the tracked config. The gateway always applies the
+lower of `external_broker.maximum_order_notional_usd` and
+`risk.max_order_notional_usd`.
 
 In `config/paper_runtime.yaml`, keep provider `alpaca`, environment/mode
 `paper`, and base URL exactly `https://paper-api.alpaca.markets`. The isolated
@@ -26,6 +41,15 @@ runtime loads exactly that file and never scans the filesystem for one. Do
 not rely on this repository's own `.env`; the runtime does not discover it.
 
 ## Account check, preview, submit
+
+`external-paper-submit` runs only after the operator gives the exact phrase
+`Approved, submit this exact paper order.` for that previewed order. No
+other wording counts as approval. The CLI does not check the phrase: it is
+the operator gate an agent must observe before running the command. The CLI
+enforces the configuration gates, a recent preview, `--operator`,
+`--reason`, account fingerprinting, and the notional caps. The phrase never
+enables live trading. Append `--paper-books-config <path>` to each command
+below.
 
 ```bash
 python -m trading_research.cli external-paper-account-check --book-id BASELINE

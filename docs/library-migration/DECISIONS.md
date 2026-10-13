@@ -1776,3 +1776,123 @@ and is untouched.
 **No ADR.** No Accepted ADR governs performance analytics. Per the
 single-ADR rule (D2, reapplied at D9–D14), executing a manifest row the
 plan already scheduled needs no ADR.
+
+## D16 — PR 18: final authority and safety audit; owner policy B keeps the standing limits configurable
+
+**Context.** `MASTER_PLAN.md` row 18 asks for a check of `plan.md`'s
+completion criteria, confirmation that no dual authorities remain, and
+confirmation that `REMOVAL_MANIFEST.md` has no unresolved target. The audit
+(`pr18/AUDIT.md`) found three defects and one question for the owner.
+
+**Ruling 1: add structural guards for the PR 3 and PR 15 removals
+(completion criterion 11).** PR 17 added an AST guard for the analytics
+formulas (`test_analytics_import_boundary.py`). The manual market calendar
+(PR 3) and the `RedactingFormatter`/`JsonRedactingFormatter` pair (PR 15)
+were removed in place, but no check would fail if either came back beside
+its library. `tests/unit/test_removed_implementation_reintroduction_guards.py`
+parses `src/trading_research/` and `scripts/` and proves:
+
+- `exchange_calendars` is imported only by `evaluation/market_calendar.py`;
+- no other calendar or holiday library is imported;
+- the five removed holiday helpers and the fixed `MARKET_OPEN_TIME`/
+  `MARKET_CLOSE_TIME` constants are defined nowhere;
+- every XNYS-dependent function still calls `_calendar()`;
+- neither removed formatter class and no `logging.Formatter` subclass
+  exists;
+- `structlog` and `setFormatter` appear only in `logging_config.py`, and
+  `configure_logging` builds a `ProcessorFormatter`;
+- `redact` and `register_secret` each have exactly one definition.
+
+A temporary reintroduction of `_easter_sunday`, `MARKET_CLOSE_TIME`, and
+`RedactingFormatter` made three of these tests fail. The changes were
+reverted before commit.
+
+**Ruling 2: correct the approval-phrase record.** `PRESERVATION_MANIFEST.md`
+placed the `Approved, submit this exact paper order.` gate in
+`paper_books/external_broker.py` and the CLI submit handlers and cited
+"existing approval-phrase tests". No repository code parses or checks that
+phrase, and no such test exists. The phrase is an operator-conversation
+gate: `CLAUDE.md` requires the user's explicit approval, and the agent must
+not run `external-paper-submit` without it. The code enforces the
+configuration gates, a recent preview, the required `--operator`/
+`--reason`, account fingerprinting, and the caps. The manifest row and
+`docs/runbooks/alpaca-paper-operations.md` now say this. PR 18 does not
+implement a phrase check: an agent that runs the CLI would also supply the
+phrase, so the check would add a string and no assurance. Adding one would
+be a separate owner decision.
+
+**Ruling 3: correct merge-status drift.** GitHub (the authority under
+`AUTOMATION.md`) shows PRs 9–17 merged (PR #22, #27–#30, #32–#35).
+`MASTER_PLAN.md` rows 9–17 and several `STATUS.md` paragraphs still read
+"IMPLEMENTED", "EVALUATED", or "NOT MERGED". Those are corrected, with each
+merge commit named.
+
+**Ruling 3a: `migration_helper.parse_status` reads only the header
+block.** Its docstring said it consulted only the header block, but it
+searched the whole file. PR 18 is the final phase and declares no
+`Next phase:`. With no header match, the parser picked up a "Completed work"
+recap line (`Next phase: PR 17`). Once PR 18 merged, the helper would have
+named PR 17 as the successor instead of reporting the final phase. The
+parser now stops at the first `## ` heading, which makes the code match its
+docstring. `test_history_sections_are_not_read_as_phase_declarations`
+pins this. No other helper behavior changes.
+
+**Ruling 4: owner policy B — the $50/$150/10% limits stay configurable.**
+The owner chose between (A) hard-coded ceilings that no config can raise
+and (B) the current configured limits with the documented
+`--paper-books-config` override path. Milestone 22 used that path for one
+supervised `$400`-cap validation. The owner chose **B**. Why B meets this
+audit:
+
+1. `plan.md` criterion 5 requires that safety rules "remain enforced
+   outside third-party framework defaults", and D3 says "never delegated to
+   a library default". Both are about *where* enforcement lives, not about
+   whether a value can be configured. Under B the values live in the
+   repository's own `paper_books/config.py` and `config/paper_books.yaml`,
+   and enforcement happens in the repository's own gateway: `external_broker.py`
+   for the order and daily caps on the recomputed notional, and
+   `paper_books/risk.py` for the 10% allocation. No LumiBot, broker, or
+   environment-variable default can raise them. This is unchanged by any
+   migration PR.
+2. The standing values are both the tracked values and the loader's
+   omitted-key defaults. A raised cap needs an explicit operator-supplied
+   file that must exist and validate. It fails closed and never falls back
+   to the tracked default (`test_paper_books_cli_config_override.py`).
+   Milestone 23 requires that the `$400` allowance not become "a default or
+   reusable operator setting", and it has not: the tracked config still
+   carries $50/$150.
+3. The gateway always applies the lower of the external cap and
+   `risk.max_order_notional_usd`. Raising one alone cannot loosen the other.
+4. Submission stays off in the tracked config (`enabled: false`,
+   `allow_order_submission: false`, no enabled books), so any override also
+   needs the operator's explicit enablement, a fresh preview, and the
+   approval phrase.
+
+`tests/unit/test_standing_paper_limits_policy.py` pins points 1–3:
+
+- the tracked values;
+- the omitted-key defaults;
+- an exact-$50 accept and a $50.01 reject;
+- the Milestone 22 $333.75 order rejected under standing limits and accepted
+  only under a `$400` override file;
+- the tracked default unchanged after that override loads;
+- the risk cap still binding over a raised external cap.
+
+Moving to policy A later is a change to `config.py`'s validation and to
+these tests, not a reinterpretation of them.
+
+**Out of scope, recorded.**
+
+- `paper_runtime/src/trading_paper_runtime/logging_config.py` installs a
+  plain `logging.Formatter`. It belongs to a separate distribution
+  (ADR 0002/0009 forbid a shared package), PR 15 never claimed it, and
+  `REMOVAL_MANIFEST.md` lists no target there. It is not a second authority
+  inside `trading_research`. Whether it needs redaction is a separate
+  question.
+- TA-Lib delegation is guarded behaviorally (`test_indicators.py`: the
+  composed functions must call `talib.EMA`/`RSI`/`BBANDS` and must not call
+  `talib.MACD`/`TRIX`), not by an AST guard. That is sufficient to catch a
+  reintroduced hand-written formula, and the owner did not ask for more.
+
+**No ADR.** This PR adds tests and corrects documents. Policy B keeps the
+existing behavior.

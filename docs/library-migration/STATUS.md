@@ -1,9 +1,33 @@
 # Migration Status
 
-**Current phase: PR 17 — Remove only approved commodity implementations —
-IMPLEMENTED, NOT MERGED** (branch
+**Current phase: PR 18 — Final authority and safety audit — IMPLEMENTED,
+NOT MERGED** (branch `migration/18-final-authority-safety-audit`;
+`MASTER_PLAN.md` row 18, `DECISIONS.md` D16, record at `pr18/AUDIT.md`).
+PR 18 is the final numbered phase, so no next phase follows it. It
+checks all eleven `plan.md` completion criteria and makes four changes:
+
+- AST guards against reintroducing the PR 3 manual calendar and the PR 15
+  logging formatters
+  (`tests/unit/test_removed_implementation_reintroduction_guards.py`);
+- a corrected approval-phrase record in `PRESERVATION_MANIFEST.md` and the
+  Alpaca runbook (the phrase is an operator gate, not code);
+- corrected merge-status drift for PRs 9–17;
+- owner **policy B**: the $50/$150/10% limits stay configurable, and the
+  explicit `--paper-books-config` override path that Milestone 22's `$400`
+  validation used is preserved. The rationale is in D16 ruling 4; the
+  regression coverage is in `tests/unit/test_standing_paper_limits_policy.py`.
+
+No code under `src/` or `config/` is modified. One tooling fix makes
+`scripts/migration_helper.py` read only this header block, so it treats
+PR 18 as the final phase (D16 ruling 3a). See "Completed work (PR 18)"
+below.
+
+PR 17 — Remove only approved commodity implementations — is **merged**
+(PR #35, `bd95d2c`, branch
 `migration/17-remove-approved-commodity-implementations`; `MASTER_PLAN.md`
-row 17, `DECISIONS.md` D15). `REMOVAL_MANIFEST.md` carried exactly one
+row 17, `DECISIONS.md` D15). This entry previously read "IMPLEMENTED, NOT
+MERGED". It is corrected under `AUTOMATION.md`'s GitHub-is-authoritative
+rule. `REMOVAL_MANIFEST.md` carried exactly one
 unresolved removal target into this PR — the custom analytics formulas row
 (PR 11 parity) — because PR 3, PR 4, and PR 15 closed their rows in place
 and PR 8 approved no removal. That row is now executed and closed:
@@ -25,8 +49,8 @@ already were. Statuses are unchanged on every fixture;
 removed formulas' own outputs, captured before the removal. See
 "Completed work (PR 17)" below for the full record.
 
-**Next phase: PR 18 — Final authority and safety audit**
-(`MASTER_PLAN.md` row 18), which depends on all prior PRs. As of PR 17,
+**Next phase: none.** PR 18 is the final numbered phase in
+`MASTER_PLAN.md`. Row 8a stays outside the numbered sequence. As of PR 17,
 `REMOVAL_MANIFEST.md` has no unresolved removal target.
 
 PR 16 — OpenTelemetry migration — is **merged** (PR #34, `3906935`, branch
@@ -103,9 +127,10 @@ proves parity only; removal is PR 17's job. See "Completed work (PR 11)"
 below.
 
 PR 10 — broker-to-`paper_books` reconciliation parity tests — is
-**IMPLEMENTED** (branch
+**merged** (PR #27, `227fbc7`, branch
 `migration/10-broker-paper-books-reconciliation-parity`; `MASTER_PLAN.md`
-row 10, `DECISIONS.md` D1). See "Completed work (PR 10)" below.
+row 10, `DECISIONS.md` D1; corrected from "IMPLEMENTED" in PR 18). See
+"Completed work (PR 10)" below.
 
 PR 9 — the LumiBot runtime normalization contract — is **merged** (PR #22,
 `22f2cdc`, branch `migration/09-lumibot-normalization-contract`;
@@ -134,16 +159,17 @@ authoritative for merge status" rule, the same correction pattern already
 applied to PR 9's and PR 11's entries elsewhere in this file. See
 "Completed work (PR 12)" below for the full record.
 
-PR 13 — SQLAlchemy/Alembic feasibility and ADR — is **EVALUATED, NOT
-MERGED** (branch `migration/13-sqlalchemy-alembic-feasibility`;
-`MASTER_PLAN.md` row 13, `DECISIONS.md` D11). See "Completed work (PR 13)"
-below for the full record.
+PR 13 — SQLAlchemy/Alembic feasibility and ADR — is **evaluated and
+merged** (PR #30, `c32021e`, branch
+`migration/13-sqlalchemy-alembic-feasibility`; `MASTER_PLAN.md` row 13,
+`DECISIONS.md` D11; corrected from "EVALUATED, NOT MERGED" in PR 18). See
+"Completed work (PR 13)" below for the full record.
 
-PR 14 — APScheduler/Tenacity feasibility — is **EVALUATED, NOT MERGED**
-(branch `migration/14-apscheduler-tenacity-feasibility`; `MASTER_PLAN.md`
-row 14, `DECISIONS.md` D12). See this file's "Current phase" note above and
-"Completed work (PR 14)" below for the full record; the next phase is now
-PR 15 (see above).
+PR 14 — APScheduler/Tenacity feasibility — is **evaluated and merged**
+(PR #32, `33dce8f`, branch `migration/14-apscheduler-tenacity-feasibility`;
+`MASTER_PLAN.md` row 14, `DECISIONS.md` D12; corrected from "EVALUATED,
+NOT MERGED" in PR 18). See "Completed work (PR 14)" below for the full
+record.
 
 PR 6 is **merged** (`bbd7a1f`, PR #18) and delivered everything ADR 0009
 Decision 4 requires:
@@ -2106,9 +2132,10 @@ service was called; no live data was fetched; the scheduler was not enabled.
 
 ## Next PR
 
-**PR 9 — strengthen the LumiBot runtime normalization contract. IMPLEMENTED,
-NOT MERGED** (see "Completed work (PR 9)" below and `DECISIONS.md` D8; this
-paragraph is left as the historical "next PR" note written when PR 8 closed).
+**PR 9 — strengthen the LumiBot runtime normalization contract. MERGED**
+(PR #22, `22f2cdc`; corrected in PR 18 from "IMPLEMENTED, NOT MERGED"; see
+"Completed work (PR 9)" below and `DECISIONS.md` D8; this paragraph is left
+as the historical "next PR" note written when PR 8 closed).
 `runtime/lumibot/adapter.py` and `paper_runtime/.../lumibot_gateway.py`:
 normalize orders, statuses, fills, positions and account snapshots
 (`MASTER_PLAN.md` row 9, `DECISIONS.md` D1). PR 10 then proves reconciliation
@@ -3631,3 +3658,62 @@ behavior was modified. No broker, provider, model, or market-data service
 was called; no credential was read; no order of any kind was submitted;
 the scheduler was not enabled. The only network access was package
 resolution from PyPI for the nox and scratch virtualenvs.
+
+## Completed work (PR 18)
+
+**Scope:** the final authority and safety audit (`MASTER_PLAN.md` row 18).
+Record at `pr18/AUDIT.md`; rulings at `DECISIONS.md` D16. All eleven
+`plan.md` completion criteria are checked there, each with evidence.
+
+**Files added**
+
+- `tests/unit/test_removed_implementation_reintroduction_guards.py` — 8 AST
+  guards for the PR 3 calendar and PR 15 formatter removals, checked by
+  mutation (D16 ruling 1).
+- `tests/unit/test_standing_paper_limits_policy.py` — 6 tests that pin
+  owner policy B (D16 ruling 4).
+- `docs/library-migration/pr18/AUDIT.md`.
+
+**Files changed**
+
+- `scripts/migration_helper.py`: `parse_status` reads only the header block
+  (D16 ruling 3a). A new test covers it in `tests/unit/test_migration_helper.py`.
+- `PRESERVATION_MANIFEST.md`: corrected the approval-phrase row and recorded
+  policy B on the hard-limits row.
+- `docs/runbooks/alpaca-paper-operations.md`: use an override file instead
+  of editing the tracked config; added the approval-phrase gate and the
+  standing limits.
+- `MASTER_PLAN.md` rows 9–18, this file's header and drifted merge-status
+  paragraphs, and `REMOVAL_MANIFEST.md` (PR 18 note).
+
+**Library authority established / custom authority removed:** none new.
+This audit confirms the existing authorities and adds guards around them.
+
+**Dependency changes:** none. **License review:** not applicable.
+
+**Validation**
+
+- Focused: the two new files, **14 passed**, both directly and via
+  `nox -s tests -- <files>`. `tests/unit/test_migration_helper.py`:
+  **84 passed**.
+- `python scripts/migration_helper.py status --offline` reports
+  `Active phase: PR 18` and `Next phase: none documented`.
+- `nox -s ci`: all five sessions passed.
+  - `tests`: **3412 passed, 107 skipped**.
+  - `paper_tests`: **160 passed**.
+  - `safety_typecheck`: **0 errors, 0 warnings**.
+  - `migration_smoke`: OK.
+
+  The first run failed one test,
+  `test_pr12_evaluation_docs.py::test_status_completed_work_review_test_provenance_survives_pr13_current_phase_rewrite`.
+  It anchors on a `**Next phase:` marker, and removing that line broke the
+  anchor. The fix restores the marker as `**Next phase: none.**`, which the
+  helper's `Next phase: PR <id>` pattern does not match.
+- `scripts/check_links.sh`: 188 links checked, 186 OK, **0 errors**, 2
+  excluded.
+
+**Safety:** no trading limit, limit value, authorization rule, `paper_books`
+accounting code, external-broker state machine, research boundary, or
+scheduling behavior was modified. Real model calls: 0. Real provider
+calls: 0. Broker calls: 0. Paper orders: 0. Live orders: 0. Scheduler
+enabled: no.

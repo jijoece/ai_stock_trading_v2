@@ -169,7 +169,8 @@ def parse_status(text: str) -> tuple[str | None, str | None]:
     are history. Whitespace is flattened first because those declarations wrap
     across lines.
     """
-    flat = re.sub(r"\s+", " ", text)
+    header = re.split(r"^## ", text, maxsplit=1, flags=re.MULTILINE)[0]
+    flat = re.sub(r"\s+", " ", header)
     current = _CURRENT_PHASE.search(flat)
     following = _NEXT_PHASE.search(flat)
     return (
