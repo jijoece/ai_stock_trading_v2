@@ -4,18 +4,18 @@
 
 - Repository: `/Users/jijopaul/workspace/ai_stock_trading_v2`
 - Branch: `migration/18-final-authority-safety-audit`
-- Reviewed HEAD: `90995596897cb2998cbdc56f8b5a2fe6ab0d83cf`
-- Subject: PR 18 fix round 10: record review findings resolution
-- Claude commits reviewed: df6bb571cbc018c7ad3e7861692ed83090981540,27b7fcd410bf28ae055a4b7f870214f879762084,04da132a2c83b29388d94352cb0b99af3c47fc94,2276e5dd17942e8e46de7d3dc18e75c0a64d55a4,06042259ef32255aed41a814f3143bc2a7e34f70,b2271381180ed6e5c2293eadc29aa1eef2a63421,a6f03dd1eaef69b9223e81ac9374880f69026c11,79248feb33d3888cc7f0acb482f6a5f5a70742b8,9c7b20a6e4292fa1c1181f2d8f0ea00750abc36d,9dedcc080094ea8a54a5cfad343ba2d4c1c23715,19bb0edcf1594bb3d5fb16fb423377f194f39370,398ea07388af285e420e620dffd65aec1eee4d2b,9bc6e58be5dc1932236971316835d63b980c3e22,f9ec68d52ca33780da5b45c10fef54bec0a7554e,3a66d10de308fac681222c6a0160886e14a70c28,c1de3ed68a68efa330dca7eb2b6183cc10adf89e,fadb58900a5d8a655fe017c8197f85b94afe8419,581229c01301f9f4a1ce7da77cddbe69e4a84249,1555bf6f391426a8f96cff8c28e4a0440dd213b0,90995596897cb2998cbdc56f8b5a2fe6ab0d83cf
+- Reviewed HEAD: `480097a198b5b5559b83061b0ba7a4d20cd45c98`
+- Subject: PR 18 fix round 11: record review findings resolution
+- Claude commits reviewed: df6bb571cbc018c7ad3e7861692ed83090981540,27b7fcd410bf28ae055a4b7f870214f879762084,04da132a2c83b29388d94352cb0b99af3c47fc94,2276e5dd17942e8e46de7d3dc18e75c0a64d55a4,06042259ef32255aed41a814f3143bc2a7e34f70,b2271381180ed6e5c2293eadc29aa1eef2a63421,a6f03dd1eaef69b9223e81ac9374880f69026c11,79248feb33d3888cc7f0acb482f6a5f5a70742b8,9c7b20a6e4292fa1c1181f2d8f0ea00750abc36d,9dedcc080094ea8a54a5cfad343ba2d4c1c23715,19bb0edcf1594bb3d5fb16fb423377f194f39370,398ea07388af285e420e620dffd65aec1eee4d2b,9bc6e58be5dc1932236971316835d63b980c3e22,f9ec68d52ca33780da5b45c10fef54bec0a7554e,3a66d10de308fac681222c6a0160886e14a70c28,c1de3ed68a68efa330dca7eb2b6183cc10adf89e,fadb58900a5d8a655fe017c8197f85b94afe8419,581229c01301f9f4a1ce7da77cddbe69e4a84249,1555bf6f391426a8f96cff8c28e4a0440dd213b0,90995596897cb2998cbdc56f8b5a2fe6ab0d83cf,f7b141c2d875e247454d3acdf7f923c95a37c44c,480097a198b5b5559b83061b0ba7a4d20cd45c98
 - Review scope: FULL_PR
 - Reviewed base: `bd95d2c7ba14a5333f1128ecf7b34a2059a95602`
 - GitHub PR: #36
-- Fix round: 2
+- Fix round: 3
 - Trigger: local Git `post-commit`
 - Review status: FIXES_APPLIED_PENDING_REVIEW
-- Highest priority: P1 (findings 1-4 re-raised from still-open GitHub threads and already fixed; findings 5-6 confirmed and fixed)
+- Highest priority: P1 (findings 1-4 already fixed in earlier rounds; finding 5 and the wrapped-dict finding (r4267084680) confirmed and fixed in round 12)
 - Finding count: 0
-- Fix commit: f7b141c2d875e247454d3acdf7f923c95a37c44c
+- Fix commit: 932395a
 
 ## Findings
 
@@ -43,7 +43,7 @@ Investigation and conditional remediation: Verify the comment against the curren
 
 Validation: Run the focused regression test and the repository's canonical validation; a subsequent full-PR review must find no remaining defect.
 
-Resolution: Already fixed in 2276e5d; no code change. `docs/runbooks/alpaca-paper-operations.md` requires fresh approval with the exact phrase directly before `external-paper-retry-submit`; the original approval does not carry over. `test_retry_requires_fresh_approval_rather_than_the_original_submit_approval` and `test_broker_transmitting_command_is_preceded_by_the_approval_gate` pass.
+Resolution: Already fixed in 2276e5d; no change. The runbook requires fresh approval for `external-paper-retry-submit`, and `tests/unit/test_alpaca_runbook_approval_gates.py` enforces it. The tests pass at HEAD.
 
 ### [P1] Investigate: Investigate bypassing `__structlog__` during redaction
 
@@ -67,7 +67,7 @@ Investigation and conditional remediation: Verify the comment against the curren
 
 Validation: Run the focused regression test and the repository's canonical validation; a subsequent full-PR review must find no remaining defect.
 
-Resolution: Already fixed in 79248fe and 9dedcc0; no code change. `_redact_value` evaluates the hook and recursively redacts its result before any `repr()` fallback. `test_json_output_redacts_structlog_hook_result_instead_of_leaking_its_repr` passes.
+Resolution: Already fixed in 79248fe and 9dedcc0; no change. `test_json_output_redacts_structlog_hook_result_instead_of_leaking_its_repr` passes at HEAD.
 
 ### [P2] Investigate: Investigate leaking data at the hook-depth fallback
 
@@ -91,7 +91,7 @@ Investigation and conditional remediation: Verify the comment against the curren
 
 Validation: Run the focused regression test and the repository's canonical validation; a subsequent full-PR review must find no remaining defect.
 
-Resolution: Already fixed in f9ec68d; no code change. Past `_MAX_STRUCTLOG_HOOK_DEPTH`, `_redact_value` returns a type-only placeholder, never the `repr()`. `test_structlog_hook_chain_past_depth_limit_does_not_leak_its_repr` passes.
+Resolution: Already fixed in f9ec68d; no change. `test_structlog_hook_chain_past_depth_limit_does_not_leak_its_repr` passes at HEAD.
 
 ### [P2] Investigate: Investigate unhashable hook results inside sets
 
@@ -117,25 +117,25 @@ Investigation and conditional remediation: Verify the comment against the curren
 
 Validation: Run the focused regression test and the repository's canonical validation; a subsequent full-PR review must find no remaining defect.
 
-Resolution: Already fixed in 581229c; no code change. `_redact_value` rebuilds every `set`/`frozenset` as a plain `tuple`, so unhashable hook results cannot raise. `test_set_of_structlog_hook_objects_with_unhashable_results_is_logged` passes.
+Resolution: Already fixed in 581229c (sets and frozensets are rebuilt as a plain `tuple`); no change. At 480097a, `_redact_value({X()})` with `X.__structlog__` returning `{"summary": "safe"}` returns `({'summary': 'safe'},)` and does not raise.
 
-### [P2] Investigate: Investigate approval before external cancellation
+### [P2] Investigate: Investigate alternate formatter installation paths
 
-Commit: `1555bf6f391426a8f96cff8c28e4a0440dd213b0`
+Commit: `90995596897cb2998cbdc56f8b5a2fe6ab0d83cf`
 
-Location: `/Users/jijopaul/workspace/ai_stock_trading_v2/docs/library-migration/PRESERVATION_MANIFEST.md:17`
+Location: `/Users/jijopaul/workspace/ai_stock_trading_v2/tests/unit/test_removed_implementation_reintroduction_guards.py:232`
 
 Concern: An active GitHub review thread raises the following potentially valid issue:
 
-> **<sub><sub>![P2 Badge](https://img.shields.io/badge/P2-yellow?style=flat)</sub></sub>  Investigate approval before external cancellation**
+> **<sub><sub>![P2 Badge](https://img.shields.io/badge/P2-yellow?style=flat)</sub></sub>  Investigate alternate formatter installation paths**
 > 
-> When an agent follows the newly authoritative runbook's “Explicit cancellation” procedure, investigate whether `external-paper-cancel` needs its own fresh operator approval: this revised manifest now scopes the conversation gate only to submit and retry, while `docs/runbooks/alpaca-paper-operations.md:140-149` supplies the cancellation command without an approval step and `cancel_external_paper_order()` calls `runtime.cancel_external_order()`. If cancellation was not separately requested, the agent can change broker order state despite the project's operator-approval invariant. Verify the intended authorization semantics; if confirmed, document the cancellation gate and add procedural regression coverage, otherwise record why invoking this command already demonstrates explicit approval.
+> When a module installs a formatter via `handler.formatter = logging.Formatter(...)` or `logging.basicConfig(format=...)`, investigate whether this guard still establishes D16’s single-formatter-authority invariant: it recognizes only `setFormatter` calls, while the subclass guard does not reject plain `Formatter` instances. I verified that a temporary script using direct `handler.formatter` assignment produces no authority or subclass offenders despite installing a second formatter; independently of the existing concern about `configure_logging` wiring, this leaves audit criterion 11 unenforced. If confirmed, detect the supported alternate installation mechanisms or narrow the documented invariant, and retain the mutation as regression coverage.
 > 
-> AGENTS.md reference: [AGENTS.md:L3-L4](https://github.com/jijoece/ai_stock_trading_v2/blob/1555bf6f391426a8f96cff8c28e4a0440dd213b0/AGENTS.md#L3-L4)
+> AGENTS.md reference: [AGENTS.md:L58-L69](https://github.com/jijoece/ai_stock_trading_v2/blob/90995596897cb2998cbdc56f8b5a2fe6ab0d83cf/AGENTS.md#L58-L69)
 > 
 > Useful? React with 👍 / 👎.
 
-Evidence: [chatgpt-codex-connector review thread](https://github.com/jijoece/ai_stock_trading_v2/pull/36#discussion_r4266942250) is current, unresolved, and not outdated.
+Evidence: [chatgpt-codex-connector review thread](https://github.com/jijoece/ai_stock_trading_v2/pull/36#discussion_r4267003364) is current, unresolved, and not outdated.
 
 Potential impact if confirmed: Merging would carry the reported defect into main.
 
@@ -143,31 +143,24 @@ Investigation and conditional remediation: Verify the comment against the curren
 
 Validation: Run the focused regression test and the repository's canonical validation; a subsequent full-PR review must find no remaining defect.
 
-Resolution: Confirmed and fixed in f7b141c. The runbook supplied `external-paper-cancel` with no approval step, and rollback said to "explicitly cancel". The runbook now requires the operator's own explicit request to cancel the named client order ID before the cancel command, forbids agent-initiated cancellation, and says a submit/retry approval does not cover it; rollback defers to that gate. Recorded as `DECISIONS.md` D16 Ruling 2b and in the manifest row. Regression: `test_cancellation_requires_an_explicit_operator_request`.
+Resolution: Confirmed and fixed (guard only; no `src/` or `scripts/` code uses these paths today). At 480097a, a scripts file with `h.formatter = logging.Formatter(...)` and `logging.basicConfig(format=...)` produced no offenders from `_formatter_authority_offenders()` or `_formatter_subclass_offenders()`. Outside `logging_config.py`, the authority guard now also reports `.formatter` attribute stores and calls to `basicConfig`, `dictConfig`, and `fileConfig`, whether reached through an attribute or imported directly. `basicConfig` always installs a formatter, even without `format=`. New test: `test_formatter_authority_guard_detects_alternate_installation_paths`. D16 Ruling 1's guard bullet now lists these mechanisms.
 
-### [P2] Investigate: Investigate whether ProcessorFormatter is actually installed
+### [P2] Preserve JSONRenderer's wrapped-dict handling (r4267084680)
 
-Commit: `1555bf6f391426a8f96cff8c28e4a0440dd213b0`
+Location: `src/trading_research/logging_config.py:165`
 
-Location: `/Users/jijopaul/workspace/ai_stock_trading_v2/tests/unit/test_removed_implementation_reintroduction_guards.py:243`
+Concern: `JSONRenderer` serializes a `structlog.threadlocal` wrapped dict as its underlying mapping, but `_redact_value` replaced it with its `repr()` first, so an `account` key escaped key-based redaction.
 
-Concern: An active GitHub review thread raises the following potentially valid issue:
+Evidence: [chatgpt-codex-connector review thread](https://github.com/jijoece/ai_stock_trading_v2/pull/36#discussion_r4267084680), raised on 480097a.
 
-> **<sub><sub>![P2 Badge](https://img.shields.io/badge/P2-yellow?style=flat)</sub></sub>  Investigate whether ProcessorFormatter is actually installed**
-> 
-> Investigate whether this guard establishes the claimed formatter authority: it proves only that some `ProcessorFormatter(...)` call exists in `configure_logging`, not that its result reaches `handler.setFormatter(...)`. A temporary mutation can assign `logging.Formatter()` to `formatter` while retaining an unused `structlog.stdlib.ProcessorFormatter(...)` call, and every new guard still passes because `LOGGING_PATH` is excluded from the `setFormatter` offender scan and no subclass is introduced. If confirmed, trace the value installed by `setFormatter` or add a behavioral assertion and retain that mutation as regression coverage; otherwise record the narrower guarantee.
-> 
-> AGENTS.md reference: [AGENTS.md:L68-L69](https://github.com/jijoece/ai_stock_trading_v2/blob/1555bf6f391426a8f96cff8c28e4a0440dd213b0/AGENTS.md#L68-L69)
-> 
-> Useful? React with 👍 / 👎.
+Resolution: Confirmed and fixed. At 480097a, the JSON output for `extra={"ctx": wrap_dict(dict)(account="123456789", note="ok")}` was `"ctx": "<WrappedDict-…({'account': '123456789', 'note': 'ok'})>"`. `_redact_value` now unwraps `_ThreadLocalDictWrapper` through `._dict`, as `JSONRenderer` does, and redacts the mapping by key. If the underlying dict cannot be read, it renders a type-only placeholder. The type is looked up only when `structlog.threadlocal` is already in `sys.modules`, so logging never imports that deprecated module or triggers its warning. Nothing in `src/` or `scripts/` uses `structlog.threadlocal` today. New test: `test_json_output_redacts_structlog_wrapped_dict_as_its_mapping` (top level and nested), which fails without the fix with `123456789` in the output. Recorded in D16 Ruling 5.
 
-Evidence: [chatgpt-codex-connector review thread](https://github.com/jijoece/ai_stock_trading_v2/pull/36#discussion_r4266942257) is current, unresolved, and not outdated.
+Tests or diagnostics run (round 12):
 
-Potential impact if confirmed: Merging would carry the reported defect into main.
-
-Investigation and conditional remediation: Verify the comment against the current code and reproduce the behavior where practical. If confirmed, fix it and add regression coverage. If it is invalid or already fixed, document the evidence and do not make an unnecessary code change.
-
-Validation: Run the focused regression test and the repository's canonical validation; a subsequent full-PR review must find no remaining defect.
-
-Resolution: Confirmed and fixed in f7b141c. The guard now traces each `setFormatter(...)` argument in `configure_logging` to a `ProcessorFormatter(...)` call (directly or via every binding of the name). Regression: `test_installed_formatter_guard_traces_the_set_formatter_argument` keeps the reviewer's mutation (`formatter = logging.Formatter()` before `setFormatter`) plus three others, and `test_configure_logging_installs_the_structlog_processor_formatter` asserts the installed formatter's type in both output modes.
+- `nox -R -s tests -- tests/unit/test_logging_config.py tests/unit/test_removed_implementation_reintroduction_guards.py tests/unit/test_pr18_audit_scope_docs.py tests/unit/test_alpaca_runbook_approval_gates.py -q`: 81 passed.
+- `ci` sessions run one at a time with `-R` (the existing venvs; `nox -s ci` stalled last round while reinstalling the `paper_tests` venv):
+  - `tests`: 3452 passed, 107 skipped.
+  - `paper_tests`: 160 passed.
+  - `safety_typecheck`: 0 errors, 0 warnings.
+  - `migration_smoke`: OK.
 
