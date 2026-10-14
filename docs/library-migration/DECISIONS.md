@@ -1802,7 +1802,10 @@ parses `src/trading_research/` and `scripts/` and proves:
 - `structlog` and handler formatter installation appear only in
   `logging_config.py`. Installation means `setFormatter`, assigning
   `.formatter`, or calling `basicConfig`, `dictConfig`, or `fileConfig`
-  (review round 12, r4267003364). The formatter `configure_logging`
+  (review round 12, r4267003364). Adding a handler at all (`addHandler`
+  or any `.handlers` access) is also confined there, because a handler
+  without a formatter renders through the stdlib default (review round
+  13, r4267218974). The formatter `configure_logging`
   installs is a `ProcessorFormatter`;
 - `redact` and `register_secret` each have exactly one definition.
 

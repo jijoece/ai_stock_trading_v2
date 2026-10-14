@@ -238,6 +238,13 @@ def _assigns_formatter_attribute(tree: ast.Module) -> bool:
     )
 
 
+def _touches_handler_list(tree: ast.Module) -> bool:
+    """Any `addHandler(...)` call or `.handlers` access. A handler added
+    without a formatter renders through the stdlib default formatter, which
+    is a second rendering path even though no formatter is named."""
+    return any(isinstance(node, ast.Attribute) and node.attr in ("addHandler", "handlers") for node in ast.walk(tree))
+
+
 def _formatter_authority_offenders() -> list[str]:
     tree_by_path = {path: _tree(path) for path in _python_sources() if path != LOGGING_PATH}
     offenders = []
@@ -247,6 +254,7 @@ def _formatter_authority_offenders() -> list[str]:
             ("structlog", _imports(tree, "structlog")),
             ("setFormatter", "setFormatter" in called),
             (".formatter assignment", _assigns_formatter_attribute(tree)),
+            ("handler installation", _touches_handler_list(tree)),
             *((name, name in called) for name in _FORMATTER_INSTALLING_CALLS),
         )
         offenders.extend(f"{path}: {kind}" for kind, hit in found if hit)
@@ -346,6 +354,22 @@ def test_formatter_authority_guard_detects_alternate_installation_paths(tmp_path
     for name, (source, kind) in cases.items():
         (tmp_path / name).write_text(source)
     expected = sorted(f"{tmp_path / name}: {kind}" for name, (_, kind) in cases.items())
+    assert sorted(_formatter_authority_offenders()) == expected
+
+
+def test_formatter_authority_guard_detects_implicit_default_formatter_handlers(tmp_path, monkeypatch):
+    """PR 18 review round 13 (P2, r4267218974): a handler added without a
+    formatter renders through the stdlib default formatter, a second
+    rendering path that the formatter-naming checks never saw."""
+    monkeypatch.setattr(sys.modules[__name__], "SCRIPTS_ROOT", tmp_path)
+    cases = {
+        "add.py": "import logging\nlogging.getLogger().addHandler(logging.StreamHandler())\n",
+        "append.py": "import logging\nlogging.getLogger().handlers.append(logging.StreamHandler())\n",
+        "assign.py": "import logging\nlogging.getLogger().handlers = [logging.StreamHandler()]\n",
+    }
+    for name, source in cases.items():
+        (tmp_path / name).write_text(source)
+    expected = sorted(f"{tmp_path / name}: handler installation" for name in cases)
     assert sorted(_formatter_authority_offenders()) == expected
 
 
