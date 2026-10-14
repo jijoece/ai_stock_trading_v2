@@ -87,3 +87,36 @@ def test_parser_threads_paper_books_config_to_refresh_cli(tmp_path, monkeypatch,
     capsys.readouterr()
     assert exit_code == 0
     assert calls[0]["config_path"] == str(override)
+
+
+# --- PR 18 review round 14 (findings 1 and 8) -------------------------------
+
+
+def test_unexpected_loader_failure_is_sanitized_for_refresh_and_runtime_commands(tmp_path, monkeypatch):
+    """The load used to sit outside the `try`, so an unexpected loader
+    exception propagated raw. It now goes through `_sanitized_cli_error`
+    on both the read-only and the runtime path."""
+    from trading_research.paper_books import cli_support
+
+    def _boom(config_path=None):
+        raise OSError("[Errno 13] Permission denied: '/secret/path/paper_books.yaml'")
+
+    monkeypatch.setattr(cli_support, "_load_config_or_error", _boom)
+    refresh = _refresh(tmp_path / "research.db", config_path=tmp_path / "x.yaml")
+    runtime = cli.external_paper_reconcile_cli(
+        tmp_path / "research.db", book_id="BASELINE", client_order_id=None, config_path=tmp_path / "x.yaml",
+    )
+    for outcome in (refresh, runtime):
+        assert outcome == {"error": {"code": "EXTERNAL_RUNTIME_ERROR", "message": "an unexpected internal error occurred"}}
+        assert "secret" not in str(outcome)
+
+
+def test_invalid_yaml_override_returns_the_domain_error_without_raising(tmp_path, recorded_configs):
+    """A `PaperBooksConfigError` is a curated domain error returned as text,
+    the same convention as `paper-book-list`; the refresh must not call the
+    broker module and must not raise."""
+    bad = tmp_path / "bad.yaml"
+    bad.write_text("paper_books: [unclosed")
+    outcome = _refresh(tmp_path / "research.db", config_path=bad)
+    assert isinstance(outcome["error"], str)
+    assert recorded_configs == []

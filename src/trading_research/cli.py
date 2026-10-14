@@ -303,10 +303,27 @@ def _sanitized_cli_error(exc: Exception) -> dict:
     return {"code": "EXTERNAL_RUNTIME_ERROR", "message": "an unexpected internal error occurred"}
 
 
-def _external_paper_cli(db_path: Path, operation, *, config_path: str | Path | None = None) -> dict:
+def _load_external_config(config_path: str | Path | None):
+    """Loads the paper-books config for an external-paper command through
+    the fail-closed `--paper-books-config` loader. Returns `(config, None)`
+    or `(None, error)`.
+
+    A `PaperBooksConfigError` is a curated domain error, and the loader
+    returns its text as a string exactly as `paper-book-list` and the other
+    paper-books commands do. Any other exception is an unexpected failure
+    and goes through `_sanitized_cli_error`, so no raw path or parser text
+    escapes (Part 17)."""
     from .paper_books.cli_support import _load_config_or_error
 
-    paper_books_config, error = _load_config_or_error(config_path)
+    try:
+        config, error = _load_config_or_error(config_path)
+    except Exception as exc:
+        return None, _sanitized_cli_error(exc)
+    return (None, error) if error else (config, None)
+
+
+def _external_paper_cli(db_path: Path, operation, *, config_path: str | Path | None = None) -> dict:
+    paper_books_config, error = _load_external_config(config_path)
     if error:
         return {"error": error}
 
@@ -420,12 +437,11 @@ def external_paper_refresh_retry_preview_cli(
     `_external_paper_cli` (which spawns the isolated runtime subprocess).
     Loads config through the same fail-closed `--paper-books-config` loader
     as the retry it prepares, so an override-only operator can refresh."""
-    from .paper_books.cli_support import _load_config_or_error
     from .paper_books.external_broker import refresh_retry_preview
 
-    paper_books_config, error = _load_config_or_error(config_path)
-    if error or paper_books_config is None:
-        return {"error": error or "paper_books config could not be loaded"}
+    paper_books_config, error = _load_external_config(config_path)
+    if error:
+        return {"error": error}
     try:
         with session(db_path) as conn:
             return refresh_retry_preview(

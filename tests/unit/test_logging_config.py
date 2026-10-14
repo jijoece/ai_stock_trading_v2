@@ -690,3 +690,83 @@ def test_plain_output_extra_cannot_override_canonical_fields():
     assert "trading_research.unit_test" in line
     assert "a forged message" not in line
     assert "not-the-real-logger" not in line
+
+
+# --- PR 18 review round 14 ---------------------------------------------------
+
+
+def test_self_referencing_containers_are_bounded_not_a_recursion_error():
+    """Review finding 2: only `__structlog__` hook recursion was bounded, so
+    `d["self"] = d` raised `RecursionError` inside the formatter and
+    `Handler.handleError` printed the unredacted record to stderr."""
+    cyclic: dict = {"note": "ok", "account_number": "123456789"}
+    cyclic["self"] = cyclic
+    looped: list = []
+    looped.append(looped)
+
+    class ReturnsCycle:
+        def __structlog__(self):
+            return cyclic
+
+    buffer = _configure_capturing(json_output=True)
+    log = logging_config.get_logger("unit_test")
+    log.info("event", extra={"a": cyclic, "b": looped, "c": ReturnsCycle()})
+    raw = buffer.getvalue()
+    assert raw, "log record must not be dropped"
+    assert "123456789" not in raw
+    payload = json.loads(raw.strip())
+    assert payload["a"]["self"] == "<circular or too deeply nested value: dict>"
+    assert payload["b"] == ["<circular or too deeply nested value: list>"]
+    assert payload["c"]["self"] == "<circular or too deeply nested value: dict>"
+
+
+def test_very_deep_but_acyclic_nesting_is_bounded():
+    deep: object = "leaf"
+    for _ in range(500):
+        deep = [deep]
+    buffer = _configure_capturing(json_output=True)
+    logging_config.get_logger("unit_test").info("event", extra={"deep": deep})
+    assert "too deeply nested" in buffer.getvalue()
+
+
+def test_class_object_extra_renders_as_its_repr_not_hook_failed():
+    """Review finding 3: `getattr(cls, "__structlog__")` is the unbound
+    function; calling it raised and logged a placeholder."""
+
+    class Hooked:
+        def __structlog__(self):
+            return {"x": 1}
+
+    buffer = _configure_capturing(json_output=True)
+    logging_config.get_logger("unit_test").info("event", extra={"model": Hooked})
+    payload = json.loads(buffer.getvalue().strip())
+    assert "hook failed" not in payload["model"]
+    assert "Hooked" in payload["model"]
+
+
+def test_set_extras_are_sorted_when_orderable():
+    """Review finding 4: set iteration order is arbitrary, so the JSON form
+    was nondeterministic."""
+    buffer = _configure_capturing(json_output=True)
+    logging_config.get_logger("unit_test").info("event", extra={"symbols": {"MSFT", "AAPL", "GOOG"}})
+    assert json.loads(buffer.getvalue().strip())["symbols"] == ["AAPL", "GOOG", "MSFT"]
+
+
+def test_plain_output_does_not_evaluate_extras():
+    """Review finding 6: plain-text mode discards extras, so it must not
+    call hooks or `repr()` on them."""
+    calls: list[str] = []
+
+    class Expensive:
+        def __repr__(self):
+            calls.append("repr")
+            return "Expensive()"
+
+        def __structlog__(self):
+            calls.append("hook")
+            return {}
+
+    buffer = _configure_capturing(json_output=False)
+    logging_config.get_logger("unit_test").info("event", extra={"frame": Expensive()})
+    assert buffer.getvalue()
+    assert calls == []

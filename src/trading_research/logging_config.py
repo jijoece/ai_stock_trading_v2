@@ -88,11 +88,24 @@ def _is_sensitive_key(key: object) -> bool:
 # before replacing the value with a type-only cutoff placeholder.
 _MAX_STRUCTLOG_HOOK_DEPTH = 8
 
+# How many containers deep `_redact_value` descends before replacing the
+# value with a type-only placeholder. A container already being redacted
+# further up (a cycle) is replaced the same way.
+_MAX_REDACT_NESTING = 64
+
 # Sentinel distinguishing "no usable hook" from a hook that returned `None`.
 _NO_HOOK_RESULT = object()
 
 
-def _redact_value(value: Any, _hook_depth: int = 0) -> Any:
+def _is_cycle_or_too_deep(value: Any, ancestors: frozenset[int]) -> bool:
+    return id(value) in ancestors or len(ancestors) >= _MAX_REDACT_NESTING
+
+
+def _nesting_placeholder(value: Any) -> str:
+    return f"<circular or too deeply nested value: {type(value).__qualname__}>"
+
+
+def _redact_value(value: Any, _hook_depth: int = 0, _ancestors: frozenset[int] = frozenset()) -> Any:
     """Redacts strings and recurses into mappings/sequences/sets, so a
     secret or sensitive field nested inside an `extra` value is redacted on
     the raw Python object -- before `JSONRenderer` escapes it -- rather than
@@ -141,7 +154,16 @@ def _redact_value(value: Any, _hook_depth: int = 0) -> Any:
     non-container object reached past that depth is replaced by a fixed
     placeholder naming only its type -- never its `repr()`, which could
     carry an unregistered sensitive value (e.g. an account number) that
-    its unevaluated hook would have exposed only under a redactable key."""
+    its unevaluated hook would have exposed only under a redactable key.
+
+    A container (or threadlocal wrapped dict) that contains itself, directly
+    or through a hook result, and any nesting deeper than
+    `_MAX_REDACT_NESTING`, is replaced by a placeholder naming only its
+    type: unbounded recursion would raise `RecursionError` inside the
+    formatter, and `logging.Handler.handleError` would then print the
+    record's unredacted `msg`/`args` to stderr. A `set`/`frozenset` is
+    emitted as a sorted list when its redacted members are orderable, so
+    its JSON form is deterministic."""
     if value is None or isinstance(value, (bool, int, float)):
         return value
     if isinstance(value, str):
@@ -149,31 +171,44 @@ def _redact_value(value: Any, _hook_depth: int = 0) -> Any:
     if isinstance(value, (bytes, bytearray)):
         return redact(str(value))
     if isinstance(value, Mapping):
+        if _is_cycle_or_too_deep(value, _ancestors):
+            return _nesting_placeholder(value)
+        inner = _ancestors | {id(value)}
         return {
-            key: "[REDACTED]" if _is_sensitive_key(key) else _redact_value(item, _hook_depth)
+            key: "[REDACTED]" if _is_sensitive_key(key) else _redact_value(item, _hook_depth, inner)
             for key, item in value.items()
         }
     if isinstance(value, (list, tuple, set, frozenset)):
-        redacted_items = (_redact_value(item, _hook_depth) for item in value)
+        if _is_cycle_or_too_deep(value, _ancestors):
+            return _nesting_placeholder(value)
+        inner = _ancestors | {id(value)}
+        redacted_items = [_redact_value(item, _hook_depth, inner) for item in value]
         if type(value) in (list, tuple):
             return type(value)(redacted_items)
-        return tuple(redacted_items)
+        try:
+            return sorted(redacted_items)
+        except TypeError:
+            return tuple(redacted_items)
     wrapped_dict_type = getattr(sys.modules.get("structlog.threadlocal"), "_ThreadLocalDictWrapper", None)
     if wrapped_dict_type is not None and isinstance(value, wrapped_dict_type):
+        if _is_cycle_or_too_deep(value, _ancestors):
+            return _nesting_placeholder(value)
         try:
             unwrapped = value._dict
         except Exception:
             return f"<unreadable wrapped dict: {type(value).__qualname__}>"
-        return _redact_value(unwrapped, _hook_depth)
+        return _redact_value(unwrapped, _hook_depth, _ancestors | {id(value)})
     if _hook_depth >= _MAX_STRUCTLOG_HOOK_DEPTH:
         return f"<structlog hook depth exceeded: {type(value).__qualname__}>"
     try:
-        hook = getattr(value, "__structlog__", None)
+        # A class object has no instance hook: `getattr` would return the
+        # unbound function, which structlog's own fallback never calls.
+        hook = None if isinstance(value, type) else getattr(value, "__structlog__", None)
         structured = hook() if callable(hook) else _NO_HOOK_RESULT
     except Exception:
         return f"<structlog hook failed: {type(value).__qualname__}>"
     if structured is not _NO_HOOK_RESULT:
-        return _redact_value(structured, _hook_depth + 1)
+        return _redact_value(structured, _hook_depth + 1, _ancestors)
     try:
         representation = repr(value)
     except Exception:
@@ -191,6 +226,20 @@ def _redact_event_dict(logger: Any, method_name: str, event_dict: MutableMapping
         if key in _PROCESSOR_META_KEYS:
             continue
         event_dict[key] = "[REDACTED]" if _is_sensitive_key(key) else _redact_value(value)
+    return event_dict
+
+
+def _redact_event_strings(logger: Any, method_name: str, event_dict: MutableMapping[str, Any]) -> MutableMapping[str, Any]:
+    """Plain-text counterpart of `_redact_event_dict`. `_render_plain`
+    discards every extra and redacts its own output, so object, hook and
+    `repr()` handling would only add cost (a large frame's repr, a hook's
+    side effects) for values that are never rendered. Strings are still
+    redacted so the rendered fields stay protected before that final pass."""
+    for key, value in event_dict.items():
+        if key in _PROCESSOR_META_KEYS:
+            continue
+        if isinstance(value, str):
+            event_dict[key] = "[REDACTED]" if _is_sensitive_key(key) else redact(value)
     return event_dict
 
 
@@ -290,11 +339,17 @@ _FOREIGN_PRE_CHAIN = [
 ]
 
 
+def _foreign_pre_chain(json_output: bool) -> list:
+    """Plain-text output redacts extras by string only (finding 6)."""
+    redactor = _redact_event_dict if json_output else _redact_event_strings
+    return [redactor if step is _redact_event_dict else step for step in _FOREIGN_PRE_CHAIN]
+
+
 def configure_logging(level: str = "INFO", json_output: bool = False) -> None:
     renderer = _render_json if json_output else _render_plain
     processors = [structlog.stdlib.ProcessorFormatter.remove_processors_meta, renderer]
     formatter = structlog.stdlib.ProcessorFormatter(
-        foreign_pre_chain=_FOREIGN_PRE_CHAIN,
+        foreign_pre_chain=_foreign_pre_chain(json_output),
         processors=processors,
     )
     root = logging.getLogger("trading_research")

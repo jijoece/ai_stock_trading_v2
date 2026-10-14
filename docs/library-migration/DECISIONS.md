@@ -1806,7 +1806,9 @@ parses `src/trading_research/` and `scripts/` and proves:
   or any `.handlers` access) is also confined there, because a handler
   without a formatter renders through the stdlib default (review round
   13, r4267218974). The formatter `configure_logging`
-  installs is a `ProcessorFormatter`;
+  installs is a `ProcessorFormatter`. Literal-name `importlib.import_module`
+  and `__import__` calls count as imports, and a `Handler` subclass that
+  defines `format` is reported (review round 14);
 - `redact` and `register_secret` each have exactly one definition.
 
 A temporary reintroduction of `_easter_sunday`, `MARKET_CLOSE_TIME`, and
@@ -1870,7 +1872,9 @@ recap line (`Next phase: PR 17`). Once PR 18 merged, the helper would have
 named PR 17 as the successor instead of reporting the final phase. The
 parser now stops at the first `## ` heading, which makes the code match its
 docstring. `test_history_sections_are_not_read_as_phase_declarations`
-pins this. No other helper behavior changes.
+pins this. Review round 14 narrowed it further: only a declaration that
+starts a line counts, and two different declarations of one kind raise
+`HelperError`. No other helper behavior changes.
 
 **Ruling 4: owner policy B — the $50/$150/10% limits stay configurable.**
 The owner chose between (A) hard-coded ceilings that no config can raise
@@ -1967,6 +1971,24 @@ logging never triggers its import warning.
 `test_json_output_redacts_structlog_wrapped_dict_as_its_mapping` fails
 without the fix.
 
+Review round 14 tightened the same function:
+
+- A container that contains itself, directly or through a hook result, and
+  any nesting deeper than 64 levels, renders as a type-only placeholder.
+  Unbounded recursion raised `RecursionError` inside the formatter, and
+  `Handler.handleError` then printed the unredacted record to stderr.
+- A class object skips the instance hook, as structlog's own fallback
+  does, and renders as its `repr()` rather than as "hook failed".
+- A `set`/`frozenset` is emitted as a sorted list when its redacted members
+  are orderable, and in iteration order otherwise. Before this PR a set
+  reached the renderer as a repr string, so its JSON form is a deliberate
+  change, accepted here.
+- Plain-text output redacts string extras only. `_render_plain` discards
+  every extra, so hooks and `repr()` are no longer evaluated there.
+- Not changed: moving all object handling into a `JSONRenderer(default=...)`
+  wrapper. It would replace behavior that thirteen review rounds pinned,
+  for a maintainability gain, so it is deferred as a separate refactor.
+
 **Ruling 6: `external-paper-refresh-retry-preview` honors
 `--paper-books-config`.** Review round 3 (r4255587023) found that the
 refresh command's parser had no override flag, and its handler always
@@ -1980,6 +2002,11 @@ same fail-closed `_load_config_or_error` as the other external commands:
 - a missing or invalid override returns an error;
 - it never falls back to the tracked default;
 - it never calls the refresh.
+
+The load goes through `_load_external_config`, shared with the runtime
+commands. A `PaperBooksConfigError` is a curated domain error returned as
+text, as `paper-book-list` does. Any other loader exception goes through
+`_sanitized_cli_error` (review round 14).
 
 The refresh is still read-only, makes no broker call, and does not consume
 the `NOT_FOUND` lookup. The runbook documents the step before the retry,

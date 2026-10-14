@@ -26,6 +26,7 @@ Runs unconditionally: pure `ast` source parsing, no library import.
 from __future__ import annotations
 
 import ast
+import functools
 import pathlib
 import sys
 
@@ -55,8 +56,15 @@ def _python_sources() -> list[pathlib.Path]:
     return sorted([*SRC_ROOT.rglob("*.py"), *SCRIPTS_ROOT.rglob("*.py")])
 
 
+@functools.lru_cache(maxsize=None)
+def _parse(source: str, filename: str) -> ast.Module:
+    return ast.parse(source, filename=filename)
+
+
 def _tree(path: pathlib.Path) -> ast.Module:
-    return ast.parse(path.read_text(), filename=str(path))
+    """Parsing is the cost, so it is cached by file content: several guards
+    walk every source file, and some tests rewrite the same path."""
+    return _parse(path.read_text(), str(path))
 
 
 def _imported_modules(tree: ast.Module) -> set[str]:
@@ -67,6 +75,11 @@ def _imported_modules(tree: ast.Module) -> set[str]:
         elif isinstance(node, ast.ImportFrom) and node.module and not node.level:
             names.add(node.module)
             names.update(f"{node.module}.{alias.name}" for alias in node.names)
+        elif isinstance(node, ast.Call) and _base_name(node.func) in ("import_module", "__import__"):
+            # `importlib.import_module("structlog")` / `__import__("holidays")`
+            # with a literal name is the same import by another spelling.
+            if node.args and isinstance(node.args[0], ast.Constant) and isinstance(node.args[0].value, str):
+                names.add(node.args[0].value)
     return names
 
 
@@ -193,7 +206,20 @@ def _formatter_subclass_offenders() -> list[str]:
             if isinstance(node, ast.ClassDef)
             and any(_is_formatter_name(_base_name(base), aliases) for base in node.bases)
         )
+    offenders.extend(_handler_format_override_offenders())
     return offenders
+
+
+def _handler_format_override_offenders() -> list[str]:
+    """A `Handler` subclass that defines `format` renders records itself,
+    which is a second rendering path even with no `Formatter` subclass."""
+    return [
+        f"{path}: {node.name}.format" for path in _python_sources()
+        for node in ast.walk(_tree(path))
+        if isinstance(node, ast.ClassDef)
+        and any(_base_name(base).endswith("Handler") for base in node.bases)
+        and any(isinstance(item, ast.FunctionDef) and item.name == "format" for item in node.body)
+    ]
 
 
 def test_no_custom_logging_formatter_subclass_exists():
@@ -371,6 +397,28 @@ def test_formatter_authority_guard_detects_implicit_default_formatter_handlers(t
         (tmp_path / name).write_text(source)
     expected = sorted(f"{tmp_path / name}: handler installation" for name in cases)
     assert sorted(_formatter_authority_offenders()) == expected
+
+
+def test_guards_see_dynamic_imports_and_handler_format_overrides(tmp_path, monkeypatch):
+    """Review finding 10: the guards saw only static `import` statements and
+    classes with Formatter-named bases."""
+    monkeypatch.setattr(sys.modules[__name__], "SCRIPTS_ROOT", tmp_path)
+    script = tmp_path / "sneaky.py"
+    script.write_text(
+        "import importlib, logging\n"
+        "importlib.import_module('structlog')\n"
+        "__import__('holidays')\n"
+        "importlib.import_module('exchange_calendars')\n"
+        "class H(logging.StreamHandler):\n"
+        "    def format(self, record):\n"
+        "        return 'x'\n"
+    )
+    tree = _tree(script)
+    assert _imports(tree, "structlog")
+    assert _imports(tree, "holidays")
+    assert _imports(tree, "exchange_calendars")
+    assert _formatter_subclass_offenders() == [f"{script}: H.format"]
+    assert f"{script}: structlog" in _formatter_authority_offenders()
 
 
 def test_redaction_functions_have_exactly_one_definition():

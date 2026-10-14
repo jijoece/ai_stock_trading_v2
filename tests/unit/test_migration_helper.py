@@ -101,6 +101,23 @@ def test_history_sections_are_not_read_as_phase_declarations() -> None:
     assert helper.parse_status(status) == ("18", None)
 
 
+def test_recap_inside_header_prose_is_not_read_as_a_declaration() -> None:
+    # Review finding 5: a header recap of an older declaration, mid-line,
+    # must not outrank the real bold declaration.
+    status = (
+        "# Migration Status\n\n**Current phase: PR 18 — final audit**\n\n"
+        "History: the helper once read `Next phase: PR 18` from here.\n\n"
+        "**Next phase: none.**\n"
+    )
+    assert helper.parse_status(status) == ("18", None)
+
+
+def test_conflicting_declarations_in_the_header_fail_loudly() -> None:
+    status = "**Current phase: PR 17**\n\n**Current phase: PR 18**\n"
+    with pytest.raises(helper.HelperError, match="conflicting"):
+        helper.parse_status(status)
+
+
 def test_master_plan_rows_are_looked_up_by_phase_id_in_document_order() -> None:
     rows = helper.parse_master_plan(MASTER_PLAN)
     assert [row.phase_id for row in rows] == ["8", "8a", "9", "10"]
