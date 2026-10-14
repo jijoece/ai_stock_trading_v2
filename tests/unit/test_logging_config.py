@@ -13,6 +13,7 @@ from __future__ import annotations
 import io
 import json
 import logging
+import warnings
 
 import pytest
 import structlog
@@ -424,6 +425,26 @@ def test_raising_structlog_hook_does_not_leak_its_repr():
     assert payload["nested"] == [placeholder]
     assert "123456789" not in raw
     assert "hook failure text" not in raw
+
+
+def test_json_output_redacts_structlog_wrapped_dict_as_its_mapping():
+    """PR 18 review round 12 (P2, r4267084680): `JSONRenderer` serializes a
+    `structlog.threadlocal` wrapped dict as its underlying mapping, but
+    `_redact_value` replaced it with its `repr()` first, so an `account`
+    key escaped key-based redaction and the account number was logged."""
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", DeprecationWarning)
+        from structlog.threadlocal import wrap_dict
+
+    wrapped = wrap_dict(dict)(account="123456789", note="ok")
+    buffer = _configure_capturing(json_output=True)
+    log = logging_config.get_logger("unit_test")
+    log.info("event", extra={"context": wrapped, "nested": [wrapped]})
+    raw = buffer.getvalue()
+    payload = json.loads(raw.strip())
+    assert "123456789" not in raw
+    assert payload["context"] == {"account": "[REDACTED]", "note": "ok"}
+    assert payload["nested"] == [{"account": "[REDACTED]", "note": "ok"}]
 
 
 def test_self_returning_structlog_hook_is_bounded():

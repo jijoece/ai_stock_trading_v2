@@ -110,7 +110,13 @@ def _redact_value(value: Any, _hook_depth: int = 0) -> Any:
     redacted form (e.g. a `__structlog__` hook's mapping) is unhashable --
     silently dropping the log record entirely, which is worse than losing
     the container's identity in a JSON/text log line that would discard it
-    anyway. Any other object that
+    anyway. A `structlog.threadlocal` wrapped dict, which `JSONRenderer`
+    serializes as its underlying mapping, is redacted as that mapping;
+    otherwise its `repr()` would hide a sensitive key such as `account`
+    from key-based redaction. Its type is looked up only if that deprecated
+    module is already imported, so this never triggers its import warning,
+    and a mapping that cannot be read renders a type-only placeholder.
+    Any other object that
     is not a JSON scalar (`int`/`float`/`bool`/`None`) is replaced by its
     redacted `repr()` -- the same text `JSONRenderer`'s non-serializable-value
     fallback would render -- so a registered secret inside an arbitrary
@@ -152,6 +158,13 @@ def _redact_value(value: Any, _hook_depth: int = 0) -> Any:
         if type(value) in (list, tuple):
             return type(value)(redacted_items)
         return tuple(redacted_items)
+    wrapped_dict_type = getattr(sys.modules.get("structlog.threadlocal"), "_ThreadLocalDictWrapper", None)
+    if wrapped_dict_type is not None and isinstance(value, wrapped_dict_type):
+        try:
+            unwrapped = value._dict
+        except Exception:
+            return f"<unreadable wrapped dict: {type(value).__qualname__}>"
+        return _redact_value(unwrapped, _hook_depth)
     if _hook_depth >= _MAX_STRUCTLOG_HOOK_DEPTH:
         return f"<structlog hook depth exceeded: {type(value).__qualname__}>"
     try:

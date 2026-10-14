@@ -225,13 +225,32 @@ def test_formatter_subclass_guard_resolves_aliases(tmp_path, monkeypatch):
     ]
 
 
+# Stdlib entry points that install a handler formatter without
+# `setFormatter`: `basicConfig` always does (the default format included),
+# and `dictConfig`/`fileConfig` can declare formatters.
+_FORMATTER_INSTALLING_CALLS = ("basicConfig", "dictConfig", "fileConfig")
+
+
+def _assigns_formatter_attribute(tree: ast.Module) -> bool:
+    return any(
+        isinstance(node, ast.Attribute) and node.attr == "formatter" and isinstance(node.ctx, ast.Store)
+        for node in ast.walk(tree)
+    )
+
+
 def _formatter_authority_offenders() -> list[str]:
     tree_by_path = {path: _tree(path) for path in _python_sources() if path != LOGGING_PATH}
-    return [
-        f"{path}: {kind}" for path, tree in tree_by_path.items()
-        for kind, found in (("structlog", _imports(tree, "structlog")), ("setFormatter", "setFormatter" in _attribute_calls(tree)))
-        if found
-    ]
+    offenders = []
+    for path, tree in tree_by_path.items():
+        called = _attribute_calls(tree) | _called_names(tree)
+        found = (
+            ("structlog", _imports(tree, "structlog")),
+            ("setFormatter", "setFormatter" in called),
+            (".formatter assignment", _assigns_formatter_attribute(tree)),
+            *((name, name in called) for name in _FORMATTER_INSTALLING_CALLS),
+        )
+        offenders.extend(f"{path}: {kind}" for kind, hit in found if hit)
+    return offenders
 
 
 def _is_processor_formatter_call(node: ast.AST | None) -> bool:
@@ -309,6 +328,25 @@ def test_formatter_authority_guard_scans_scripts(tmp_path, monkeypatch):
     script.write_text("import logging\nimport structlog\nlogging.StreamHandler().setFormatter(None)\n")
     monkeypatch.setattr(sys.modules[__name__], "SCRIPTS_ROOT", tmp_path)
     assert _formatter_authority_offenders() == [f"{script}: structlog", f"{script}: setFormatter"]
+
+
+def test_formatter_authority_guard_detects_alternate_installation_paths(tmp_path, monkeypatch):
+    """PR 18 review round 12 (P2, r4267003364): the guard recognized only
+    `setFormatter`, so assigning `handler.formatter` directly or calling
+    `logging.basicConfig` (or `dictConfig`/`fileConfig`) installed a second
+    formatter that no guard reported."""
+    monkeypatch.setattr(sys.modules[__name__], "SCRIPTS_ROOT", tmp_path)
+    cases = {
+        "attribute.py": ("import logging\nlogging.StreamHandler().formatter = logging.Formatter()\n", ".formatter assignment"),
+        "basic.py": ("import logging\nlogging.basicConfig(format='%(message)s')\n", "basicConfig"),
+        "imported.py": ("from logging import basicConfig\nbasicConfig()\n", "basicConfig"),
+        "dict.py": ("import logging.config\nlogging.config.dictConfig({})\n", "dictConfig"),
+        "file.py": ("from logging.config import fileConfig\nfileConfig('x.ini')\n", "fileConfig"),
+    }
+    for name, (source, kind) in cases.items():
+        (tmp_path / name).write_text(source)
+    expected = sorted(f"{tmp_path / name}: {kind}" for name, (_, kind) in cases.items())
+    assert sorted(_formatter_authority_offenders()) == expected
 
 
 def test_redaction_functions_have_exactly_one_definition():

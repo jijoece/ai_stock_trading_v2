@@ -1799,8 +1799,11 @@ parses `src/trading_research/` and `scripts/` and proves:
 - every XNYS-dependent function still calls `_calendar()`;
 - neither removed formatter class and no `logging.Formatter` subclass
   exists;
-- `structlog` and `setFormatter` appear only in `logging_config.py`, and
-  `configure_logging` builds a `ProcessorFormatter`;
+- `structlog` and handler formatter installation appear only in
+  `logging_config.py`. Installation means `setFormatter`, assigning
+  `.formatter`, or calling `basicConfig`, `dictConfig`, or `fileConfig`
+  (review round 12, r4267003364). The formatter `configure_logging`
+  installs is a `ProcessorFormatter`;
 - `redact` and `register_secret` each have exactly one definition.
 
 A temporary reintroduction of `_easter_sunday`, `MARKET_CLOSE_TIME`, and
@@ -1951,6 +1954,15 @@ Regression tests in `test_logging_config.py` cover the redacted hook
 result, property and instance hooks, the hook-failure placeholder, the
 self-returning hook, and a chain past the depth limit. Each leak test
 fails without its fix.
+
+`JSONRenderer` also serializes a `structlog.threadlocal` wrapped dict as
+its underlying mapping. `_redact_value` now does the same, redacting that
+mapping by key, instead of replacing it with a `repr()` that hid an
+`account` key from key-based redaction (review round 12, r4267084680). The
+type is checked only when that deprecated module is already imported, so
+logging never triggers its import warning.
+`test_json_output_redacts_structlog_wrapped_dict_as_its_mapping` fails
+without the fix.
 
 **Ruling 6: `external-paper-refresh-retry-preview` honors
 `--paper-books-config`.** Review round 3 (r4255587023) found that the
