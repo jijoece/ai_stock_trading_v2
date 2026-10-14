@@ -77,3 +77,18 @@ def test_d16_records_the_logging_redaction_ruling():
     assert "**Ruling 5: redact arbitrary log `extra` objects before serialization.**" in d16
     assert "`__structlog__`" in d16[d16.index("**Ruling 5:") : d16.index("**Ruling 6:")]
     assert "**Ruling 6: `external-paper-refresh-retry-preview` honors" in d16
+
+
+def test_d16_ruling_5_matches_the_implemented_hook_contract():
+    """PR 18 review round 7 (P2, r4264321335): Ruling 5 still said the hook
+    is looked up on the type and that a raising hook falls back to the
+    `repr()`, contradicting the instance-resolved hook and the type-only
+    placeholders. A maintainer following it could reintroduce both leaks."""
+    text = DECISIONS_PATH.read_text()
+    d16 = text[text.index("## D16 — ") :]
+    ruling = " ".join(d16[d16.index("**Ruling 5:") : d16.index("**Ruling 6:")].split())
+    assert "looked up on the type" not in ruling
+    assert "falls back to the guarded redacted `repr()`" not in ruling
+    assert "resolved on the value itself" in ruling
+    assert "`<structlog hook failed: TypeName>`" in ruling
+    assert "`<structlog hook depth exceeded: TypeName>`" in ruling

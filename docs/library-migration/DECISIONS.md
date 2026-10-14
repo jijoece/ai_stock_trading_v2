@@ -1911,15 +1911,29 @@ serialized the hook's structured result, and its sensitive keys were
 redacted. After the first fix, the same object rendered as its `repr()`.
 A hook returning `{"api_key": "abcd1234efgh"}` whose `repr()` was
 `Structured(api_key='abcd1234efgh')` leaked the key in JSON output (a probe
-showed this). An object whose type defines a callable `__structlog__` is
-now replaced by the hook's result, which is redacted recursively by key
-and by registered secret, before the `repr()` fallback is considered. A
-hook that raises falls back to the guarded redacted `repr()`. Nested hook
-results are followed at most 8 levels deep, so a hook that returns itself
-cannot recurse without bound. The hook is looked up on the type, not the
-instance, so an object with a catch-all `__getattr__` is not mistaken for
-one. Three regression tests in `test_logging_config.py` cover this. The
-leak test fails without the fix.
+showed this). An object exposing a callable `__structlog__` is now
+replaced by the hook's result, which is redacted recursively by key and by
+registered secret, before the `repr()` fallback is considered.
+
+The hook is resolved on the value itself, as structlog's renderer does,
+so a property-backed or instance-assigned hook counts as well as a plain
+method (review round 4, r4261095847). Two cases render a fixed
+placeholder that names only the object's type, never its `repr()`, because
+that `repr()` could carry an unregistered sensitive value, such as an
+account number, that the hook would have exposed only under a redactable
+key:
+
+- a hook whose lookup or call raises renders
+  `<structlog hook failed: TypeName>`, and the record is still emitted
+  without the exception text (review round 7, r4264443234);
+- hook results nested more than 8 levels deep render
+  `<structlog hook depth exceeded: TypeName>`, so a hook that returns
+  itself cannot recurse without bound (review round 6, r4264214827).
+
+Regression tests in `test_logging_config.py` cover the redacted hook
+result, property and instance hooks, the hook-failure placeholder, the
+self-returning hook, and a chain past the depth limit. Each leak test
+fails without its fix.
 
 **Ruling 6: `external-paper-refresh-retry-preview` honors
 `--paper-books-config`.** Review round 3 (r4255587023) found that the

@@ -86,8 +86,10 @@ numbered sequence and is not a precondition for this audit.
 7. **The `repr()` fallback bypassed structlog's `__structlog__` hook (found
    in review round 3).** A hook's structured result, whose sensitive keys
    `bd95d2c` redacted, was rendered as its `repr()` instead, and a secret in
-   that `repr()` leaked. The hook's result is now redacted recursively,
-   with a guarded fallback and a bounded depth (D16 ruling 5).
+   that `repr()` leaked. The hook's result is now redacted recursively.
+   The hook is resolved on the value, and a failing hook or nesting past
+   the depth limit renders a type-only placeholder, never the `repr()`
+   (D16 ruling 5).
 8. **The retry-preview refresh ignored the override file (found in review
    round 3).** `external-paper-refresh-retry-preview` always loaded the
    tracked, submission-disabled config, so the override-only procedure

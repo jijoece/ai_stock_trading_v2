@@ -3692,8 +3692,10 @@ Record at `pr18/AUDIT.md`; rulings at `DECISIONS.md` D16. All eleven
   - `_redact_value()` redacts any non-scalar object's `repr()`, with a
     type-only placeholder when `repr()` raises.
   - From review round 3, a `__structlog__` hook's structured result is
-    redacted recursively instead of being replaced by its `repr()`. A hook
-    that raises falls back to the `repr()` path, and nesting is bounded.
+    redacted recursively instead of being replaced by its `repr()`. The
+    hook is resolved on the value, so property and instance hooks count.
+    A hook that raises, or nesting past the depth limit, renders a
+    type-only placeholder rather than the `repr()`.
 
   Covered by six new tests in `tests/unit/test_logging_config.py`.
 - `src/trading_research/cli.py` (found in review round 3):

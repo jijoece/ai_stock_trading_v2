@@ -347,7 +347,7 @@ def test_json_output_honors_property_and_instance_structlog_hooks():
     or instance-assigned hook -- both of which structlog itself resolves
     via `value.__structlog__()` -- was ignored and the repr, account number
     included, was rendered instead of the hook's safe mapping. A property
-    whose getter raises must still fall back to the redacted repr."""
+    whose getter raises renders the type-only hook-failure placeholder."""
 
     class PropertyHook:
         @property
@@ -384,25 +384,35 @@ def test_json_output_honors_property_and_instance_structlog_hooks():
     assert "lookup failure text" not in raw
     assert payload["prop"] == {"summary": "safe"}
     assert payload["inst"] == {"summary": "safe", "account": "[REDACTED]"}
-    assert payload["broken"] == "RaisingPropertyHook()"
+    assert payload["broken"] == (
+        "<structlog hook failed: "
+        "test_json_output_honors_property_and_instance_structlog_hooks.<locals>.RaisingPropertyHook>"
+    )
 
 
-def test_raising_structlog_hook_falls_back_to_redacted_repr():
-    class BrokenHook:
+def test_raising_structlog_hook_does_not_leak_its_repr():
+    """PR 18 review round 7 (P2, r4264443234): a hook whose call raised
+    fell back to the object's `repr()`, so an unregistered account number
+    in that repr reached the log, where the parent renderer emitted no
+    record at all. The record must survive with a type-only placeholder."""
+
+    class Broken:
         def __structlog__(self):
             raise RuntimeError("hook failure text")
 
         def __repr__(self) -> str:
-            return "BrokenHook(registered-hook-secret)"
+            return "Broken(123456789)"
 
-    logging_config.register_secret("registered-hook-secret")
     buffer = _configure_capturing(json_output=True)
     log = logging_config.get_logger("unit_test")
-    log.info("must survive", extra={"details": BrokenHook()})
+    log.info("must survive", extra={"details": Broken(), "nested": [Broken()]})
     raw = buffer.getvalue()
     payload = json.loads(raw.strip())
+    placeholder = "<structlog hook failed: test_raising_structlog_hook_does_not_leak_its_repr.<locals>.Broken>"
     assert payload["message"] == "must survive"
-    assert payload["details"] == "BrokenHook([REDACTED])"
+    assert payload["details"] == placeholder
+    assert payload["nested"] == [placeholder]
+    assert "123456789" not in raw
     assert "hook failure text" not in raw
 
 
