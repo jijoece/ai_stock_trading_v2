@@ -1,8 +1,10 @@
 # Migration Status
 
-**Current phase: PR 18 — Final authority and safety audit — IMPLEMENTED,
-NOT MERGED** (branch `migration/18-final-authority-safety-audit`;
+**Current phase: PR 18 — Final authority and safety audit — MERGED**
+(PR #36, `fecbac0`, branch `migration/18-final-authority-safety-audit`;
 `MASTER_PLAN.md` row 18, `DECISIONS.md` D16, record at `pr18/AUDIT.md`).
+This entry previously read "IMPLEMENTED, NOT MERGED". The numbered
+sequence is complete.
 PR 18 is the final numbered phase, so no next phase follows it. It
 checks all eleven `plan.md` completion criteria and makes four changes:
 
