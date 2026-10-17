@@ -1776,3 +1776,264 @@ and is untouched.
 **No ADR.** No Accepted ADR governs performance analytics. Per the
 single-ADR rule (D2, reapplied at D9–D14), executing a manifest row the
 plan already scheduled needs no ADR.
+
+## D16 — PR 18: final authority and safety audit; owner policy B keeps the standing limits configurable
+
+**Context.** `MASTER_PLAN.md` row 18 asks for a check of `plan.md`'s
+completion criteria, confirmation that no dual authorities remain, and
+confirmation that `REMOVAL_MANIFEST.md` has no unresolved target. The audit
+(`pr18/AUDIT.md`) found three defects and one question for the owner.
+
+**Ruling 1: add structural guards for the PR 3 and PR 15 removals
+(completion criterion 11).** PR 17 added an AST guard for the analytics
+formulas (`test_analytics_import_boundary.py`). The manual market calendar
+(PR 3) and the `RedactingFormatter`/`JsonRedactingFormatter` pair (PR 15)
+were removed in place, but no check would fail if either came back beside
+its library. `tests/unit/test_removed_implementation_reintroduction_guards.py`
+parses `src/trading_research/` and `scripts/` and proves:
+
+- `exchange_calendars` is imported only by `evaluation/market_calendar.py`;
+- no other calendar or holiday library is imported;
+- the five removed holiday helpers and the fixed `MARKET_OPEN_TIME`/
+  `MARKET_CLOSE_TIME` constants are defined nowhere;
+- every XNYS-dependent function still calls `_calendar()`;
+- neither removed formatter class and no `logging.Formatter` subclass
+  exists;
+- `structlog` and handler formatter installation appear only in
+  `logging_config.py`. Installation means `setFormatter`, assigning
+  `.formatter`, or calling `basicConfig`, `dictConfig`, or `fileConfig`
+  (review round 12, r4267003364). Adding a handler at all (`addHandler`
+  or any `.handlers` access) is also confined there, because a handler
+  without a formatter renders through the stdlib default (review round
+  13, r4267218974). The formatter `configure_logging`
+  installs is a `ProcessorFormatter`. Literal-name `importlib.import_module`
+  and `__import__` calls count as imports, and a `Handler` subclass that
+  defines `format` is reported (review round 14);
+- `redact` and `register_secret` each have exactly one definition.
+
+A temporary reintroduction of `_easter_sunday`, `MARKET_CLOSE_TIME`, and
+`RedactingFormatter` made three of these tests fail. The changes were
+reverted before commit.
+
+**Ruling 2: correct the approval-phrase record.** `PRESERVATION_MANIFEST.md`
+placed the `Approved, submit this exact paper order.` gate in
+`paper_books/external_broker.py` and the CLI submit handlers and cited
+"existing approval-phrase tests". No repository code parses or checks that
+phrase, and no such test exists. The phrase is an operator-conversation
+gate: `CLAUDE.md` requires the user's explicit approval, and the agent must
+not run `external-paper-submit` without it. The code enforces the
+configuration gates, a recent preview, the required `--operator`/
+`--reason`, account fingerprinting, and the caps. The manifest row and
+`docs/runbooks/alpaca-paper-operations.md` now say this. PR 18 does not
+implement a phrase check: an agent that runs the CLI would also supply the
+phrase, so the check would add a string and no assurance. Adding one would
+be a separate owner decision.
+
+**Ruling 2a: the approval phrase also gates a retry.** Review found that
+the runbook applied the phrase only to `external-paper-submit`, though
+`external-paper-retry-submit` reaches the same broker submission path.
+`CLAUDE.md` requires explicit approval for any external paper-order action,
+and a retry is a new transmission. The original approval covered one
+transmission and came before the ambiguous outcome and the `NOT_FOUND`
+evidence, so it does not carry over. The runbook now requires the same
+exact phrase, given fresh after reconciliation, beside the retry command.
+`NOT_FOUND` evidence remains a code gate on whether a retry is allowed. It
+is not operator approval. `test_alpaca_runbook_approval_gates.py` pins the
+gate beside both commands.
+
+**Ruling 2b: cancellation needs its own explicit operator request.** Review
+found that the runbook supplied `external-paper-cancel` with no approval
+step, and its rollback section told the reader to "explicitly cancel"
+orders. `cancel_external_paper_order()` calls
+`runtime.cancel_external_order()`, which changes broker order state, and
+`CLAUDE.md` requires the user's explicit approval for any external
+paper-order action. Running the command is not that approval: the agent
+would supply the arguments itself. The runbook now requires the operator's
+own request to cancel the named client order ID before the cancel command,
+forbids cancelling on the agent's initiative (rollback, reconciliation, or
+cleanup included), and says a submit or retry approval does not cover it.
+The submit phrase is not reused, because it names a submission; no new
+exact phrase is added, which would be a separate owner decision. No code
+checks the request, for the reason given in Ruling 2.
+`test_alpaca_runbook_approval_gates.py` pins the gate beside the cancel
+command and the rollback section's deferral to it.
+
+**Ruling 3: correct merge-status drift.** GitHub (the authority under
+`AUTOMATION.md`) shows PRs 9–17 merged (PR #22, #27–#30, #32–#35).
+`MASTER_PLAN.md` rows 9–17 and several `STATUS.md` paragraphs still read
+"IMPLEMENTED", "EVALUATED", or "NOT MERGED". Those are corrected, with each
+merge commit named.
+
+**Ruling 3a: `migration_helper.parse_status` reads only the header
+block.** Its docstring said it consulted only the header block, but it
+searched the whole file. PR 18 is the final phase and declares no
+`Next phase:`. With no header match, the parser picked up a "Completed work"
+recap line (`Next phase: PR 17`). Once PR 18 merged, the helper would have
+named PR 17 as the successor instead of reporting the final phase. The
+parser now stops at the first `## ` heading, which makes the code match its
+docstring. `test_history_sections_are_not_read_as_phase_declarations`
+pins this. Review round 14 narrowed it further: only a declaration that
+starts a line counts, and two different declarations of one kind raise
+`HelperError`. No other helper behavior changes.
+
+**Ruling 4: owner policy B — the $50/$150/10% limits stay configurable.**
+The owner chose between (A) hard-coded ceilings that no config can raise
+and (B) the current configured limits with the documented
+`--paper-books-config` override path. Milestone 22 used that path for one
+supervised `$400`-cap validation. The owner chose **B**. Why B meets this
+audit:
+
+1. `plan.md` criterion 5 requires that safety rules "remain enforced
+   outside third-party framework defaults", and D3 says "never delegated to
+   a library default". Both are about *where* enforcement lives, not about
+   whether a value can be configured. Under B the values live in the
+   repository's own `paper_books/config.py` and `config/paper_books.yaml`,
+   and enforcement happens in the repository's own gateway: `external_broker.py`
+   for the order and daily caps on the recomputed notional, and
+   `paper_books/risk.py` for the 10% allocation. No LumiBot, broker, or
+   environment-variable default can raise them. This is unchanged by any
+   migration PR.
+2. The standing values are both the tracked values and the loader's
+   omitted-key defaults. A raised cap needs an explicit operator-supplied
+   file that must exist and validate. It fails closed and never falls back
+   to the tracked default (`test_paper_books_cli_config_override.py`).
+   Milestone 23 requires that the `$400` allowance not become "a default or
+   reusable operator setting", and it has not: the tracked config still
+   carries $50/$150.
+3. The gateway always applies the lower of the external cap and
+   `risk.max_order_notional_usd`. Raising one alone cannot loosen the other.
+4. Submission stays off in the tracked config (`enabled: false`,
+   `allow_order_submission: false`, no enabled books), so any override also
+   needs the operator's explicit enablement, a fresh preview, and the
+   approval phrase.
+
+`tests/unit/test_standing_paper_limits_policy.py` pins points 1–3:
+
+- the tracked values;
+- the omitted-key defaults;
+- an exact-$50 accept and a $50.01 reject;
+- the Milestone 22 $333.75 order rejected under standing limits and accepted
+  only under a `$400` override file;
+- the tracked default unchanged after that override loads;
+- the risk cap still binding over a raised external cap.
+
+Moving to policy A later is a change to `config.py`'s validation and to
+these tests, not a reinterpretation of them.
+
+**Ruling 5: redact arbitrary log `extra` objects before serialization.**
+Review found that `logging_config._redact_value()` returned objects other
+than strings, bytes, mappings, and sequences unchanged. `JSONRenderer` then
+serialized them through `repr()`, and JSON escaping could hide a registered
+secret from the line-level redaction. JSON scalars (`None`, `bool`, `int`,
+`float`) pass through unchanged; any other object is replaced by its
+redacted `repr()`. A `repr()` that raises is replaced by
+`<unrepresentable TypeName>`, so the record is still emitted in both plain
+and JSON modes. `ProcessorFormatter` bookkeeping keys (`_record`,
+`_from_structlog`) are left raw because they are removed before rendering.
+`tests/unit/test_logging_config.py` pins this behavior.
+
+Review round 3 (r4255488351) found that the `repr()` fallback bypassed
+structlog's `__structlog__` serialization hook. On `bd95d2c`, `JSONRenderer`
+serialized the hook's structured result, and its sensitive keys were
+redacted. After the first fix, the same object rendered as its `repr()`.
+A hook returning `{"api_key": "abcd1234efgh"}` whose `repr()` was
+`Structured(api_key='abcd1234efgh')` leaked the key in JSON output (a probe
+showed this). An object exposing a callable `__structlog__` is now
+replaced by the hook's result, which is redacted recursively by key and by
+registered secret, before the `repr()` fallback is considered.
+
+The hook is resolved on the value itself, as structlog's renderer does,
+so a property-backed or instance-assigned hook counts as well as a plain
+method (review round 4, r4261095847). Two cases render a fixed
+placeholder that names only the object's type, never its `repr()`, because
+that `repr()` could carry an unregistered sensitive value, such as an
+account number, that the hook would have exposed only under a redactable
+key:
+
+- a hook whose lookup or call raises renders
+  `<structlog hook failed: TypeName>`, and the record is still emitted
+  without the exception text (review round 7, r4264443234);
+- hook results nested more than 8 levels deep render
+  `<structlog hook depth exceeded: TypeName>`, so a hook that returns
+  itself cannot recurse without bound (review round 6, r4264214827).
+
+Regression tests in `test_logging_config.py` cover the redacted hook
+result, property and instance hooks, the hook-failure placeholder, the
+self-returning hook, and a chain past the depth limit. Each leak test
+fails without its fix.
+
+`JSONRenderer` also serializes a `structlog.threadlocal` wrapped dict as
+its underlying mapping. `_redact_value` now does the same, redacting that
+mapping by key, instead of replacing it with a `repr()` that hid an
+`account` key from key-based redaction (review round 12, r4267084680). The
+type is checked only when that deprecated module is already imported, so
+logging never triggers its import warning.
+`test_json_output_redacts_structlog_wrapped_dict_as_its_mapping` fails
+without the fix.
+
+Review round 14 tightened the same function:
+
+- A container that contains itself, directly or through a hook result, and
+  any nesting deeper than 64 levels, renders as a type-only placeholder.
+  Unbounded recursion raised `RecursionError` inside the formatter, and
+  `Handler.handleError` then printed the unredacted record to stderr.
+- A class object skips the instance hook, as structlog's own fallback
+  does, and renders as its `repr()` rather than as "hook failed".
+- A `set`/`frozenset` is emitted as a sorted list when its redacted members
+  are orderable, and in iteration order otherwise. Before this PR a set
+  reached the renderer as a repr string, so its JSON form is a deliberate
+  change, accepted here.
+- Plain-text output redacts string extras only. `_render_plain` discards
+  every extra, so hooks and `repr()` are no longer evaluated there.
+- Not changed: moving all object handling into a `JSONRenderer(default=...)`
+  wrapper. It would replace behavior that thirteen review rounds pinned,
+  for a maintainability gain, so it is deferred as a separate refactor.
+
+**Ruling 6: `external-paper-refresh-retry-preview` honors
+`--paper-books-config`.** Review round 3 (r4255587023) found that the
+refresh command's parser had no override flag, and its handler always
+loaded the tracked config. `refresh_retry_preview` requires external
+submission to be enabled, which the tracked config never is, so under this
+PR's override-only runbook procedure an order whose preview expired during
+reconciliation could not be refreshed. It stayed stranded in
+`UNKNOWN_REQUIRES_RECONCILIATION`. The refresh now loads config through the
+same fail-closed `_load_config_or_error` as the other external commands:
+
+- a missing or invalid override returns an error;
+- it never falls back to the tracked default;
+- it never calls the refresh.
+
+The load goes through `_load_external_config`, shared with the runtime
+commands. A `PaperBooksConfigError` is a curated domain error returned as
+text, as `paper-book-list` does. Any other loader exception goes through
+`_sanitized_cli_error` (review round 14).
+
+The refresh is still read-only, makes no broker call, and does not consume
+the `NOT_FOUND` lookup. The runbook documents the step before the retry,
+and the retry's approval gate still sits directly before the retry command.
+
+Coverage:
+
+- `tests/unit/test_external_paper_refresh_cli_config_override.py`, 4 tests:
+  the tracked config is rejected; the override reaches the refresh; a
+  missing override fails closed; the parser threads the flag through. Three
+  of the four fail without the fix.
+- A runbook-procedure test in `test_alpaca_runbook_approval_gates.py`.
+
+**Out of scope, recorded.**
+
+- `paper_runtime/src/trading_paper_runtime/logging_config.py` installs a
+  plain `logging.Formatter`. It belongs to a separate distribution
+  (ADR 0002/0009 forbid a shared package), PR 15 never claimed it, and
+  `REMOVAL_MANIFEST.md` lists no target there. It is not a second authority
+  inside `trading_research`. Whether it needs redaction is a separate
+  question.
+- TA-Lib delegation is guarded behaviorally (`test_indicators.py`: the
+  composed functions must call `talib.EMA`/`RSI`/`BBANDS` and must not call
+  `talib.MACD`/`TRIX`), not by an AST guard. That is sufficient to catch a
+  reintroduced hand-written formula, and the owner did not ask for more.
+
+**No ADR.** This PR adds tests and corrects documents. It also hardens log
+redaction within the existing `structlog` authority (ruling 5) and threads
+the existing override loader through one more CLI command (ruling 6).
+Policy B keeps the existing behavior.

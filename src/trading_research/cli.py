@@ -303,10 +303,27 @@ def _sanitized_cli_error(exc: Exception) -> dict:
     return {"code": "EXTERNAL_RUNTIME_ERROR", "message": "an unexpected internal error occurred"}
 
 
-def _external_paper_cli(db_path: Path, operation, *, config_path: str | Path | None = None) -> dict:
+def _load_external_config(config_path: str | Path | None):
+    """Loads the paper-books config for an external-paper command through
+    the fail-closed `--paper-books-config` loader. Returns `(config, None)`
+    or `(None, error)`.
+
+    A `PaperBooksConfigError` is a curated domain error, and the loader
+    returns its text as a string exactly as `paper-book-list` and the other
+    paper-books commands do. Any other exception is an unexpected failure
+    and goes through `_sanitized_cli_error`, so no raw path or parser text
+    escapes (Part 17)."""
     from .paper_books.cli_support import _load_config_or_error
 
-    paper_books_config, error = _load_config_or_error(config_path)
+    try:
+        config, error = _load_config_or_error(config_path)
+    except Exception as exc:
+        return None, _sanitized_cli_error(exc)
+    return (None, error) if error else (config, None)
+
+
+def _external_paper_cli(db_path: Path, operation, *, config_path: str | Path | None = None) -> dict:
+    paper_books_config, error = _load_external_config(config_path)
     if error:
         return {"error": error}
 
@@ -414,16 +431,22 @@ def external_paper_retry_cli(
 
 def external_paper_refresh_retry_preview_cli(
     db_path: Path, *, book_id: str, intent_id: str, operator: str, reason: str,
+    config_path: str | Path | None = None,
 ) -> dict:
     """Part 17: read-only, no broker/runtime call — does not route through
-    `_external_paper_cli` (which spawns the isolated runtime subprocess)."""
-    from .paper_books.config import load_paper_books_config
+    `_external_paper_cli` (which spawns the isolated runtime subprocess).
+    Loads config through the same fail-closed `--paper-books-config` loader
+    as the retry it prepares, so an override-only operator can refresh."""
     from .paper_books.external_broker import refresh_retry_preview
+
+    paper_books_config, error = _load_external_config(config_path)
+    if error:
+        return {"error": error}
     try:
         with session(db_path) as conn:
             return refresh_retry_preview(
                 conn, book_id=book_id, paper_order_intent_id=intent_id, operator=operator,
-                reason=reason, config=load_paper_books_config(),
+                reason=reason, config=paper_books_config,
             )
     except Exception as exc:
         return {"error": _sanitized_cli_error(exc)}
@@ -3188,6 +3211,11 @@ def main(argv: list[str] | None = None) -> int:
     p_external_refresh.add_argument("--intent-id", required=True)
     p_external_refresh.add_argument("--operator", required=True)
     p_external_refresh.add_argument("--reason", required=True)
+    p_external_refresh.add_argument(
+        "--paper-books-config",
+        help="Explicit operator-supplied paper_books config file overriding config/paper_books.yaml "
+             "(must exist as a regular file; default: config/paper_books.yaml)",
+    )
     p_external_queue = sub.add_parser(
         "external-paper-queue-show", help="Show the external submission queue's derived status (read-only)",
     )
@@ -3820,7 +3848,7 @@ def main(argv: list[str] | None = None) -> int:
         cfg = load_config()
         outcome = external_paper_refresh_retry_preview_cli(
             cfg.research_database_path, book_id=args.book_id, intent_id=args.intent_id,
-            operator=args.operator, reason=args.reason,
+            operator=args.operator, reason=args.reason, config_path=args.paper_books_config,
         )
     elif args.command == "external-paper-queue-show":
         cfg = load_config()

@@ -13,8 +13,10 @@ from __future__ import annotations
 import io
 import json
 import logging
+import warnings
 
 import pytest
+import structlog
 
 from trading_research import logging_config
 
@@ -53,6 +55,15 @@ def test_configure_logging_sets_up_single_stderr_handler_no_propagate():
     assert len(root.handlers) == 1
     assert isinstance(root.handlers[0], logging.StreamHandler)
     assert root.propagate is False
+
+
+@pytest.mark.parametrize("json_output", [False, True])
+def test_configure_logging_installs_the_structlog_processor_formatter(json_output):
+    """PR 18 review round 11 (P2, r4266942257): the installed formatter,
+    not merely a constructed one, must be structlog's `ProcessorFormatter`."""
+    logging_config.configure_logging(json_output=json_output)
+    (handler,) = logging.getLogger("trading_research").handlers
+    assert type(handler.formatter) is structlog.stdlib.ProcessorFormatter
 
 
 def test_configure_logging_clears_handlers_on_repeat_call():
@@ -249,6 +260,253 @@ def test_json_output_redacts_registered_secret_in_nested_extra_field_with_json_e
     assert secret not in raw
 
 
+@pytest.mark.parametrize(
+    "secret",
+    [
+        'opaque"secret-with-quote',
+        "opaque\\secret-with-backslash",
+        "opaque\nsecret-with-newline",
+    ],
+)
+def test_json_output_redacts_registered_secret_in_arbitrary_object_repr_with_json_escaped_characters(secret):
+    """PR 18 review (P1): `_redact_value` returned an arbitrary `extra`
+    object unchanged, so `JSONRenderer` rendered its `repr()` itself and
+    JSON-escaped a quote, backslash, or control character inside a
+    registered secret -- defeating the final verbatim `redact()` pass over
+    the rendered line. The object's representation must be redacted before
+    serialization."""
+
+    class Opaque:
+        def __repr__(self) -> str:
+            return f"opaque {secret} payload"
+
+    logging_config.register_secret(secret)
+    buffer = _configure_capturing(json_output=True)
+    log = logging_config.get_logger("unit_test")
+    log.info("event", extra={"details": Opaque(), "nested": {"items": [Opaque()]}})
+    raw = buffer.getvalue()
+    payload = json.loads(raw.strip())
+    assert secret not in raw
+    assert secret not in payload["details"]
+    assert payload["details"] == "opaque [REDACTED] payload"
+    assert payload["nested"]["items"] == ["opaque [REDACTED] payload"]
+
+
+@pytest.mark.parametrize("json_output", [False, True])
+def test_extra_object_with_raising_repr_does_not_drop_record(json_output, capsys):
+    """PR 18 review round 2 (P2): `_redact_value` called `repr()` on an
+    arbitrary `extra` object unguarded, so a raising `__repr__` dropped the
+    whole record in both output modes. The record must still be emitted,
+    without the object's contents or the exception text."""
+
+    class Broken:
+        def __repr__(self) -> str:
+            raise RuntimeError("secret-bearing failure text")
+
+    buffer = _configure_capturing(json_output=json_output)
+    log = logging_config.get_logger("unit_test")
+    log.info("must survive", extra={"details": Broken(), "nested": [Broken()]})
+    raw = buffer.getvalue()
+    assert "must survive" in raw
+    assert "secret-bearing failure text" not in raw
+    assert "secret-bearing failure text" not in capsys.readouterr().err
+    if json_output:
+        payload = json.loads(raw.strip())
+        placeholder = "<unrepresentable test_extra_object_with_raising_repr_does_not_drop_record.<locals>.Broken>"
+        assert payload["message"] == "must survive"
+        assert payload["details"] == placeholder
+        assert payload["nested"] == [placeholder]
+
+
+def test_json_output_redacts_structlog_hook_result_instead_of_leaking_its_repr():
+    """PR 18 review round 3 (P1, r4255488351): the round-1 `repr()`
+    fallback bypassed structlog's `__structlog__` hook, so an object whose
+    hook returns `{"api_key": ...}` rendered its repr, secret included,
+    instead of the hook's structured result with the key redacted (the
+    `bd95d2c` behavior). The hook's result must be preserved and redacted
+    recursively, by key and by registered secret."""
+
+    class Structured:
+        def __structlog__(self):
+            return {"api_key": "abcd1234efgh", "note": "ok"}
+
+        def __repr__(self) -> str:
+            return "Structured(api_key='abcd1234efgh')"
+
+    class Nested:
+        def __structlog__(self):
+            return {"inner": Structured(), "items": ["registered-hook-secret"]}
+
+    logging_config.register_secret("registered-hook-secret")
+    buffer = _configure_capturing(json_output=True)
+    log = logging_config.get_logger("unit_test")
+    log.info("event", extra={"payload": Structured(), "nested": Nested()})
+    raw = buffer.getvalue()
+    payload = json.loads(raw.strip())
+    assert "abcd1234efgh" not in raw
+    assert "registered-hook-secret" not in raw
+    assert payload["payload"] == {"api_key": "[REDACTED]", "note": "ok"}
+    assert payload["nested"] == {
+        "inner": {"api_key": "[REDACTED]", "note": "ok"},
+        "items": ["[REDACTED]"],
+    }
+
+
+def test_json_output_honors_property_and_instance_structlog_hooks():
+    """PR 18 review round 4 (P2, r4261095847): the hook was looked up on
+    `type(value)` and required to be callable there, so a property-backed
+    or instance-assigned hook -- both of which structlog itself resolves
+    via `value.__structlog__()` -- was ignored and the repr, account number
+    included, was rendered instead of the hook's safe mapping. A property
+    whose getter raises renders the type-only hook-failure placeholder."""
+
+    class PropertyHook:
+        @property
+        def __structlog__(self):
+            return lambda: {"summary": "safe"}
+
+        def __repr__(self) -> str:
+            return "PropertyHook(123456789)"
+
+    class InstanceHook:
+        def __init__(self) -> None:
+            self.__structlog__ = lambda: {"summary": "safe", "account": "123456789"}
+
+        def __repr__(self) -> str:
+            return "InstanceHook(123456789)"
+
+    class RaisingPropertyHook:
+        @property
+        def __structlog__(self):
+            raise RuntimeError("lookup failure text")
+
+        def __repr__(self) -> str:
+            return "RaisingPropertyHook()"
+
+    buffer = _configure_capturing(json_output=True)
+    log = logging_config.get_logger("unit_test")
+    log.info(
+        "event",
+        extra={"prop": PropertyHook(), "inst": InstanceHook(), "broken": RaisingPropertyHook()},
+    )
+    raw = buffer.getvalue()
+    payload = json.loads(raw.strip())
+    assert "123456789" not in raw
+    assert "lookup failure text" not in raw
+    assert payload["prop"] == {"summary": "safe"}
+    assert payload["inst"] == {"summary": "safe", "account": "[REDACTED]"}
+    assert payload["broken"] == (
+        "<structlog hook failed: "
+        "test_json_output_honors_property_and_instance_structlog_hooks.<locals>.RaisingPropertyHook>"
+    )
+
+
+def test_raising_structlog_hook_does_not_leak_its_repr():
+    """PR 18 review round 7 (P2, r4264443234): a hook whose call raised
+    fell back to the object's `repr()`, so an unregistered account number
+    in that repr reached the log, where the parent renderer emitted no
+    record at all. The record must survive with a type-only placeholder."""
+
+    class Broken:
+        def __structlog__(self):
+            raise RuntimeError("hook failure text")
+
+        def __repr__(self) -> str:
+            return "Broken(123456789)"
+
+    buffer = _configure_capturing(json_output=True)
+    log = logging_config.get_logger("unit_test")
+    log.info("must survive", extra={"details": Broken(), "nested": [Broken()]})
+    raw = buffer.getvalue()
+    payload = json.loads(raw.strip())
+    placeholder = "<structlog hook failed: test_raising_structlog_hook_does_not_leak_its_repr.<locals>.Broken>"
+    assert payload["message"] == "must survive"
+    assert payload["details"] == placeholder
+    assert payload["nested"] == [placeholder]
+    assert "123456789" not in raw
+    assert "hook failure text" not in raw
+
+
+def test_json_output_redacts_structlog_wrapped_dict_as_its_mapping():
+    """PR 18 review round 12 (P2, r4267084680): `JSONRenderer` serializes a
+    `structlog.threadlocal` wrapped dict as its underlying mapping, but
+    `_redact_value` replaced it with its `repr()` first, so an `account`
+    key escaped key-based redaction and the account number was logged."""
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", DeprecationWarning)
+        from structlog.threadlocal import wrap_dict
+
+    wrapped = wrap_dict(dict)(account="123456789", note="ok")
+    buffer = _configure_capturing(json_output=True)
+    log = logging_config.get_logger("unit_test")
+    log.info("event", extra={"context": wrapped, "nested": [wrapped]})
+    raw = buffer.getvalue()
+    payload = json.loads(raw.strip())
+    assert "123456789" not in raw
+    assert payload["context"] == {"account": "[REDACTED]", "note": "ok"}
+    assert payload["nested"] == [{"account": "[REDACTED]", "note": "ok"}]
+
+
+def test_self_returning_structlog_hook_is_bounded():
+    class SelfReferential:
+        def __structlog__(self):
+            return self
+
+        def __repr__(self) -> str:
+            return "SelfReferential()"
+
+    buffer = _configure_capturing(json_output=True)
+    log = logging_config.get_logger("unit_test")
+    log.info("must survive", extra={"details": SelfReferential()})
+    payload = json.loads(buffer.getvalue().strip())
+    assert payload["message"] == "must survive"
+    assert payload["details"] == "<structlog hook depth exceeded: test_self_returning_structlog_hook_is_bounded.<locals>.SelfReferential>"
+
+
+def test_structlog_hook_chain_past_depth_limit_does_not_leak_its_repr():
+    """PR 18 review round 6 (P2, r4264214827): past
+    `_MAX_STRUCTLOG_HOOK_DEPTH`, the unevaluated object fell back to its
+    `repr()`, so an unregistered account number in that repr -- which its
+    hook would have exposed only under a redactable key -- reached the log.
+    The cutoff must render a type-only placeholder instead."""
+
+    class Chain:
+        def __init__(self, remaining: int) -> None:
+            self.remaining = remaining
+
+        def __structlog__(self):
+            if self.remaining > 1:
+                return Chain(self.remaining - 1)
+            return {"account_number": "123456789"}
+
+        def __repr__(self) -> str:
+            return f"Chain({self.remaining}, 123456789)"
+
+    depth = logging_config._MAX_STRUCTLOG_HOOK_DEPTH
+    buffer = _configure_capturing(json_output=True)
+    log = logging_config.get_logger("unit_test")
+    log.info("event", extra={"within": Chain(depth), "beyond": Chain(depth + 1)})
+    raw = buffer.getvalue()
+    payload = json.loads(raw.strip())
+    assert "123456789" not in raw
+    assert payload["within"] == {"account_number": "[REDACTED]"}
+    assert payload["beyond"] == (
+        "<structlog hook depth exceeded: "
+        "test_structlog_hook_chain_past_depth_limit_does_not_leak_its_repr.<locals>.Chain>"
+    )
+
+
+def test_json_output_preserves_json_scalar_extra_fields():
+    buffer = _configure_capturing(json_output=True)
+    log = logging_config.get_logger("unit_test")
+    log.info("event", extra={"count": 3, "ratio": 0.5, "flag": True, "missing": None})
+    payload = json.loads(buffer.getvalue().strip())
+    assert payload["count"] == 3
+    assert payload["ratio"] == 0.5
+    assert payload["flag"] is True
+    assert payload["missing"] is None
+
+
 def test_json_output_redacts_account_number_extra_field_by_key():
     """PR 15 review round 2 (finding 3): the pre-migration formatter only
     ever surfaced eight allowlisted `extra` fields, so an account number
@@ -333,6 +591,26 @@ def test_json_output_redacts_registered_secret_inside_frozenset_extra_field():
     assert "[REDACTED]" in raw
 
 
+@pytest.mark.parametrize("container", [set, frozenset])
+def test_set_of_structlog_hook_objects_with_unhashable_results_is_logged(container):
+    """PR 18 review (r4266867609): rebuilding a `set`/`frozenset` from its
+    redacted members raised `TypeError` when a member's `__structlog__`
+    hook returned an unhashable mapping, dropping the whole record. Sets
+    must serialize as a hashability-independent sequence instead."""
+
+    class Summary:
+        def __structlog__(self):
+            return {"summary": "safe", "account_number": "123456789"}
+
+    buffer = _configure_capturing(json_output=True)
+    log = logging_config.get_logger("unit_test")
+    log.info("event", extra={"items": container({Summary()})})
+    raw = buffer.getvalue()
+    assert "123456789" not in raw
+    payload = json.loads(raw.strip())
+    assert payload["items"] == [{"summary": "safe", "account_number": "[REDACTED]"}]
+
+
 def test_json_output_redacts_registered_secret_inside_bytes_extra_field():
     logging_config.register_secret("bytes-member-secret")
     buffer = _configure_capturing(json_output=True)
@@ -412,3 +690,83 @@ def test_plain_output_extra_cannot_override_canonical_fields():
     assert "trading_research.unit_test" in line
     assert "a forged message" not in line
     assert "not-the-real-logger" not in line
+
+
+# --- PR 18 review round 14 ---------------------------------------------------
+
+
+def test_self_referencing_containers_are_bounded_not_a_recursion_error():
+    """Review finding 2: only `__structlog__` hook recursion was bounded, so
+    `d["self"] = d` raised `RecursionError` inside the formatter and
+    `Handler.handleError` printed the unredacted record to stderr."""
+    cyclic: dict = {"note": "ok", "account_number": "123456789"}
+    cyclic["self"] = cyclic
+    looped: list = []
+    looped.append(looped)
+
+    class ReturnsCycle:
+        def __structlog__(self):
+            return cyclic
+
+    buffer = _configure_capturing(json_output=True)
+    log = logging_config.get_logger("unit_test")
+    log.info("event", extra={"a": cyclic, "b": looped, "c": ReturnsCycle()})
+    raw = buffer.getvalue()
+    assert raw, "log record must not be dropped"
+    assert "123456789" not in raw
+    payload = json.loads(raw.strip())
+    assert payload["a"]["self"] == "<circular or too deeply nested value: dict>"
+    assert payload["b"] == ["<circular or too deeply nested value: list>"]
+    assert payload["c"]["self"] == "<circular or too deeply nested value: dict>"
+
+
+def test_very_deep_but_acyclic_nesting_is_bounded():
+    deep: object = "leaf"
+    for _ in range(500):
+        deep = [deep]
+    buffer = _configure_capturing(json_output=True)
+    logging_config.get_logger("unit_test").info("event", extra={"deep": deep})
+    assert "too deeply nested" in buffer.getvalue()
+
+
+def test_class_object_extra_renders_as_its_repr_not_hook_failed():
+    """Review finding 3: `getattr(cls, "__structlog__")` is the unbound
+    function; calling it raised and logged a placeholder."""
+
+    class Hooked:
+        def __structlog__(self):
+            return {"x": 1}
+
+    buffer = _configure_capturing(json_output=True)
+    logging_config.get_logger("unit_test").info("event", extra={"model": Hooked})
+    payload = json.loads(buffer.getvalue().strip())
+    assert "hook failed" not in payload["model"]
+    assert "Hooked" in payload["model"]
+
+
+def test_set_extras_are_sorted_when_orderable():
+    """Review finding 4: set iteration order is arbitrary, so the JSON form
+    was nondeterministic."""
+    buffer = _configure_capturing(json_output=True)
+    logging_config.get_logger("unit_test").info("event", extra={"symbols": {"MSFT", "AAPL", "GOOG"}})
+    assert json.loads(buffer.getvalue().strip())["symbols"] == ["AAPL", "GOOG", "MSFT"]
+
+
+def test_plain_output_does_not_evaluate_extras():
+    """Review finding 6: plain-text mode discards extras, so it must not
+    call hooks or `repr()` on them."""
+    calls: list[str] = []
+
+    class Expensive:
+        def __repr__(self):
+            calls.append("repr")
+            return "Expensive()"
+
+        def __structlog__(self):
+            calls.append("hook")
+            return {}
+
+    buffer = _configure_capturing(json_output=False)
+    logging_config.get_logger("unit_test").info("event", extra={"frame": Expensive()})
+    assert buffer.getvalue()
+    assert calls == []

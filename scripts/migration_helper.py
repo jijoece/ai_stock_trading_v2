@@ -118,8 +118,11 @@ class HelperError(RuntimeError):
 
 # "PR 9", "PR 8a", "PR 10" -- an integer with an optional lowercase suffix.
 _PHASE_ID = r"([0-9]+[a-z]?)"
-_CURRENT_PHASE = re.compile(rf"Current phase:\s*PR\s+{_PHASE_ID}", re.IGNORECASE)
-_NEXT_PHASE = re.compile(rf"Next phase:\s*PR\s+{_PHASE_ID}", re.IGNORECASE)
+# A declaration starts a line (optionally bold), so a recap of an older
+# declaration inside prose is never read as the current one. `none` is a
+# declared value, so a stale `PR 18` and the real `none` conflict.
+_CURRENT_PHASE = re.compile(rf"^\**Current phase:\s*(?:PR\s+{_PHASE_ID}|(none))\b", re.IGNORECASE | re.MULTILINE)
+_NEXT_PHASE = re.compile(rf"^\**Next phase:\s*(?:PR\s+{_PHASE_ID}|(none))\b", re.IGNORECASE | re.MULTILINE)
 _ROW_PHASE_ID = re.compile(rf"^\**\s*(?:PR\s+)?{_PHASE_ID}\s*\**$", re.IGNORECASE)
 
 
@@ -166,16 +169,20 @@ def parse_status(text: str) -> tuple[str | None, str | None]:
     """Return `(current_phase_id, next_phase_id)` declared by `STATUS.md`.
 
     Only the header block is consulted; the "Completed work" sections below it
-    are history. Whitespace is flattened first because those declarations wrap
-    across lines.
+    are history. Only a declaration that starts a line counts, and two
+    different declarations of the same kind are ambiguous, so they raise
+    `HelperError` instead of silently picking one.
     """
-    flat = re.sub(r"\s+", " ", text)
-    current = _CURRENT_PHASE.search(flat)
-    following = _NEXT_PHASE.search(flat)
-    return (
-        current.group(1).lower() if current else None,
-        following.group(1).lower() if following else None,
-    )
+    header = re.split(r"^## ", text, maxsplit=1, flags=re.MULTILINE)[0]
+
+    def declared(pattern: re.Pattern[str], label: str) -> str | None:
+        found = {(match.group(1) or "none").lower() for match in pattern.finditer(header)}
+        if len(found) > 1:
+            raise HelperError(f"STATUS.md declares conflicting `{label}:` phases: {sorted(found)}")
+        value = next(iter(found), None)
+        return None if value == "none" else value
+
+    return declared(_CURRENT_PHASE, "Current phase"), declared(_NEXT_PHASE, "Next phase")
 
 
 def parse_master_plan(text: str) -> tuple[PlanRow, ...]:

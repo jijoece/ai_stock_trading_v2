@@ -5,11 +5,27 @@ default. Do not use a live account or live endpoint.
 
 ## Enable deliberately
 
-In `config/paper_books.yaml`, set `paper_books.enabled: true`, enable exactly
-one book, then set `external_broker.enabled: true`,
-`allow_order_submission: true`, and `enabled_book_ids` to that one book. Keep
-`execution.provider: local_simulated`; recurring execution uses that path and
-never mutates Alpaca.
+Do not edit the tracked `config/paper_books.yaml`. Copy it to a file outside
+the repository and pass it with `--paper-books-config <path>` to every
+external-paper command that accepts the flag (account check, baseline
+activation, preview, submit, retry-preview refresh, retry, reconcile,
+cancel). A missing or invalid override fails closed
+and never falls back to the tracked default. In the copy, set
+`paper_books.enabled: true`, enable exactly one book, then set
+`external_broker.enabled: true`, `allow_order_submission: true`, and
+`enabled_book_ids` to that one book. Keep `execution.provider:
+local_simulated`; recurring execution uses that path and never mutates
+Alpaca.
+
+Keep the standing limits in the copy: `maximum_order_notional_usd: "50.00"`,
+`maximum_daily_notional_usd: "150.00"`, and `max_symbol_concentration_weight`
+`"0.10"`. These are configured values, not hard-coded ceilings (owner policy
+B, `docs/library-migration/DECISIONS.md` D16). Raising one is a
+single-validation exception that the operator approves explicitly, as
+Milestone 22 did with a `$400` cap. It belongs only in that operator's
+override file, never in the tracked config. The gateway always applies the
+lower of `external_broker.maximum_order_notional_usd` and
+`risk.max_order_notional_usd`.
 
 In `config/paper_runtime.yaml`, keep provider `alpaca`, environment/mode
 `paper`, and base URL exactly `https://paper-api.alpaca.markets`. The isolated
@@ -27,15 +43,26 @@ not rely on this repository's own `.env`; the runtime does not discover it.
 
 ## Account check, preview, submit
 
+`external-paper-submit` runs only after the operator gives the exact phrase
+`Approved, submit this exact paper order.` for that previewed order. No
+other wording counts as approval. The CLI does not check the phrase: it is
+the operator gate an agent must observe before running the command. The CLI
+enforces the configuration gates, a recent preview, `--operator`,
+`--reason`, account fingerprinting, and the notional caps. The phrase never
+enables live trading. Every command below that accepts it takes the
+override file through `--paper-books-config <path>`.
+
 ```bash
-python -m trading_research.cli external-paper-account-check --book-id BASELINE
+python -m trading_research.cli external-paper-account-check --book-id BASELINE \
+  --paper-books-config <path>
 
 python -m trading_research.cli external-paper-preview \
-  --book-id BASELINE --intent-id <intent-id> --operator <name>
+  --book-id BASELINE --intent-id <intent-id> --operator <name> \
+  --paper-books-config <path>
 
 python -m trading_research.cli external-paper-submit \
   --book-id BASELINE --intent-id <intent-id> --preview-id <preview-id> \
-  --operator <name> --reason "<reason>"
+  --operator <name> --reason "<reason>" --paper-books-config <path>
 ```
 
 Inspect bounded local evidence:
@@ -62,18 +89,42 @@ fresh from the order-event chain every call, never a stale stored value.
 
 ```bash
 python -m trading_research.cli external-paper-reconcile \
-  --book-id BASELINE --client-order-id <client-order-id>
+  --book-id BASELINE --client-order-id <client-order-id> \
+  --paper-books-config <path>
 ```
 
 Never rerun submit after `UNKNOWN_REQUIRES_RECONCILIATION`. Reconcile first.
 If the deterministic client order ID is found, local state is repaired without
 submission. If and only if reconciliation persists authoritative `NOT_FOUND`,
-perform the bounded explicit retry:
+perform the bounded explicit retry.
+
+If the original preview expired during reconciliation, the retry rejects
+it. Refresh it first. The refresh is read-only: it makes no
+broker call, does not consume the `NOT_FOUND` lookup, and is not an approval.
+Like every other external-paper command, it needs the operator's override
+file, because the tracked config has submission disabled.
+
+```bash
+python -m trading_research.cli external-paper-refresh-retry-preview \
+  --book-id BASELINE --intent-id <intent-id> \
+  --operator <name> --reason "original preview expired during reconciliation" \
+  --paper-books-config <path>
+```
+
+`external-paper-retry-submit` transmits a new broker attempt, so it needs
+fresh approval. The original submit approval does not carry over: it covered
+one transmission, and the ambiguous outcome and `NOT_FOUND` evidence came
+after it. Show the operator the reconciliation result and the retry, then
+wait for the exact phrase `Approved, submit this exact paper order.` for
+that retry. No other wording counts. As with submit, the CLI does not check
+the phrase. It is an operator gate the agent must observe before running
+the command.
 
 ```bash
 python -m trading_research.cli external-paper-retry-submit \
   --book-id BASELINE --intent-id <intent-id> \
-  --operator <name> --reason "authoritative not-found retry"
+  --operator <name> --reason "authoritative not-found retry" \
+  --paper-books-config <path>
 ```
 
 Account, namespace, order, fill, cash, or position mismatches are critical and
@@ -88,10 +139,18 @@ is required before another retry.
 
 ## Explicit cancellation
 
+`external-paper-cancel` changes the state of a broker order, so it needs the
+operator's own explicit request to cancel that client order ID. Show the
+operator the order's current status first. Do not cancel on your own
+initiative, including during rollback, reconciliation, or cleanup. A submit
+or retry approval does not cover a cancellation. As with submit, the CLI
+does not check for the request. It is an operator gate the agent must
+observe before running the command.
+
 ```bash
 python -m trading_research.cli external-paper-cancel \
   --book-id BASELINE --client-order-id <client-order-id> \
-  --operator <name> --reason "<reason>"
+  --operator <name> --reason "<reason>" --paper-books-config <path>
 ```
 
 There is no automatic cancellation. An ambiguous cancel outcome requires the
@@ -101,8 +160,9 @@ same reconciliation flow.
 
 Set `external_broker.allow_order_submission: false`, then
 `external_broker.enabled: false` and clear `enabled_book_ids`. This does not
-cancel existing paper orders; inspect/reconcile and explicitly cancel them
-first if required. Local simulation remains available for future intents.
+cancel existing paper orders; inspect/reconcile them first, and cancel one
+only when the operator explicitly requests it (see Explicit cancellation).
+Local simulation remains available for future intents.
 
 ## Optional real-paper smoke
 

@@ -91,6 +91,48 @@ def test_next_phase_is_parsed_across_a_wrapped_line() -> None:
     assert following == "10"
 
 
+def test_history_sections_are_not_read_as_phase_declarations() -> None:
+    # The final phase declares no next phase; a "Completed work" section's
+    # recap of an older `Next phase:` line must not be mistaken for one.
+    status = (
+        "# Migration Status\n\n**Current phase: PR 18 — final audit — IMPLEMENTED, NOT MERGED**\n\n"
+        "## Completed work (PR 17)\n\n- helper reads `Current phase: PR 17` / `Next phase: PR 18` correctly.\n"
+    )
+    assert helper.parse_status(status) == ("18", None)
+
+
+def test_recap_inside_header_prose_is_not_read_as_a_declaration() -> None:
+    # Review finding 5: a header recap of an older declaration, mid-line,
+    # must not outrank the real bold declaration.
+    status = (
+        "# Migration Status\n\n**Current phase: PR 18 — final audit**\n\n"
+        "History: the helper once read `Next phase: PR 18` from here.\n\n"
+        "**Next phase: none.**\n"
+    )
+    assert helper.parse_status(status) == ("18", None)
+
+
+def test_line_start_recap_conflicting_with_none_fails_loudly() -> None:
+    # Review round 14 re-review, finding 1: a recap that starts a line must
+    # not outrank `**Next phase: none.**`.
+    status = (
+        "**Current phase: PR 18**\n\nRecap from the PR 17 era:\n"
+        "Next phase: PR 18 (now done)\n\n**Next phase: none.**\n"
+    )
+    with pytest.raises(helper.HelperError, match="conflicting"):
+        helper.parse_status(status)
+
+
+def test_next_phase_none_alone_means_no_successor() -> None:
+    assert helper.parse_status("**Current phase: PR 18**\n\n**Next phase: none.**\n") == ("18", None)
+
+
+def test_conflicting_declarations_in_the_header_fail_loudly() -> None:
+    status = "**Current phase: PR 17**\n\n**Current phase: PR 18**\n"
+    with pytest.raises(helper.HelperError, match="conflicting"):
+        helper.parse_status(status)
+
+
 def test_master_plan_rows_are_looked_up_by_phase_id_in_document_order() -> None:
     rows = helper.parse_master_plan(MASTER_PLAN)
     assert [row.phase_id for row in rows] == ["8", "8a", "9", "10"]

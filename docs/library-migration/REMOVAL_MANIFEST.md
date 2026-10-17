@@ -73,6 +73,15 @@ removed formulas' own outputs, captured before deletion
 implementation remains (`DECISIONS.md` D15). **This manifest now has no
 unresolved removal target.**
 
+**PR 18 update:** the final audit confirms this manifest still has no
+unresolved removal target. PR 3 and PR 15 closed their rows without a
+reintroduction guard. `tests/unit/test_removed_implementation_reintroduction_guards.py`
+now fails CI if the removed holiday arithmetic, the fixed session
+constants, or a `logging.Formatter` subclass such as the removed
+`RedactingFormatter`/`JsonRedactingFormatter` reappears. It also fails if
+`exchange_calendars` or `structlog` gains a second import site
+(`DECISIONS.md` D16).
+
 **PR 8 update (2026-08-02):** `backtesting/engine.py` appeared in the
 "conditionally eligible" section below while this paragraph said not to add it
 — a real contradiction, since PR 0 opened a removal gate on a file this
