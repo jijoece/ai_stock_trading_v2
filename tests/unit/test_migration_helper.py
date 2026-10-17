@@ -112,6 +112,21 @@ def test_recap_inside_header_prose_is_not_read_as_a_declaration() -> None:
     assert helper.parse_status(status) == ("18", None)
 
 
+def test_line_start_recap_conflicting_with_none_fails_loudly() -> None:
+    # Review round 14 re-review, finding 1: a recap that starts a line must
+    # not outrank `**Next phase: none.**`.
+    status = (
+        "**Current phase: PR 18**\n\nRecap from the PR 17 era:\n"
+        "Next phase: PR 18 (now done)\n\n**Next phase: none.**\n"
+    )
+    with pytest.raises(helper.HelperError, match="conflicting"):
+        helper.parse_status(status)
+
+
+def test_next_phase_none_alone_means_no_successor() -> None:
+    assert helper.parse_status("**Current phase: PR 18**\n\n**Next phase: none.**\n") == ("18", None)
+
+
 def test_conflicting_declarations_in_the_header_fail_loudly() -> None:
     status = "**Current phase: PR 17**\n\n**Current phase: PR 18**\n"
     with pytest.raises(helper.HelperError, match="conflicting"):

@@ -119,9 +119,10 @@ class HelperError(RuntimeError):
 # "PR 9", "PR 8a", "PR 10" -- an integer with an optional lowercase suffix.
 _PHASE_ID = r"([0-9]+[a-z]?)"
 # A declaration starts a line (optionally bold), so a recap of an older
-# declaration inside prose is never read as the current one.
-_CURRENT_PHASE = re.compile(rf"^\**Current phase:\s*PR\s+{_PHASE_ID}", re.IGNORECASE | re.MULTILINE)
-_NEXT_PHASE = re.compile(rf"^\**Next phase:\s*PR\s+{_PHASE_ID}", re.IGNORECASE | re.MULTILINE)
+# declaration inside prose is never read as the current one. `none` is a
+# declared value, so a stale `PR 18` and the real `none` conflict.
+_CURRENT_PHASE = re.compile(rf"^\**Current phase:\s*(?:PR\s+{_PHASE_ID}|(none))\b", re.IGNORECASE | re.MULTILINE)
+_NEXT_PHASE = re.compile(rf"^\**Next phase:\s*(?:PR\s+{_PHASE_ID}|(none))\b", re.IGNORECASE | re.MULTILINE)
 _ROW_PHASE_ID = re.compile(rf"^\**\s*(?:PR\s+)?{_PHASE_ID}\s*\**$", re.IGNORECASE)
 
 
@@ -175,10 +176,11 @@ def parse_status(text: str) -> tuple[str | None, str | None]:
     header = re.split(r"^## ", text, maxsplit=1, flags=re.MULTILINE)[0]
 
     def declared(pattern: re.Pattern[str], label: str) -> str | None:
-        found = {match.lower() for match in pattern.findall(header)}
+        found = {(match.group(1) or "none").lower() for match in pattern.finditer(header)}
         if len(found) > 1:
             raise HelperError(f"STATUS.md declares conflicting `{label}:` phases: {sorted(found)}")
-        return next(iter(found), None)
+        value = next(iter(found), None)
+        return None if value == "none" else value
 
     return declared(_CURRENT_PHASE, "Current phase"), declared(_NEXT_PHASE, "Next phase")
 
