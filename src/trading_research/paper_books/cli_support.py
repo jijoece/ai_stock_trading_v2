@@ -219,6 +219,46 @@ def paper_book_run_cycle_cli(
     return {"cycle_id": cycle_id, "experiment_policy": experiment_policy, "symbol": symbol, "results": results}
 
 
+def paper_book_run_strategy_cycle_cli(
+    db_path: Path, *, as_of, data_source: str, snapshot: Path | None, strategy: str | None, experiment_policy: str,
+    price_adjustment: str, strategy_config: Path | None, config_path: str | Path | None = None,
+) -> dict:
+    """`paper-book-run-strategy-cycle` (docs/paper-testing-plan.md Phase 3).
+
+    Stage 5 and later only. Runs the local simulated lifecycle for one closed
+    session against snapshot prices, then turns that session's stored ELIGIBLE
+    strategy signals into risk-gated, pending paper order intents on the
+    BASELINE book. No broker, scheduler or model call is involved; fails closed
+    whenever `paper_books.enabled`/`paper_books.lifecycle.enabled` is false.
+    Credentials are read only when `--data-source alpaca` must fetch a snapshot
+    that does not exist yet.
+    """
+    from ..backtesting.models import BacktestError
+    from ..forward_testing.paper_cycle import run_strategy_paper_cycle
+    from ..strategies.config import StrategyConfigError
+    from .strategy_bridge import StrategyBridgeError
+
+    cfg, error = _load_config_or_error(config_path)
+    if error:
+        return {"error": error}
+    if not cfg.enabled:
+        return {"error": "paper_books.enabled is false — mutating commands require paper configuration enabled"}
+    if not cfg.lifecycle.enabled:
+        return {"error": "paper_books.lifecycle.enabled is false — the strategy cycle fails closed"}
+    try:
+        with session(db_path) as conn:
+            return run_strategy_paper_cycle(
+                as_of=as_of, data_source=data_source, snapshot_path=snapshot, conn=conn, cfg=cfg,
+                strategy_id=strategy, experiment_policy=experiment_policy, adjustment=price_adjustment,
+                strategy_config_path=strategy_config,
+            )
+    except (BacktestError, StrategyBridgeError, lifecycle.LifecycleError) as exc:
+        # curated messages; they never carry credentials or raw provider text
+        return {"error": str(exc)[:500]}
+    except StrategyConfigError:
+        return {"error": "strategy configuration is missing or invalid"}
+
+
 def paper_experiment_compare_cli(
     db_path: Path, *, experiment_id: str, window_start: datetime, window_end: datetime,
     min_comparable_cycles: int = 1,

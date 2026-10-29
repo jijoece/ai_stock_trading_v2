@@ -13,7 +13,7 @@ from decimal import ROUND_FLOOR, Decimal
 
 from ..analysis.indicators import OHLCBar, average_true_range, atr_risk_levels
 from ..evidence_providers.economic_calendar import evaluate_economic_event_blackout
-from ..hashing import hash_config
+from ..hashing import ConfigHashError, hash_config
 from ..paper_books.lifecycle_state import calculate_partial_close_quantity
 from .configuration import BacktestConfiguration
 from .data_provider import HistoricalDataProvider
@@ -124,7 +124,7 @@ def run_backtest(
     *, configuration: BacktestConfiguration, data_provider: HistoricalDataProvider,
     signals: tuple[EntrySignal, ...], economic_events=(), conn=None,
     strategy_id: str | None = None, strategy_version: str | None = None,
-    strategy_config_hash: str | None = None,
+    strategy_config_hash: str | None = None, run_context: dict | None = None,
 ) -> BacktestResult:
     config = configuration
     config_hash = _configuration_hash(config)
@@ -132,10 +132,18 @@ def run_backtest(
     # Milestone 24 Part C1: run identity must include the signal set, not
     # just the configuration — two different signal sets run against the
     # same configuration must never collide onto one persisted run ID.
-    input_hash = hash_config({
+    identity: dict = {
         "configuration_hash": config_hash, "signal_set_hash": signal_set_hash,
         "code_version": BACKTEST_CODE_VERSION,
-    })
+    }
+    # Optional caller-supplied provenance (e.g. a historical data snapshot
+    # hash and screening profile). Absent => the legacy identity is unchanged.
+    if run_context is not None:
+        try:
+            identity["run_context"] = hash_config(run_context)
+        except ConfigHashError as exc:
+            raise BacktestError(f"run_context must contain only canonical hashable values: {exc}") from exc
+    input_hash = hash_config(identity)
     run_id = "backtest-" + hashlib.sha256(input_hash.encode()).hexdigest()[:32]
     final_as_of = datetime.combine(config.end_date, time(23, 59, 59), tzinfo=timezone.utc)
     bars_by_symbol: dict[str, tuple[HistoricalBar, ...]] = {}
@@ -385,6 +393,8 @@ def run_backtest(
         "symbols": list(config.symbols), "ambiguity_policy": config.ambiguity_policy,
         "configuration_hash": config_hash, "code_version": BACKTEST_CODE_VERSION,
     })
+    if run_context is not None:
+        report["run_context"] = run_context
     result = BacktestResult(
         backtest_run_id=run_id, configuration_hash=config_hash,
         daily_states=tuple(daily_states), fills=tuple(fills), rejected_entries=tuple(rejected),

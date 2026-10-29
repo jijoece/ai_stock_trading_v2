@@ -16,6 +16,9 @@ from .research_schema import apply_research_schema
 from .schema_version import apply_pending_schema_migrations, check_schema_not_forward_versioned
 from .shadow_alerts_schema import apply_shadow_alerts_schema
 from .shadow_operations_schema import apply_shadow_operations_schema
+from .strategy_bridge_schema import apply_strategy_bridge_schema
+from .strategy_shadow_schema import apply_strategy_shadow_schema
+from .strategy_signals_schema import apply_strategy_signals_schema
 from .trading_schema import apply_trading_schema
 from .transactions import TransactionAlreadyActiveError, begin_immediate, transaction
 
@@ -63,6 +66,9 @@ def connect(db_path: str | Path) -> sqlite3.Connection:
     apply_shadow_operations_schema(conn)
     apply_shadow_alerts_schema(conn)
     apply_paper_books_schema(conn)
+    apply_strategy_signals_schema(conn)
+    apply_strategy_shadow_schema(conn)
+    apply_strategy_bridge_schema(conn)
     apply_pending_schema_migrations(conn)
     return conn
 

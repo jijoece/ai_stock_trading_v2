@@ -238,8 +238,8 @@ def test_trigger_scratch_output_shows_guard_covers_every_discovered_table():
     explicitly including the tables the original finding cited as omitted."""
     text = TRIGGER_OUTPUT.read_text(encoding="utf-8")
     assert "Case 9:" in text
-    assert "discovered 50 trigger-protected tables" in text
-    assert "PASS: guard blocked ORM writes pre-SQL for all 50 discovered" in text
+    assert "discovered 53 trigger-protected tables" in text
+    assert "PASS: guard blocked ORM writes pre-SQL for all 53 discovered" in text
     for table in (
         "paper_book_fills",
         "research_attempts",
@@ -313,7 +313,7 @@ def test_guard_discovery_set_matches_independent_sqlite_trigger_oracle_exactly(t
     `discover_trigger_protected_tables_from_production_schema()`'s regex
     does not recognize (e.g. `BEFORE UPDATE OF ... ON ...`, or a quoted
     table identifier) would leave the oracle's *count* unchanged relative
-    to the pinned "discovered 50" text while silently dropping that table
+    to the pinned "discovered 53" text while silently dropping that table
     from the guard's live protected-table set — a real ORM-write-safety
     regression a count-only check cannot catch.
 

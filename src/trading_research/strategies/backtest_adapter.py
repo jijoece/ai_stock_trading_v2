@@ -63,6 +63,7 @@ class StrategyBacktestResult:
 def run_strategy_backtest(
     *, strategy_id: str, signals: tuple[StrategySignal, ...], configuration: BacktestConfiguration,
     data_provider: HistoricalDataProvider, regime_by_date: dict | None = None, conn=None,
+    run_context: dict | None = None,
 ) -> StrategyBacktestResult:
     strategy_signals = tuple(
         s for s in signals if s.strategy_id == strategy_id and s.status == StrategyStatus.ELIGIBLE
@@ -84,6 +85,7 @@ def run_strategy_backtest(
     result = run_backtest(
         configuration=configuration, data_provider=data_provider, signals=entry_signals, conn=conn,
         strategy_id=strategy_id, strategy_version=strategy_version, strategy_config_hash=strategy_config_hash,
+        run_context=run_context,
     )
     metrics = compute_strategy_metrics(result, entry_signals, regime_by_date=regime_by_date)
     return StrategyBacktestResult(strategy_id=strategy_id, backtest_result=result, metrics=metrics)

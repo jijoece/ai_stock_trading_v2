@@ -1,0 +1,139 @@
+{
+ "caveats": ["str"],
+ "data": {
+  "end": "str",
+  "fetch_start": "str",
+  "price_adjustment": "str",
+  "provider": "str",
+  "snapshot_hash": "str",
+  "symbols": ["str"]
+ },
+ "engine_report": {
+  "ambiguity_policy": "str",
+  "benchmark_return": "str",
+  "breakeven_exits": "int",
+  "code_version": "str",
+  "completed_trades": "int",
+  "configuration_hash": "str",
+  "daily_loss_blocks": "int",
+  "drawdown_blocks": "int",
+  "economic_event_blocks": "int",
+  "end_date": "str",
+  "ending_equity": "str",
+  "final_target_exits": "int",
+  "initial_equity": "str",
+  "maximum_drawdown": "str",
+  "partial_profit_fills": "int",
+  "realized_pnl": "str",
+  "rejected_signals": "int",
+  "run_context": {
+   "benchmark": "str",
+   "data_provider": "str",
+   "price_adjustment": "str",
+   "relative_strength_hash": "str",
+   "screening_profile_hash": "str",
+   "snapshot_hash": "str",
+   "strategy_config_hash": "str",
+   "strategy_version": "str",
+   "universe": ["str"]
+  },
+  "start_date": "str",
+  "stop_exits": "int",
+  "symbols": ["str"],
+  "total_return": "str",
+  "trailing_stop_exits": "int",
+  "unresolved_or_incomplete_evaluations": "int"
+ },
+ "relative_strength": {
+  "benchmark": "str",
+  "formula": "str",
+  "id": "str",
+  "scale": "str",
+  "sessions": "int",
+  "version": "int"
+ },
+ "report_version": "int",
+ "run": {
+  "backtest_run_id": "str",
+  "benchmark": "str",
+  "end": "str",
+  "fee_per_order": "str",
+  "initial_cash": "str",
+  "slippage_bps": "str",
+  "start": "str",
+  "strategy_config_hash": "str",
+  "strategy_id": "str",
+  "strategy_version": "str",
+  "symbols": ["str"]
+ },
+ "sample": {
+  "minimum_round_trips": "int",
+  "round_trips": "int",
+  "status": "str"
+ },
+ "screening_profile": {
+  "evaluated": [
+   {
+    "definition": "str",
+    "gate": "str",
+    "status": "str",
+    "threshold": "float"
+   }
+  ],
+  "not_evaluated": [
+   {
+    "gate": "str",
+    "status": "str"
+   }
+  ],
+  "profile": "str",
+  "source_config_hash": "str",
+  "source_config_version": "int"
+ },
+ "signals": {
+  "eligible": "int",
+  "evaluations": "int",
+  "reason_code_counts": {
+   "breakout_confirmed": "int",
+   "extension_ok": "int",
+   "no_breakout": "int",
+   "relative_strength_below_minimum": "int",
+   "relative_strength_ok": "int",
+   "trend_negative": "int",
+   "trend_positive": "int",
+   "volume_confirmed": "int",
+   "volume_insufficient": "int"
+  },
+  "reason_code_counts_note": "str",
+  "status_counts": {
+   "ELIGIBLE": "int",
+   "NOT_ELIGIBLE": "int"
+  }
+ },
+ "strategy_metrics": {
+  "average_holding_days": "str",
+  "average_holding_sessions": "str",
+  "average_return": "str",
+  "by_regime": {},
+  "expectancy": "str",
+  "exposure": "str",
+  "maximum_drawdown": "str",
+  "median_return": "str",
+  "number_of_signals": "int",
+  "number_of_trades": "int",
+  "percentage_unfilled_signals": "str",
+  "profit_factor": "NoneType",
+  "time_to_fill_sessions": "str",
+  "turnover": "str",
+  "win_rate": "str"
+ },
+ "strategy_notes": [],
+ "summary": {
+  "benchmark_return": "str",
+  "excess_return": "str",
+  "exposure": "str",
+  "maximum_drawdown": "str",
+  "round_trips": "int",
+  "strategy_return": "str"
+ }
+}
