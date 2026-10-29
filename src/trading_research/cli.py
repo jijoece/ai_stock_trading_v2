@@ -21,7 +21,7 @@ import subprocess
 import sys
 import time
 import uuid
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Sequence
 
@@ -2715,6 +2715,137 @@ def _parse_iso_datetime(value: str) -> datetime:
     return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
 
 
+def backtest_strategy_cli(
+    db_path: Path, *, strategy: str, symbols: list[str], start, end, initial_cash, data_source: str,
+    snapshot: Path | None, benchmark: str, slippage_bps, fee_per_order, split_date, cost_grid: tuple,
+    min_trades: int, price_adjustment: str, screening_config: Path | None,
+) -> dict:
+    """`backtest-strategy` CLI command (docs/historical-backtesting-plan.md Step 3).
+
+    Research only: replays a deterministic strategy scanner over daily-bar
+    history and persists the result to the `backtest_*` tables. No broker,
+    runtime, model call, or scheduler is involved. Credentials are read only
+    when `--data-source alpaca` must fetch a snapshot that does not exist yet.
+    """
+    from .analysis.screener import ScreeningConfigError
+    from .backtesting.models import BacktestError
+    from .backtesting.strategy_backtest_runner import run_strategy_backtest_report
+    from .strategies.config import StrategyConfigError
+
+    try:
+        with session(db_path) as conn:
+            return run_strategy_backtest_report(
+                strategy_id=strategy, symbols=tuple(symbols), start=start, end=end, initial_cash=initial_cash,
+                data_source=data_source, snapshot_path=snapshot, benchmark=benchmark, slippage_bps=slippage_bps,
+                fee_per_order=fee_per_order, split_date=split_date, cost_grid=cost_grid, min_trades=min_trades,
+                adjustment=price_adjustment, conn=conn, screening_config_path=screening_config,
+            )
+    except BacktestError as exc:  # curated messages; they never carry credentials or raw provider text
+        return {"error": {"code": "BACKTEST_ERROR", "message": _bounded_message(exc)}}
+    except (StrategyConfigError, ScreeningConfigError):
+        return {"error": {"code": "BACKTEST_CONFIG_ERROR", "message": "strategy or screening configuration is missing or invalid"}}
+    except Exception as exc:
+        return {"error": _sanitized_cli_error(exc)}
+
+
+def strategy_candidates_cli(
+    db_path: Path, *, strategies: list[str], symbols: list[str], as_of, data_source: str, snapshot: Path | None,
+    benchmark: str, price_adjustment: str, strategy_config: Path | None, screening_config: Path | None,
+) -> dict:
+    """`strategy-candidates` CLI command (docs/paper-testing-plan.md Phase 1).
+
+    Stage 3 and later only. Read-only: evaluates one closed session, appends
+    every evaluation to `strategy_signals` and prints the shortlist. No broker,
+    runtime, model call, scheduler or order is involved. Credentials are read
+    only when `--data-source alpaca` must fetch a snapshot that does not exist yet.
+    """
+    from .analysis.screener import ScreeningConfigError
+    from .backtesting.models import BacktestError
+    from .forward_testing.candidates import run_strategy_candidates
+    from .storage.strategy_signals_repositories import StrategySignalConflictError
+    from .strategies.config import StrategyConfigError
+
+    try:
+        with session(db_path) as conn:
+            return run_strategy_candidates(
+                strategy_ids=tuple(strategies), symbols=tuple(symbols), as_of=as_of, data_source=data_source,
+                snapshot_path=snapshot, conn=conn, benchmark=benchmark, adjustment=price_adjustment,
+                strategy_config_path=strategy_config, screening_config_path=screening_config,
+            )
+    except BacktestError as exc:  # curated messages; they never carry credentials or raw provider text
+        return {"error": {"code": "CANDIDATES_ERROR", "message": _bounded_message(exc)}}
+    except StrategySignalConflictError as exc:
+        return {"error": {"code": "CANDIDATES_CONFLICT", "message": _bounded_message(exc)}}
+    except (StrategyConfigError, ScreeningConfigError):
+        return {"error": {"code": "CANDIDATES_CONFIG_ERROR", "message": "strategy or screening configuration is missing or invalid"}}
+    except Exception as exc:
+        return {"error": _sanitized_cli_error(exc)}
+
+
+def strategy_shadow_update_cli(
+    db_path: Path, *, as_of, data_source: str, snapshot: Path | None, strategy: str | None, slippage_bps,
+    fee_per_order, price_adjustment: str, strategy_config: Path | None,
+) -> dict:
+    """`strategy-shadow-update` CLI command (docs/paper-testing-plan.md Phase 2).
+
+    Stage 4 and later only. Appends hypothetical outcomes for stored ELIGIBLE
+    signals; creates no order, intent, fill or position. Credentials are read
+    only when `--data-source alpaca` must fetch a snapshot that does not exist yet.
+    """
+    from .backtesting.models import BacktestError
+    from .forward_testing.shadow import run_shadow_update
+    from .storage.strategy_shadow_repositories import ShadowOutcomeConflictError
+    from .strategies.config import StrategyConfigError
+
+    try:
+        with session(db_path) as conn:
+            return run_shadow_update(
+                as_of=as_of, data_source=data_source, snapshot_path=snapshot, conn=conn, strategy_id=strategy,
+                slippage_bps=slippage_bps, fee_per_order=fee_per_order, adjustment=price_adjustment,
+                strategy_config_path=strategy_config,
+            )
+    except BacktestError as exc:  # curated messages; they never carry credentials or raw provider text
+        return {"error": {"code": "SHADOW_ERROR", "message": _bounded_message(exc)}}
+    except ShadowOutcomeConflictError as exc:
+        return {"error": {"code": "SHADOW_CONFLICT", "message": _bounded_message(exc)}}
+    except StrategyConfigError:
+        return {"error": {"code": "SHADOW_CONFIG_ERROR", "message": "strategy configuration is missing or invalid"}}
+    except Exception as exc:
+        return {"error": _sanitized_cli_error(exc)}
+
+
+def strategy_shadow_report_cli(db_path: Path, *, strategy: str, bands: Path | None) -> dict:
+    """`strategy-shadow-report` CLI command (docs/paper-testing-plan.md Phase 2). Read-only."""
+    from .backtesting.models import BacktestError
+    from .forward_testing.shadow_report import run_shadow_report
+
+    try:
+        with session(db_path) as conn:
+            return run_shadow_report(conn=conn, strategy_id=strategy, bands_path=bands)
+    except BacktestError as exc:
+        return {"error": {"code": "SHADOW_REPORT_ERROR", "message": _bounded_message(exc)}}
+    except Exception as exc:
+        return {"error": _sanitized_cli_error(exc)}
+
+
+def _parse_decimal_list(value: str) -> tuple:
+    from decimal import Decimal, InvalidOperation
+
+    try:
+        return tuple(Decimal(part.strip()) for part in value.split(",") if part.strip())
+    except InvalidOperation as exc:
+        raise argparse.ArgumentTypeError(f"expected comma-separated numbers, got {value!r}") from exc
+
+
+def _parse_decimal(value: str):
+    from decimal import Decimal, InvalidOperation
+
+    try:
+        return Decimal(value)
+    except InvalidOperation as exc:
+        raise argparse.ArgumentTypeError(f"expected a number, got {value!r}") from exc
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="trading-research", description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
@@ -3221,7 +3352,135 @@ def main(argv: list[str] | None = None) -> int:
     )
     p_external_queue.add_argument("--book-id", required=True, choices=("BASELINE", "ENHANCED"))
 
+    p_backtest_strategy = sub.add_parser(
+        "backtest-strategy",
+        help="Replay a deterministic strategy scanner over historical daily bars and backtest it (research only)",
+    )
+    p_backtest_strategy.add_argument("--strategy", required=True, choices=("momentum_breakout", "mean_reversion", "event_catalyst"))
+    p_backtest_strategy.add_argument("--symbols", required=True, help="Comma-separated operator-supplied universe")
+    p_backtest_strategy.add_argument("--start", required=True, type=date.fromisoformat)
+    p_backtest_strategy.add_argument("--end", required=True, type=date.fromisoformat)
+    p_backtest_strategy.add_argument("--initial-cash", required=True, type=_parse_decimal)
+    p_backtest_strategy.add_argument("--data-source", required=True, choices=("fixture", "alpaca"))
+    p_backtest_strategy.add_argument("--snapshot", type=Path, default=None, help="Snapshot file: read if present, else fetched once and written (required for alpaca)")
+    p_backtest_strategy.add_argument("--benchmark", default="SPY")
+    p_backtest_strategy.add_argument("--slippage-bps", type=_parse_decimal, default=_parse_decimal("0"))
+    p_backtest_strategy.add_argument("--fee-per-order", type=_parse_decimal, default=_parse_decimal("0"))
+    p_backtest_strategy.add_argument("--split-date", type=date.fromisoformat, default=None, help="Report before/after this date separately")
+    p_backtest_strategy.add_argument("--cost-grid", type=_parse_decimal_list, default=(), help="Comma-separated slippage levels in bps, e.g. 0,10,25")
+    p_backtest_strategy.add_argument("--min-trades", type=int, default=30, help="Round trips below this are flagged INSUFFICIENT_SAMPLE")
+    p_backtest_strategy.add_argument("--price-adjustment", choices=("split", "raw", "all"), default="split")
+    p_backtest_strategy.add_argument("--screening-config", type=Path, default=None, help="Alternative screening thresholds (default config/screening.yaml)")
+    p_backtest_strategy.add_argument("--db", type=Path, default=None, help="SQLite database (default: the configured research database)")
+
+    p_candidates = sub.add_parser(
+        "strategy-candidates",
+        help="Evaluate one closed session, record every strategy evaluation and print the shortlist (read-only; needs activation stage 3)",
+    )
+    p_candidates.add_argument("--as-of", required=True, type=date.fromisoformat, help="A closed trading session")
+    p_candidates.add_argument("--symbols", required=True, help="Comma-separated operator-supplied universe")
+    p_candidates.add_argument("--strategies", default="momentum_breakout,mean_reversion")
+    p_candidates.add_argument("--data-source", required=True, choices=("fixture", "alpaca"))
+    p_candidates.add_argument("--snapshot", type=Path, default=None, help="Snapshot file: read if present, else fetched once and written (required for alpaca)")
+    p_candidates.add_argument("--benchmark", default="SPY")
+    p_candidates.add_argument("--price-adjustment", choices=("split", "raw", "all"), default="split")
+    p_candidates.add_argument("--strategy-config", type=Path, default=None, help="Alternative strategies.yaml (default config/strategies.yaml)")
+    p_candidates.add_argument("--screening-config", type=Path, default=None, help="Alternative screening thresholds (default config/screening.yaml)")
+    p_candidates.add_argument("--db", type=Path, default=None, help="SQLite database (default: the configured research database)")
+
+    p_shadow_update = sub.add_parser(
+        "strategy-shadow-update",
+        help="Append hypothetical outcomes for stored ELIGIBLE signals up to a closed session (no orders; needs activation stage 4)",
+    )
+    p_shadow_update.add_argument("--as-of", required=True, type=date.fromisoformat, help="A closed trading session")
+    p_shadow_update.add_argument("--strategy", default=None, choices=("momentum_breakout", "mean_reversion"))
+    p_shadow_update.add_argument("--data-source", required=True, choices=("fixture", "alpaca"))
+    p_shadow_update.add_argument("--snapshot", type=Path, default=None, help="Snapshot file: read if present, else fetched once and written (required for alpaca)")
+    p_shadow_update.add_argument("--slippage-bps", type=_parse_decimal, default=_parse_decimal("10"))
+    p_shadow_update.add_argument("--fee-per-order", type=_parse_decimal, default=_parse_decimal("0"))
+    p_shadow_update.add_argument("--price-adjustment", choices=("split", "raw", "all"), default="split")
+    p_shadow_update.add_argument("--strategy-config", type=Path, default=None, help="Alternative strategies.yaml (default config/strategies.yaml)")
+    p_shadow_update.add_argument("--db", type=Path, default=None, help="SQLite database (default: the configured research database)")
+
+    p_strategy_cycle = sub.add_parser(
+        "paper-book-run-strategy-cycle",
+        help="Run the local simulated lifecycle for one closed session and turn stored ELIGIBLE strategy signals into pending BASELINE paper intents (no broker; needs activation stage 5)",
+    )
+    p_strategy_cycle.add_argument("--as-of", required=True, type=date.fromisoformat, help="A closed trading session")
+    p_strategy_cycle.add_argument("--strategy", default=None, choices=("momentum_breakout", "mean_reversion"))
+    p_strategy_cycle.add_argument("--experiment-policy", default="BASELINE_ONLY", choices=("BASELINE_ONLY",))
+    p_strategy_cycle.add_argument("--data-source", required=True, choices=("fixture", "alpaca"))
+    p_strategy_cycle.add_argument("--snapshot", type=Path, default=None, help="Snapshot file: read if present, else fetched once and written (required for alpaca)")
+    p_strategy_cycle.add_argument("--price-adjustment", choices=("split", "raw", "all"), default="split")
+    p_strategy_cycle.add_argument("--strategy-config", type=Path, default=None, help="Alternative strategies.yaml (default config/strategies.yaml)")
+    p_strategy_cycle.add_argument("--paper-books-config", type=Path, default=None, help="Alternative paper_books.yaml (default config/paper_books.yaml)")
+    p_strategy_cycle.add_argument("--db", type=Path, default=None, help="SQLite database (default: the configured research database)")
+
+    p_shadow_report = sub.add_parser(
+        "strategy-shadow-report", help="Forward shadow metrics beside the Phase 0 bands (read-only)",
+    )
+    p_shadow_report.add_argument("--strategy", required=True, choices=("momentum_breakout", "mean_reversion"))
+    p_shadow_report.add_argument("--bands", type=Path, default=None, help="JSON file of Phase 0 bands per strategy and metric")
+    p_shadow_report.add_argument("--db", type=Path, default=None, help="SQLite database (default: the configured research database)")
+
     args = parser.parse_args(argv)
+
+    if args.command == "backtest-strategy":
+        cfg = load_config()  # also loads .env, which supplies market-data credentials for a snapshot fetch
+        outcome = backtest_strategy_cli(
+            args.db if args.db is not None else cfg.research_database_path,
+            strategy=args.strategy, symbols=args.symbols.split(","), start=args.start, end=args.end,
+            initial_cash=args.initial_cash, data_source=args.data_source, snapshot=args.snapshot,
+            benchmark=args.benchmark, slippage_bps=args.slippage_bps, fee_per_order=args.fee_per_order,
+            split_date=args.split_date, cost_grid=args.cost_grid, min_trades=args.min_trades,
+            price_adjustment=args.price_adjustment, screening_config=args.screening_config,
+        )
+        print(json.dumps(outcome, indent=2, sort_keys=True, default=str))
+        return 0 if "error" not in outcome else 2
+
+    if args.command == "strategy-candidates":
+        cfg = load_config()  # also loads .env, which supplies market-data credentials for a snapshot fetch
+        outcome = strategy_candidates_cli(
+            args.db if args.db is not None else cfg.research_database_path,
+            strategies=[s.strip() for s in args.strategies.split(",") if s.strip()], symbols=args.symbols.split(","),
+            as_of=args.as_of, data_source=args.data_source, snapshot=args.snapshot, benchmark=args.benchmark,
+            price_adjustment=args.price_adjustment, strategy_config=args.strategy_config,
+            screening_config=args.screening_config,
+        )
+        print(json.dumps(outcome, indent=2, sort_keys=True, default=str))
+        return 0 if "error" not in outcome else 2
+
+    if args.command == "strategy-shadow-update":
+        cfg = load_config()  # also loads .env, which supplies market-data credentials for a snapshot fetch
+        outcome = strategy_shadow_update_cli(
+            args.db if args.db is not None else cfg.research_database_path,
+            as_of=args.as_of, data_source=args.data_source, snapshot=args.snapshot, strategy=args.strategy,
+            slippage_bps=args.slippage_bps, fee_per_order=args.fee_per_order,
+            price_adjustment=args.price_adjustment, strategy_config=args.strategy_config,
+        )
+        print(json.dumps(outcome, indent=2, sort_keys=True, default=str))
+        return 0 if "error" not in outcome else 2
+
+    if args.command == "paper-book-run-strategy-cycle":
+        from .paper_books.cli_support import paper_book_run_strategy_cycle_cli
+
+        cfg = load_config()  # also loads .env, which supplies market-data credentials for a snapshot fetch
+        outcome = paper_book_run_strategy_cycle_cli(
+            args.db if args.db is not None else cfg.research_database_path,
+            as_of=args.as_of, data_source=args.data_source, snapshot=args.snapshot, strategy=args.strategy,
+            experiment_policy=args.experiment_policy, price_adjustment=args.price_adjustment,
+            strategy_config=args.strategy_config, config_path=args.paper_books_config,
+        )
+        print(json.dumps(outcome, indent=2, sort_keys=True, default=str))
+        return 0 if "error" not in outcome else 2
+
+    if args.command == "strategy-shadow-report":
+        cfg = load_config()
+        outcome = strategy_shadow_report_cli(
+            args.db if args.db is not None else cfg.research_database_path, strategy=args.strategy, bands=args.bands,
+        )
+        print(json.dumps(outcome, indent=2, sort_keys=True, default=str))
+        return 0 if "error" not in outcome else 2
 
     if args.command == "analyze":
         if args.provider_mode == "reddit_free" and default_universe().is_valid(args.ticker.upper()):

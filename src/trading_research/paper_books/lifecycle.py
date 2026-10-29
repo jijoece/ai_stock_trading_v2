@@ -45,6 +45,7 @@ from decimal import Decimal
 from typing import Any, Callable
 
 from ..storage import paper_books_repositories as repo
+from ..storage import strategy_bridge_repositories as strategy_bridge_repo
 from ..storage import trading_repositories as trading_repo
 from ..storage.transactions import transaction
 from ..analysis.indicators import OHLCBar, average_true_range
@@ -391,20 +392,35 @@ def _evaluate_exits(
                 if eligible is not None:
                     partial_stage_id, partial_quantity = eligible
 
+        # A position opened from a strategy signal is exited by that signal's
+        # own stop, target and holding period, not the generic ones
+        # (docs/paper-testing-plan.md Phase 3, gap 5). Every other position
+        # keeps the generic inputs unchanged.
+        maximum_holding_market_days = cfg.lifecycle.exits.maximum_holding_market_days
+        current_stop_price = lifecycle_state.current_stop_price if lifecycle_state else None
+        initial_target_price = lifecycle_state.initial_target_price if lifecycle_state else None
+        strategy_link = strategy_bridge_repo.link_for_open_position(conn, book_id, symbol)
+        if strategy_link is not None:
+            maximum_holding_market_days = strategy_link.expected_holding_period
+            strategy_stop = Decimal(strategy_link.strategy_stop)
+            current_stop_price = strategy_stop if current_stop_price is None else max(strategy_stop, current_stop_price)
+            if strategy_link.strategy_target is not None:
+                initial_target_price = Decimal(strategy_link.strategy_target)
+
         decision = evaluate_exit_decision(
             book_id=book_id, symbol=symbol, position_quantity=Decimal(pos["quantity"]),
             cost_basis_per_share=cost_basis_per_share, position_opened_at=position_opened_at, as_of=as_of,
             reference_price=price_selection.price, price_point_in_time_safe=price_selection.point_in_time_safe,
             price_is_stale=price_is_stale, stop_loss_percent=cfg.lifecycle.exits.stop_loss_percent,
             profit_target_percent=cfg.lifecycle.exits.profit_target_percent,
-            maximum_holding_market_days=cfg.lifecycle.exits.maximum_holding_market_days,
+            maximum_holding_market_days=maximum_holding_market_days,
             exit_on_recommendation_reversal=cfg.lifecycle.exits.exit_on_recommendation_reversal,
             reversal_recommendation=reversal_recommendation, manual_request=manual_request,
-            current_stop_price=lifecycle_state.current_stop_price if lifecycle_state else None,
-            initial_target_price=lifecycle_state.initial_target_price if lifecycle_state else None,
+            current_stop_price=current_stop_price, initial_target_price=initial_target_price,
             trailing_stop_active=lifecycle_state.trailing_stop_active if lifecycle_state else False,
             breakeven_active=lifecycle_state.breakeven_active if lifecycle_state else False,
             partial_stage_id=partial_stage_id, partial_close_quantity=partial_quantity,
+            strategy_managed_exits=strategy_link is not None,
         )
         exit_decision_id = _exit_decision_id(book_id, symbol, as_of, decision.policy_version)
         manual_request_id = (

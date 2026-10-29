@@ -28,6 +28,8 @@ read multiple milestone variants unless the task requires comparing them.
 | Original roadmap and acceptance criteria | [`AI-Stock-Trading-Implementation-Plan.md`](AI-Stock-Trading-Implementation-Plan.md) |
 | External research-source policy | [`AI-Stock-Trading-Research-Sources.md`](AI-Stock-Trading-Research-Sources.md) |
 | Deterministic strategy candidate selection (momentum/mean-reversion/catalyst) | [`strategy-candidate-selection.md`](strategy-candidate-selection.md) |
+| Historical strategy backtesting build plan (Steps 1-4 implemented; Step 5 operator-initiated) | [`historical-backtesting-plan.md`](historical-backtesting-plan.md) |
+| Strategy paper testing build plan, activation stages 3–7 (phases 1–3 implemented; Phase 0 gate and stages 6–7 are operator-initiated) | [`paper-testing-plan.md`](paper-testing-plan.md) |
 | Latest model-provider safety closure | [`milestone12-1-2-model-provider-ownership.md`](milestone12-1-2-model-provider-ownership.md) |
 | Latest completed integrity implementation | [`milestone12-1-1-provider-health-closure.md`](milestone12-1-1-provider-health-closure.md) |
 | Prior completed integrity implementation | [`milestone12-1-provider-health-ci-integrity.md`](milestone12-1-provider-health-ci-integrity.md) |
@@ -62,6 +64,8 @@ Use runbooks for operator procedures; use code and tests for exact behavior.
 
 | Operation | Runbook |
 |---|---|
+| Historical strategy backtesting | [`runbooks/strategy-backtesting.md`](runbooks/strategy-backtesting.md) |
+| Strategy paper testing, stages 3–5 | [`runbooks/strategy-paper-testing.md`](runbooks/strategy-paper-testing.md) |
 | Alpaca paper operations | [`runbooks/alpaca-paper-operations.md`](runbooks/alpaca-paper-operations.md) |
 | Recurring local paper trading | [`runbooks/recurring-local-paper-trading.md`](runbooks/recurring-local-paper-trading.md) |
 | Paper-book operations | [`runbooks/paper-book-operations.md`](runbooks/paper-book-operations.md) |
