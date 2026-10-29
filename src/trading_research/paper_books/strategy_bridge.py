@@ -222,9 +222,16 @@ def create_strategy_entry_intents(
             reference_price_point_in_time_safe=True, risk_config=cfg.risk, daily_risk_state=daily_state,
             economic_blackout_decision=blackout_decision, enforce_authoritative_state=authoritative_enabled,
         )
-        persisted_risk_id = order_intent.persist_risk_decision(
-            conn, book_id, cycle_id, recommendation_id, signal.symbol, decision, snap.snapshot_id, clock,
-        )
+        approved = decision.decision in APPROVED_RISK_DECISIONS
+        # A rejection is final and is persisted on its own. An approved decision
+        # is persisted in the same transaction as its intent below, so an
+        # interruption can never leave an approved decision without an intent
+        # (the retry check above would otherwise skip the signal forever).
+        persisted_risk_id = risk_decision_id
+        if not approved:
+            order_intent.persist_risk_decision(
+                conn, book_id, cycle_id, recommendation_id, signal.symbol, decision, snap.snapshot_id, clock,
+            )
         if daily_state is not None and decision.decision in (
             RISK_REJECTED_DAILY_LOSS_LIMIT, RISK_REJECTED_DRAWDOWN_LIMIT,
         ):
@@ -232,7 +239,7 @@ def create_strategy_entry_intents(
                 conn, book_id=book_id, reason_code=decision.decision, risk_state_id=daily_state.risk_state_id,
                 reason="; ".join(decision.reasons), at=clock(),
             )
-        if decision.decision not in APPROVED_RISK_DECISIONS:
+        if not approved:
             outcomes.append(outcome(OUTCOME_REJECTED_BY_RISK, decision.decision, *decision.reasons, risk_decision_id=persisted_risk_id))
             continue
 
@@ -256,6 +263,10 @@ def create_strategy_entry_intents(
         # strategy link. The later lifecycle fill requires the claim and a reservation
         # equal to the frozen notional, so a bare intent row would never fill.
         with transaction(conn):
+            order_intent.persist_risk_decision(
+                conn, book_id, cycle_id, recommendation_id, signal.symbol, decision, snap.snapshot_id, clock,
+                commit=False,
+            )
             pb_repo.claim_execution_namespace(
                 conn, book_id, intent.paper_order_intent_id, EXECUTION_NAMESPACE_LOCAL, clock(),
                 "local_simulator", commit=False,

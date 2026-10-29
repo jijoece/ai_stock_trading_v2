@@ -394,12 +394,15 @@ def _evaluate_exits(
 
         # A position opened from a strategy signal is exited by that signal's
         # own stop, target and holding period, not the generic ones
-        # (docs/paper-testing-plan.md Phase 3, gap 5). Every other position
-        # keeps the generic inputs unchanged.
+        # (docs/paper-testing-plan.md Phase 3, gap 5), but only when that one
+        # signal opened every open lot of the symbol: exits sell the whole
+        # symbol-level quantity, so mixed provenance (an unlinked lot, or lots
+        # from different signals) falls back to the generic inputs. Every other
+        # position keeps the generic inputs unchanged.
         maximum_holding_market_days = cfg.lifecycle.exits.maximum_holding_market_days
         current_stop_price = lifecycle_state.current_stop_price if lifecycle_state else None
         initial_target_price = lifecycle_state.initial_target_price if lifecycle_state else None
-        strategy_link = strategy_bridge_repo.link_for_open_position(conn, book_id, symbol)
+        strategy_link = strategy_bridge_repo.exclusive_link_for_open_position(conn, book_id, symbol)
         if strategy_link is not None:
             maximum_holding_market_days = strategy_link.expected_holding_period
             strategy_stop = Decimal(strategy_link.strategy_stop)

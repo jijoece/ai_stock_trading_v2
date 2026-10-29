@@ -61,6 +61,30 @@ def get_link_for_signal(conn: sqlite3.Connection, book_id: str, strategy_signal_
     ).fetchone())
 
 
+def exclusive_link_for_open_position(conn: sqlite3.Connection, book_id: str, symbol: str) -> StrategyLink | None:
+    """The one strategy link behind *every* open lot of the symbol, else None.
+
+    Exits are evaluated against the symbol-level position, so a signal's own
+    stop, target and holding period may only govern it when that signal opened
+    all of its open quantity. A symbol with an unlinked lot (e.g. from the
+    generic paper workflow) or lots from different signals has mixed
+    provenance and returns None, so the generic exit rules apply to the whole
+    position rather than one signal's rules liquidating another's quantity."""
+    rows = conn.execute(
+        "SELECT k.* FROM paper_book_position_lots l "
+        "JOIN paper_book_fills f ON f.book_id = l.book_id AND f.fill_id = l.opening_fill_id "
+        "LEFT JOIN paper_book_strategy_links k ON k.book_id = f.book_id AND k.paper_order_intent_id = f.paper_order_intent_id "
+        "WHERE l.book_id = ? AND l.symbol = ? AND l.remaining_quantity > '0'",
+        (book_id, symbol),
+    ).fetchall()
+    if not rows:
+        return None
+    links = {row["paper_order_intent_id"] for row in rows}
+    if len(links) != 1 or None in links:
+        return None
+    return _row_to_link(rows[0])
+
+
 def link_for_open_position(conn: sqlite3.Connection, book_id: str, symbol: str) -> StrategyLink | None:
     """The strategy link behind a symbol's oldest open lot (via lot -> opening fill -> intent), if any."""
     return _row_to_link(conn.execute(

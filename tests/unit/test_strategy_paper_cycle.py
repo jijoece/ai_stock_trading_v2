@@ -47,6 +47,7 @@ from trading_research.storage import paper_books_repositories as pb_repo
 from trading_research.storage.database import connect
 from trading_research.storage.strategy_bridge_repositories import (
     StrategyLink,
+    exclusive_link_for_open_position,
     get_strategy_link,
     insert_strategy_link,
     link_for_open_position,
@@ -186,6 +187,39 @@ def test_a_retried_run_does_not_duplicate_intents(stored):
     assert conn.execute("SELECT COUNT(*) FROM paper_book_strategy_links").fetchone()[0] == count
 
 
+def test_an_interrupted_approved_entry_is_retried_to_exactly_one_intent(stored, monkeypatch):
+    from trading_research.paper_books import strategy_bridge
+
+    conn, day = stored
+    rows = _eligible(conn)[:1]
+    real_reserve = strategy_bridge.cash_ledger.reserve_for_order
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("interrupted after the risk decision, before registration commits")
+
+    monkeypatch.setattr(strategy_bridge.cash_ledger, "reserve_for_order", boom)
+    with pytest.raises(RuntimeError, match="interrupted"):
+        _entry(conn, rows, day)
+    # Nothing, including the approved risk decision, survives the interruption.
+    assert not conn.in_transaction
+    for table in ("paper_book_risk_decisions", "paper_book_orders", "paper_book_strategy_links",
+                  "paper_order_execution_claims"):
+        assert conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] == 0
+    ledger_rows = conn.execute("SELECT COUNT(*) FROM paper_book_cash_ledger").fetchone()[0]
+
+    monkeypatch.setattr(strategy_bridge.cash_ledger, "reserve_for_order", real_reserve)
+    outcomes = _entry(conn, rows, day)
+    assert [o.outcome for o in outcomes] == [OUTCOME_INTENT_CREATED_PENDING_FILL]
+    intent_id = outcomes[0].paper_order_intent_id
+    assert conn.execute("SELECT COUNT(*) FROM paper_book_risk_decisions").fetchone()[0] == 1
+    assert len(_orders(conn)) == 1
+    assert conn.execute("SELECT COUNT(*) FROM paper_book_strategy_links").fetchone()[0] == 1
+    assert conn.execute("SELECT COUNT(*) FROM paper_order_execution_claims").fetchone()[0] == 1
+    assert pb_repo.load_execution_namespace_claim(conn, BOOK, intent_id) is not None
+    assert conn.execute("SELECT COUNT(*) FROM paper_book_cash_ledger").fetchone()[0] == ledger_rows + 1
+    assert {o.outcome for o in _entry(conn, rows, day)} == {OUTCOME_SKIPPED_ALREADY_PROCESSED}
+
+
 def test_a_risk_rejection_creates_no_intent_but_keeps_the_decision(stored):
     conn, day = stored
     outcomes = _entry(conn, _eligible(conn), day, cfg=_paper_config(max_order_notional="1"))
@@ -233,19 +267,20 @@ def test_strategy_cycle_refuses_unsupported_policy_disabled_books_and_external_b
 DAY1 = datetime(2026, 1, 5, 20, 0, tzinfo=timezone.utc)  # Monday
 
 
-def _link_open_position(conn, cfg, *, stop, target, holding, symbol="AAPL", price="100", quantity="100", link=True):
+def _link_open_position(conn, cfg, *, stop, target, holding, symbol="AAPL", price="100", quantity="100", link=True,
+                        rec="rec-x", signal_id="sig-x", marks=None):
     """Open a long via the normal intent path, then (unless `link` is False) attach a strategy link to its intent."""
     book = cash_ledger.open_book(conn, book_id=BOOK, starting_cash_usd=Decimal("100000"), config_hash=cfg.config_hash, clock=lambda: DAY1)
-    snap = valuation.build_portfolio_snapshot(conn, BOOK, DAY1, maximum_price_age_seconds=999999)
+    snap = valuation.build_portfolio_snapshot(conn, BOOK, DAY1, price_provider=marks, maximum_price_age_seconds=999999)
     portfolio = risk_module.build_portfolio_context(conn, BOOK, DAY1, snap, symbol, Decimal("0"))
     decision = risk_module.evaluate_paper_risk(
         book_status=book.status, experiment_arm=book.experiment_arm, expected_arm=BOOK, context=portfolio,
         requested_quantity_hint=Decimal(quantity), reference_price=Decimal(price), reference_price_age_seconds=0,
         reference_price_point_in_time_safe=True, risk_config=cfg.risk,
     )
-    risk_id = order_intent.persist_risk_decision(conn, BOOK, "c", "rec-x", symbol, decision, snap.snapshot_id, lambda: DAY1)
+    risk_id = order_intent.persist_risk_decision(conn, BOOK, "c", rec, symbol, decision, snap.snapshot_id, lambda: DAY1)
     intent = order_intent.build_order_intent(
-        book_id=BOOK, experiment_arm=BOOK, cycle_id="c", recommendation_id="rec-x", symbol=symbol,
+        book_id=BOOK, experiment_arm=BOOK, cycle_id="c", recommendation_id=rec, symbol=symbol,
         risk_decision=decision, risk_decision_id=risk_id, portfolio_snapshot_id=snap.snapshot_id,
         config_hash=cfg.config_hash, as_of=DAY1, clock=lambda: DAY1,
     )
@@ -258,8 +293,8 @@ def _link_open_position(conn, cfg, *, stop, target, holding, symbol="AAPL", pric
         return Decimal(result["fill"]["fill_price"])
     evaluation_id = _eligible_evaluation_id(conn)
     insert_strategy_link(conn, StrategyLink(
-        book_id=BOOK, paper_order_intent_id=intent.paper_order_intent_id, recommendation_id="rec-x",
-        strategy_id="momentum_breakout", strategy_signal_id="sig-x", strategy_evaluation_id=evaluation_id,
+        book_id=BOOK, paper_order_intent_id=intent.paper_order_intent_id, recommendation_id=rec,
+        strategy_id="momentum_breakout", strategy_signal_id=signal_id, strategy_evaluation_id=evaluation_id,
         entry_condition="e", invalidation_condition="i", strategy_stop=stop, strategy_target=target,
         expected_holding_period=holding,
     ), created_at=DAY1.isoformat())
@@ -315,6 +350,45 @@ def test_strategy_target_replaces_the_generic_one(stored):
     provider = _prices(**{"2026-01-06": "120", "2026-01-07": "131"})
     assert _exit_decision(conn, cfg, datetime(2026, 1, 6, 20, tzinfo=timezone.utc), provider) == "HOLD"
     assert _exit_decision(conn, cfg, datetime(2026, 1, 7, 20, tzinfo=timezone.utc), provider) == "EXIT_PROFIT_TARGET"
+
+
+def test_mixed_provenance_lots_are_not_governed_by_one_signals_exit_rules(stored):
+    conn, _ = stored
+    cfg = _paper_config(maximum_holding_market_days=20)
+    _link_open_position(conn, cfg, stop="50", target=None, holding=1)
+    day2 = datetime(2026, 1, 6, 20, tzinfo=timezone.utc)
+    provider = _prices(**{"2026-01-06": "100"})
+    assert link_for_open_position(conn, BOOK, "AAPL") is not None
+    assert exclusive_link_for_open_position(conn, BOOK, "AAPL") is not None
+    # A second lot from the generic workflow (no strategy link) joins the symbol.
+    _link_open_position(conn, cfg, stop="1", target=None, holding=1, link=False, rec="rec-generic", marks=_prices(**{"2026-01-05": "100"}))
+    assert len(pb_repo.list_open_lots(conn, BOOK, "AAPL")) == 2
+    assert exclusive_link_for_open_position(conn, BOOK, "AAPL") is None
+    # The linked signal's one-day holding period must not liquidate the generic lot's quantity.
+    assert _exit_decision(conn, cfg, day2, provider) == "HOLD"
+
+
+def test_lots_from_two_different_signals_fall_back_to_the_generic_exit_rules(stored):
+    conn, _ = stored
+    cfg = _paper_config(maximum_holding_market_days=20)
+    _link_open_position(conn, cfg, stop="50", target=None, holding=1)
+    _link_open_position(conn, cfg, stop="99", target="101", holding=1, rec="rec-y", signal_id="sig-y",
+                        marks=_prices(**{"2026-01-05": "100"}))
+    assert len(pb_repo.list_open_lots(conn, BOOK, "AAPL")) == 2
+    assert exclusive_link_for_open_position(conn, BOOK, "AAPL") is None
+    # Neither signal's stop, target or one-day holding period decides the exit of the combined position.
+    provider = _prices(**{"2026-01-06": "102"})
+    assert _exit_decision(conn, cfg, datetime(2026, 1, 6, 20, tzinfo=timezone.utc), provider) == "HOLD"
+
+
+def test_a_single_signal_position_stays_strategy_managed(stored):
+    conn, _ = stored
+    cfg = _paper_config(maximum_holding_market_days=20)
+    _link_open_position(conn, cfg, stop="50", target=None, holding=1)
+    link = exclusive_link_for_open_position(conn, BOOK, "AAPL")
+    assert link is not None and link.strategy_signal_id == "sig-x"
+    provider = _prices(**{"2026-01-06": "100"})
+    assert _exit_decision(conn, cfg, datetime(2026, 1, 6, 20, tzinfo=timezone.utc), provider) == "EXIT_MAX_HOLDING_PERIOD"
 
 
 def test_strategy_identity_survives_to_the_fill_and_the_open_position(stored):
