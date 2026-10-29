@@ -23,7 +23,7 @@ from pathlib import Path
 from ..backtesting.models import BacktestError
 from ..backtesting.strategy_backtest_runner import DATA_SOURCES, acquire_snapshot
 from ..evaluation.market_calendar import regular_session_close
-from ..paper_books import lifecycle, strategy_bridge
+from ..paper_books import lifecycle, reconciliation, strategy_bridge
 from ..paper_books.config import PaperBooksConfiguration
 from ..research import experiment_policy as ep
 from ..shadow import pause as pause_mod
@@ -58,6 +58,16 @@ def _book_symbols(conn, book_id: str) -> set[str]:
     held = {p["symbol"] for p in pb_repo.list_positions(conn, book_id, open_only=True)}
     pending = {o["symbol"] for o in pb_repo.list_order_intents(conn, book_id) if o["status"] == "PENDING_SUBMISSION"}
     return held | pending
+
+
+def _entry_block_reasons(lifecycle_result, book_id: str) -> tuple[str, ...]:
+    reasons = [f"lifecycle failure: {reason}" for reason in lifecycle_result.failure_reasons]
+    if book_id not in lifecycle_result.books_processed:
+        reasons.append(f"book {book_id!r} was not fully processed by the lifecycle")
+    status = lifecycle_result.reconciliation_statuses.get(book_id)
+    if status != reconciliation.STATUS_MATCHED:
+        reasons.append(f"book {book_id!r} reconciliation status is {status!r}, not {reconciliation.STATUS_MATCHED}")
+    return tuple(reasons)
 
 
 def run_strategy_paper_cycle(
@@ -101,14 +111,17 @@ def run_strategy_paper_cycle(
     lifecycle_result = lifecycle.run_paper_book_lifecycle(
         conn, as_of=close, paper_books_config=cfg, price_provider=price_provider, clock=clock,
     )
-    outcomes = strategy_bridge.create_strategy_entry_intents(
+    # Lifecycle-before-entry is a safety boundary: new exposure is only created on top of a lifecycle
+    # that processed, persisted and reconciled the BASELINE book without any failure.
+    blocked_reasons = _entry_block_reasons(lifecycle_result, book_id)
+    outcomes = [] if blocked_reasons else strategy_bridge.create_strategy_entry_intents(
         conn, strategy_rows=rows, as_of=close, cfg=cfg, price_provider=price_provider, clock=clock,
         experiment_policy=experiment_policy,
     )
     counts: dict[str, int] = {}
     for item in outcomes:
         counts[item.outcome] = counts.get(item.outcome, 0) + 1
-    return {
+    report = {
         "as_of": as_of.isoformat(), "activation_stage": strategy_config.activation_stage, "book_id": book_id,
         "experiment_policy": experiment_policy,
         "data": None if snapshot is None else {
@@ -125,7 +138,8 @@ def run_strategy_paper_cycle(
             "failure_reasons": list(lifecycle_result.failure_reasons),
         },
         "entries": {
-            "signals": len(rows), "outcome_counts": dict(sorted(counts.items())),
+            "signals": len(rows), "blocked": bool(blocked_reasons), "blocked_reasons": list(blocked_reasons),
+            "outcome_counts": dict(sorted(counts.items())),
             "outcomes": [
                 {"symbol": o.symbol, "strategy_id": o.strategy_id, "strategy_signal_id": o.strategy_signal_id,
                  "outcome": o.outcome, "reasons": list(o.reasons), "risk_decision_id": o.risk_decision_id,
@@ -135,3 +149,7 @@ def run_strategy_paper_cycle(
         },
         "caveats": list(CAVEATS),
     }
+    if blocked_reasons:
+        # A top-level error makes the CLI exit non-zero while the report still shows what the lifecycle did.
+        report["error"] = "no entry intents were created: " + "; ".join(blocked_reasons)
+    return report

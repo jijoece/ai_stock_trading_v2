@@ -39,6 +39,7 @@ from trading_research.paper_books.strategy_bridge import (
     OUTCOME_REJECTED_BY_RISK,
     OUTCOME_SKIPPED_ALREADY_PROCESSED,
     OUTCOME_SKIPPED_BOUNDARY,
+    OUTCOME_SKIPPED_STALE_RISK_STATE,
     StrategyBridgeError,
     create_strategy_entry_intents,
     signal_from_row,
@@ -52,8 +53,13 @@ from trading_research.storage.strategy_bridge_repositories import (
     insert_strategy_link,
     link_for_open_position,
 )
-from trading_research.storage.strategy_signals_repositories import list_strategy_signals
+from trading_research.storage.strategy_signals_repositories import (
+    StrategySignalRecord,
+    insert_strategy_signal,
+    list_strategy_signals,
+)
 from trading_research.strategies.config import DEFAULT_STRATEGY_CONFIG_PATH
+from trading_research.strategies.contracts import derive_strategy_evaluation_id, derive_strategy_signal_content_id
 
 SYMBOLS = ("AAA", "BBB", "CCC")
 START, END = date(2023, 1, 3), date(2024, 12, 31)
@@ -63,7 +69,8 @@ BOOK = "BASELINE"
 
 
 def _paper_config(*, max_order_notional="50000", stop_loss_percent="0.08", profit_target_percent="0.15",
-                  maximum_holding_market_days=20, external=None) -> PaperBooksConfiguration:
+                  maximum_holding_market_days=20, external=None,
+                  max_daily_new_notional="50000") -> PaperBooksConfiguration:
     kwargs = {} if external is None else {"external_broker": external}
     return PaperBooksConfiguration(
         version=1, enabled=True,
@@ -72,7 +79,7 @@ def _paper_config(*, max_order_notional="50000", stop_loss_percent="0.08", profi
         execution=ExecutionSection(provider="local_simulated", allow_external_paper_broker=False, allow_live_broker=False),
         risk=RiskSection(
             max_position_weight=Decimal("0.9"), max_order_notional_usd=Decimal(max_order_notional),
-            max_daily_new_notional_usd=Decimal("50000"), minimum_cash_buffer_weight=Decimal("0.02"),
+            max_daily_new_notional_usd=Decimal(max_daily_new_notional), minimum_cash_buffer_weight=Decimal("0.02"),
             max_open_positions=20, max_symbol_concentration_weight=Decimal("0.9"),
             reject_stale_market_price_seconds=999999,
         ),
@@ -536,14 +543,15 @@ def test_cli_runs_the_cycle_and_fails_closed_on_the_shipped_config(tmp_path, sto
     assert main(base) == 2  # config/paper_books.yaml ships disabled
     assert "paper_books.enabled is false" in json.loads(capsys.readouterr().out)["error"]
 
-    assert main([*base, "--paper-books-config", str(_enabled_paper_books_yaml(tmp_path))]) == 0
+    assert main([*base, "--paper-books-config", str(_enabled_paper_books_yaml(tmp_path))]) == 2
     out = json.loads(capsys.readouterr().out)
     assert out["book_id"] == "BASELINE"
     # The shipped risk section enforces the authoritative daily-loss state, which needs a prior
-    # session's snapshot as its baseline: the very first session fails closed, creating no intent.
-    assert out["entries"]["outcome_counts"] == {OUTCOME_REJECTED_BY_RISK: 1}
-    assert "RISK_REJECTED_RISK_STATE_UNAVAILABLE" in out["entries"]["outcomes"][0]["reasons"]
-    assert out["entries"]["outcomes"][0]["paper_order_intent_id"] is None
+    # session's snapshot as its baseline: the very first session's lifecycle reports the missing
+    # baseline, so the cycle fails closed before any entry is evaluated.
+    assert out["entries"]["blocked"] is True and out["entries"]["outcomes"] == []
+    assert "start-of-day equity baseline is unavailable" in out["error"]
+    assert out["entries"]["signals"] == 1
 
 
 def test_cli_rejects_other_experiment_policies():
@@ -552,3 +560,188 @@ def test_cli_rejects_other_experiment_policies():
     with pytest.raises(SystemExit):
         main(["paper-book-run-strategy-cycle", "--as-of", "2024-01-02", "--data-source", "fixture",
               "--experiment-policy", "BOTH_SEPARATE_PAPER_BOOKS"])
+
+
+# -- concurrent cycles (review finding: approvals against stale risk state) ------
+
+
+def _entry_tables(conn):
+    return {
+        table: conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+        for table in ("paper_book_risk_decisions", "paper_order_execution_claims", "paper_book_orders",
+                      "paper_book_strategy_links", "paper_book_cash_ledger")
+    }
+
+
+def _two_eligible(conn):
+    """The fixture day's one ELIGIBLE signal plus a stored copy of it for another symbol (a distinct signal)."""
+    (row,) = _eligible(conn)
+    clone = replace(signal_from_row(row), symbol="ZZZ")
+    values = {key: row[key] for key in row.keys() if key != "recorded_at"}
+    values.update(
+        symbol="ZZZ", signal_content_id=derive_strategy_signal_content_id(clone),
+        strategy_evaluation_id=derive_strategy_evaluation_id(clone), record_hash="test-clone-zzz",
+        backtest_screening_passed=bool(values["backtest_screening_passed"]),
+    )
+    insert_strategy_signal(conn, StrategySignalRecord(**values), recorded_at=row["recorded_at"])
+    first, second = _eligible(conn)
+    assert first["symbol"] != second["symbol"]
+    return first, second
+
+
+def _solo_notional(tmp_path, conn, row, day):
+    """The notional one signal reserves when it is the only entry, measured on a throwaway copy."""
+    copy = connect(tmp_path / f"solo-{row['symbol']}.sqlite3")
+    conn.backup(copy)
+    _entry(copy, [row], day)
+    (order,) = _orders(copy)
+    return Decimal(order["notional_usd"])
+
+
+def test_concurrent_cycles_cannot_both_approve_against_the_same_stale_risk_state(tmp_path, stored, monkeypatch):
+    conn_a, day = stored
+    first, second = _two_eligible(conn_a)
+    solo = [_solo_notional(tmp_path, conn_a, first, day), _solo_notional(tmp_path, conn_a, second, day)]
+    # Room for the larger signal and only half of the smaller one: both can never fit at full size.
+    limit = max(solo) + min(solo) / 2
+    cfg = _paper_config(max_daily_new_notional=str(limit))
+    conn_b = connect(tmp_path / "db.sqlite3")
+
+    real_evaluate = risk_module.evaluate_paper_risk
+    interleaved = []
+
+    def evaluate_then_let_another_cycle_commit(**kwargs):
+        decision = real_evaluate(**kwargs)
+        if not interleaved:
+            interleaved.append(None)  # claimed first: the nested cycle evaluates through this same wrapper
+            interleaved[0] = _entry(conn_b, [second], day, cfg=cfg)  # commits before A's write lock is taken
+        return decision
+
+    monkeypatch.setattr(risk_module, "evaluate_paper_risk", evaluate_then_let_another_cycle_commit)
+    outcomes = _entry(conn_a, [first], day, cfg=cfg)
+    monkeypatch.setattr(risk_module, "evaluate_paper_risk", real_evaluate)
+
+    assert [o.outcome for o in interleaved[0]] == [OUTCOME_INTENT_CREATED_PENDING_FILL]
+    orders = _orders(conn_a)
+    assert sum(Decimal(o["notional_usd"]) for o in orders) <= limit
+    by_symbol = {o["symbol"]: Decimal(o["notional_usd"]) for o in orders}
+    assert by_symbol[second["symbol"]] == solo[1]  # the interleaved signal committed first, at full size
+    if first["symbol"] in by_symbol:  # A was re-decided against the committed state, so it was cut to what was left
+        assert [o.outcome for o in outcomes] == [OUTCOME_INTENT_CREATED_PENDING_FILL]
+        assert by_symbol[first["symbol"]] <= limit - solo[1] and by_symbol[first["symbol"]] < solo[0]
+    else:
+        assert [o.outcome for o in outcomes] == [OUTCOME_REJECTED_BY_RISK]
+    reserved = cash_ledger.reserved_cash(conn_a, BOOK)
+    assert reserved == sum(Decimal(o["notional_usd"]) for o in orders)
+    assert not conn_a.in_transaction and not conn_b.in_transaction
+
+    # A retry is idempotent: no duplicate decision, claim, reservation, intent or link.
+    before = _entry_tables(conn_a)
+    again = _entry(conn_a, [first, second], day, cfg=cfg)
+    assert {o.outcome for o in again} == {OUTCOME_SKIPPED_ALREADY_PROCESSED}
+    assert _entry_tables(conn_a) == before
+    assert before["paper_book_orders"] == before["paper_book_strategy_links"] == before["paper_order_execution_claims"]
+
+
+def test_an_entry_is_skipped_when_the_book_keeps_changing_under_it(tmp_path, stored, monkeypatch):
+    conn_a, day = stored
+    first = _eligible(conn_a)[0]
+    conn_b = connect(tmp_path / "db.sqlite3")
+    real_evaluate = risk_module.evaluate_paper_risk
+    writes = []
+
+    def evaluate_then_move_cash(**kwargs):
+        decision = real_evaluate(**kwargs)
+        writes.append(cash_ledger.reserve_for_order(
+            conn_b, BOOK, f"other-writer-{len(writes)}", Decimal("1"), regular_session_close(day),
+        ))
+        return decision
+
+    monkeypatch.setattr(risk_module, "evaluate_paper_risk", evaluate_then_move_cash)
+    (result,) = _entry(conn_a, [first], day)
+    assert result.outcome == OUTCOME_SKIPPED_STALE_RISK_STATE and result.paper_order_intent_id is None
+    assert len(writes) == 3 and all(writes)
+    assert _orders(conn_a) == []
+    for table in ("paper_book_risk_decisions", "paper_order_execution_claims", "paper_book_strategy_links"):
+        assert conn_a.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] == 0
+    assert not conn_a.in_transaction
+
+
+def test_daily_notional_counts_intents_committed_by_an_earlier_run(tmp_path, stored):
+    conn, day = stored
+    first, second = _two_eligible(conn)
+    solo = [_solo_notional(tmp_path, conn, first, day), _solo_notional(tmp_path, conn, second, day)]
+    cfg = _paper_config(max_daily_new_notional=str(max(solo) + min(solo) / 2))
+    _entry(conn, [first], day, cfg=cfg)
+    _entry(conn, [second], day, cfg=cfg)  # a separate run: nothing in memory remembers the first
+    assert sum(Decimal(o["notional_usd"]) for o in _orders(conn)) <= max(solo) + min(solo) / 2
+
+
+# -- lifecycle-before-entry (review finding: entries after a failed lifecycle) ---
+
+
+def _entry_free(conn):
+    tables = _entry_tables(conn)
+    return all(tables[t] == 0 for t in ("paper_book_risk_decisions", "paper_order_execution_claims",
+                                         "paper_book_orders", "paper_book_strategy_links"))
+
+
+def _break_pending_orders(monkeypatch):
+    from trading_research.paper_books import lifecycle
+
+    monkeypatch.setattr(lifecycle, "_process_pending_orders", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("pending boom")))
+
+
+def _break_exits(monkeypatch):
+    from trading_research.paper_books import lifecycle
+
+    monkeypatch.setattr(lifecycle, "_evaluate_exits", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("exits boom")))
+
+
+def _break_reconciliation(monkeypatch):
+    from trading_research.paper_books import lifecycle
+
+    monkeypatch.setattr(lifecycle.reconciliation, "reconcile_book",
+                        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("reconcile boom")))
+
+
+def _break_persistence(monkeypatch):
+    from trading_research.paper_books import lifecycle
+
+    monkeypatch.setattr(lifecycle.metrics_module, "save_book_metrics",
+                        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("persist boom")))
+
+
+@pytest.mark.parametrize("breaker, marker", [
+    (_break_pending_orders, "pending boom"), (_break_exits, "exits boom"),
+    (_break_reconciliation, "reconcile boom"), (_break_persistence, "persist boom"),
+])
+def test_cycle_creates_no_entries_after_a_lifecycle_failure(tmp_path, stored, stage5_config, monkeypatch, breaker, marker):
+    conn, day = stored
+    assert _eligible(conn), "an approvable signal exists, so only the lifecycle failure can stop the entry"
+    breaker(monkeypatch)
+    report = _cycle(tmp_path, conn, day, stage5_config)
+    assert any(marker in reason for reason in report["lifecycle"]["failure_reasons"])
+    assert report["entries"]["blocked"] and report["entries"]["outcomes"] == []
+    assert "no entry intents were created" in report["error"]
+    assert _entry_free(conn)
+    assert cash_ledger.reserved_cash(conn, BOOK) == 0
+
+
+def test_cycle_creates_no_entries_when_the_baseline_reconciliation_does_not_match(tmp_path, stored, stage5_config, monkeypatch):
+    from trading_research.paper_books import lifecycle
+
+    conn, day = stored
+    monkeypatch.setattr(lifecycle.reconciliation, "reconcile_book",
+                        lambda *a, **k: {"status": "ORDER_FILL_MISMATCH", "mismatches": []})
+    report = _cycle(tmp_path, conn, day, stage5_config)
+    assert report["entries"]["blocked"] and "reconciliation status" in report["error"]
+    assert _entry_free(conn)
+
+
+def test_a_successful_lifecycle_does_not_block_entries(tmp_path, stored, stage5_config):
+    conn, day = stored
+    report = _cycle(tmp_path, conn, day, stage5_config)
+    assert report["entries"]["blocked"] is False and "error" not in report
+    assert report["lifecycle"]["reconciliation_statuses"] == {BOOK: "MATCHED"}
+    assert not _entry_free(conn)

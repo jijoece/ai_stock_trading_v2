@@ -111,10 +111,19 @@ Things to know:
   and holding period. The generic fixed-percent stop no longer tightens the stop, and
   the config-wide holding limit no longer applies. Without a signal target the
   generic profit target is used, where the backtest uses an ATR-based one.
+- **Lifecycle before entries.** Entries are only evaluated when the lifecycle
+  processed and reconciled the BASELINE book (`MATCHED`) with no failure reason. Otherwise
+  the command creates no risk decision, claim, reservation, intent or link, reports
+  `entries.blocked` with the reasons, and exits non-zero; fix the cause and rerun.
 - **First session.** The shipped risk section requires a daily-loss baseline from a
-  previous snapshot, so the first session's entries are rejected
-  (`RISK_REJECTED_RISK_STATE_UNAVAILABLE`) and are not retried. Run the command one
-  session ahead of the first session whose signals you want.
+  previous snapshot. Its absence is a lifecycle failure ("start-of-day equity baseline
+  is unavailable"), so the first session creates no entries and exits non-zero. Run the
+  command one session ahead of the first session whose signals you want.
+- **Concurrent runs.** Each entry is registered under the database write lock, only if
+  the book's cash, orders, fills and pause state are unchanged since its risk decision;
+  otherwise it is re-decided against the committed state (and skipped with
+  `SKIPPED_RISK_STATE_CHANGED` if the book keeps changing). The daily new-notional limit
+  counts every BUY intent already committed for the day.
 - **Fills differ from shadow.** The paper book fills on a later session at a
   simulated price near that session's close. The shadow tracker fills at the next
   session's limit. Compare the two before reading either as evidence.
