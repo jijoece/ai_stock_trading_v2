@@ -292,6 +292,61 @@ def test_metric_arithmetic():
     assert metrics["maximum_drawdown"] == Decimal("0.2")  # 1.10 -> 0.88 from the 1.10 peak
 
 
+def test_open_fills_count_toward_fill_rate_but_not_round_trips():
+    from trading_research.forward_testing.shadow_report import compute_metrics
+
+    closed = {"state": "CLOSED", "return_fraction": "0.10", "holding_sessions": 4, "exit_session": "2024-01-02",
+              "outcome_id": "a"}
+    open_row = {"state": "OPEN"}
+    only_open = compute_metrics([{"state": "NO_FILL"}], [open_row])
+    assert only_open["fill_rate"] == Decimal(1) / Decimal(2)
+    assert only_open["round_trips"] == 0 and only_open["expectancy"] is None
+    mixed = compute_metrics([closed, {"state": "NO_FILL"}, {"state": "REJECTED"}], [open_row])
+    assert mixed["fill_rate"] == Decimal(2) / Decimal(3)
+    assert mixed["round_trips"] == 1
+
+
+def test_report_counts_each_open_signal_once_by_its_latest_state(tmp_path, stored):
+    from trading_research.forward_testing.shadow import build_outcome_record
+    from trading_research.forward_testing.shadow_report import run_shadow_report
+    from trading_research.storage.strategy_shadow_repositories import insert_shadow_outcome
+
+    conn, day = stored
+    template = dict(_eligible_rows(conn)[0])
+    signals = {}
+    for name in ("open", "no_fill", "closed", "rejected", "pending"):
+        signals[name] = {**template, "strategy_evaluation_id": f"{template['strategy_evaluation_id']}|{name}"}
+        columns = ", ".join(template)
+        conn.execute(
+            f"INSERT INTO strategy_signals ({columns}) VALUES ({', '.join('?' for _ in template)})",
+            tuple(signals[name][k] for k in template),
+        )
+    d1, d2, d3 = (add_trading_days(day, n) for n in (1, 2, 3))
+    open_details = {"entry_session": d1.isoformat(), "entry_price": "10", "last_close": "11", "holding_sessions": 1}
+    closed_details = {
+        **open_details, "exit_session": d3.isoformat(), "exit_price": "12", "exit_reason": "TARGET",
+        "holding_sessions": 2, "net_pnl_per_share": "2", "return_fraction": "0.2",
+    }
+    outcomes = [
+        ("open", d1, "OPEN", open_details), ("open", d2, "OPEN", open_details),  # repeated progress, one signal
+        ("no_fill", d1, "PENDING", {}), ("no_fill", d2, "NO_FILL", {}),
+        ("closed", d1, "OPEN", open_details), ("closed", d3, "CLOSED", closed_details),  # filled, now terminal
+        ("rejected", d2, "REJECTED", {"reject_reason": "x"}),
+        ("pending", d2, "PENDING", {}),
+    ]
+    for name, as_of, state, details in outcomes:
+        record = build_outcome_record(
+            signals[name], as_of=as_of, state=state, details=details, slippage_bps=Decimal(0),
+            fee_per_order=Decimal(0), snapshot_hash="h",
+        )
+        insert_shadow_outcome(conn, record, recorded_at="2025-03-01T00:00:00+00:00")
+
+    report = run_shadow_report(conn=conn, strategy_id=template["strategy_id"])
+    assert report["metrics"]["fill_rate"]["value"] == str(Decimal(2) / Decimal(3))  # open + closed over open + closed + no-fill
+    assert report["metrics"]["round_trips"]["value"] == "1"
+    assert report["sample"]["resolved_signals"] == 3
+
+
 def test_report_rejects_a_bad_bands_file(tmp_path, stored):
     from trading_research.forward_testing.shadow_report import run_shadow_report
 

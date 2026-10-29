@@ -17,11 +17,12 @@ Metric definitions (per share, after the slippage and fees recorded on each row)
 from __future__ import annotations
 
 import json
+from collections.abc import Sequence
 from decimal import Decimal
 from pathlib import Path
 
 from ..backtesting.models import BacktestError
-from ..storage.strategy_shadow_repositories import list_terminal_outcomes
+from ..storage.strategy_shadow_repositories import list_open_outcomes, list_terminal_outcomes
 
 MINIMUM_MARKET_DAYS = 20
 MINIMUM_ELIGIBLE_SIGNALS = 15
@@ -66,14 +67,16 @@ def _maximum_drawdown(returns: list[Decimal]) -> Decimal:
     return worst
 
 
-def compute_metrics(terminal: list) -> dict[str, Decimal | None]:
+def compute_metrics(terminal: list, open_outcomes: Sequence = ()) -> dict[str, Decimal | None]:
+    """`open_outcomes` holds one latest OPEN row per unresolved filled signal; they count toward fill_rate only."""
     closed = [r for r in terminal if r["state"] == "CLOSED"]
     no_fill = sum(1 for r in terminal if r["state"] == "NO_FILL")
     returns = [Decimal(r["return_fraction"]) for r in sorted(closed, key=lambda r: (r["exit_session"], r["outcome_id"]))]
     filled = len(closed)
+    filled_or_open = filled + len(open_outcomes)
     return {
         "round_trips": Decimal(filled),
-        "fill_rate": Decimal(filled) / Decimal(filled + no_fill) if filled + no_fill else None,
+        "fill_rate": Decimal(filled_or_open) / Decimal(filled_or_open + no_fill) if filled_or_open + no_fill else None,
         "expectancy": sum(returns, Decimal(0)) / filled if filled else None,
         "win_rate": Decimal(sum(1 for v in returns if v > 0)) / filled if filled else None,
         "maximum_drawdown": _maximum_drawdown(returns) if filled else None,
@@ -105,7 +108,7 @@ def run_shadow_report(
     ).fetchone()[0]
     terminal = list_terminal_outcomes(conn, strategy_id=strategy_id)
     sufficient = sessions >= minimum_market_days and eligible >= minimum_eligible_signals
-    metrics = compute_metrics(terminal)
+    metrics = compute_metrics(terminal, list_open_outcomes(conn, strategy_id=strategy_id))
     rows = {
         metric: {
             "value": None if metrics[metric] is None else str(metrics[metric]),

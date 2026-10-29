@@ -79,6 +79,22 @@ def list_unresolved_eligible_signals(
     ).fetchall()
 
 
+def list_open_outcomes(conn: sqlite3.Connection, *, strategy_id: str) -> list[sqlite3.Row]:
+    """Latest PROGRESS row of each signal that has filled and has no TERMINAL outcome yet.
+
+    One row per signal: a signal's earlier PROGRESS rows, and every signal that
+    already has a TERMINAL row, are excluded."""
+    return conn.execute(
+        "SELECT o.* FROM strategy_shadow_outcomes o WHERE o.strategy_id = ? AND o.row_kind = 'PROGRESS' "
+        "AND o.state = 'OPEN' AND o.as_of_session = (SELECT MAX(p.as_of_session) FROM strategy_shadow_outcomes p "
+        "WHERE p.strategy_evaluation_id = o.strategy_evaluation_id AND p.row_kind = 'PROGRESS') "
+        "AND NOT EXISTS (SELECT 1 FROM strategy_shadow_outcomes t "
+        "WHERE t.strategy_evaluation_id = o.strategy_evaluation_id AND t.row_kind = 'TERMINAL') "
+        "ORDER BY o.as_of_session, o.strategy_evaluation_id",
+        (strategy_id,),
+    ).fetchall()
+
+
 def list_terminal_outcomes(conn: sqlite3.Connection, *, strategy_id: str) -> list[sqlite3.Row]:
     return conn.execute(
         "SELECT * FROM strategy_shadow_outcomes WHERE strategy_id = ? AND row_kind = 'TERMINAL' "
