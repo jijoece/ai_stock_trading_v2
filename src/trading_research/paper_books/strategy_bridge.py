@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date, datetime
 from decimal import ROUND_FLOOR, Decimal
 from typing import Any, Callable
@@ -39,6 +39,7 @@ from . import risk as risk_module
 from .config import PaperBooksConfiguration
 from .models import (
     APPROVED_RISK_DECISIONS,
+    INTENT_STATUS_PENDING_SUBMISSION,
     ORDER_SIDE_BUY,
     RISK_REJECTED_DAILY_LOSS_LIMIT,
     RISK_REJECTED_DRAWDOWN_LIMIT,
@@ -118,7 +119,12 @@ def signal_from_row(row) -> StrategySignal:
     return signal
 
 
-def _require_runnable(cfg: PaperBooksConfiguration, experiment_policy: str) -> str:
+def validate_strategy_cycle_config(cfg: PaperBooksConfiguration, experiment_policy: str) -> str:
+    """Fail closed unless `cfg` describes a local simulated BASELINE-only strategy cycle; returns the book id.
+
+    Callable before anything is fetched or written: the lifecycle that runs ahead of entries processes
+    every enabled book and enqueues external submissions, so the whole configuration, not just the entry
+    step, must be acceptable before it starts."""
     if not cfg.enabled:
         raise StrategyBridgeError("paper_books.enabled is false — the strategy cycle fails closed")
     if not cfg.lifecycle.enabled:
@@ -141,6 +147,11 @@ def _require_runnable(cfg: PaperBooksConfiguration, experiment_policy: str) -> s
         raise StrategyBridgeError(
             f"paper book {book_id!r} is enabled for external submission; the strategy cycle is local simulated only"
         )
+    if cfg.is_book_enabled(cfg.enhanced.book_id):
+        raise StrategyBridgeError(
+            f"paper book {cfg.enhanced.book_id!r} (ENHANCED) is enabled; the lifecycle processes every enabled book, "
+            "so a BASELINE_ONLY strategy cycle would fill, exit and reconcile it too. Disable it for strategy cycles"
+        )
     return book_id
 
 
@@ -153,6 +164,19 @@ def _committed_daily_new_notional(conn, book_id: str, market_date: date) -> Deci
         ),
         Decimal("0"),
     )
+
+
+def _pending_new_position_count(conn, book_id: str) -> int:
+    """Distinct symbols with a pending BUY that will open a position the book does not hold yet.
+
+    `build_portfolio_context` counts only filled positions, and the later lifecycle fill does not re-check
+    `max_open_positions`, so without this a batch of approvals can fill past the limit."""
+    held = {position["symbol"] for position in pb_repo.list_positions(conn, book_id, open_only=True)}
+    return len({
+        order["symbol"] for order in pb_repo.list_order_intents(conn, book_id)
+        if order["side"] == ORDER_SIDE_BUY and order["status"] == INTENT_STATUS_PENDING_SUBMISSION
+        and order["symbol"] not in held
+    })
 
 
 def _risk_state_fingerprint(conn, book_id: str) -> tuple:
@@ -174,7 +198,7 @@ def create_strategy_entry_intents(
     exactly what the decision was computed from; otherwise the decision is recomputed from the committed
     state. Two concurrent cycles can therefore never both approve against the same stale cash, position
     count or daily-notional state."""
-    book_id = _require_runnable(cfg, experiment_policy)
+    book_id = validate_strategy_cycle_config(cfg, experiment_policy)
     book_def = cfg.book(book_id)
     book = cash_ledger.open_book(
         conn, book_id=book_id, starting_cash_usd=book_def.starting_cash_usd, config_hash=cfg.config_hash, clock=clock,
@@ -223,6 +247,9 @@ def create_strategy_entry_intents(
             )
             portfolio = risk_module.build_portfolio_context(
                 conn, book_id, as_of, snap, signal.symbol, _committed_daily_new_notional(conn, book_id, as_of.date()),
+            )
+            portfolio = replace(
+                portfolio, open_position_count=portfolio.open_position_count + _pending_new_position_count(conn, book_id),
             )
 
             # Risk-based size from the book's equity and the signal's own stop distance.

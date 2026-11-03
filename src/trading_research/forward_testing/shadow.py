@@ -151,8 +151,12 @@ def build_outcome_record(
         net_pnl_per_share=_text(details.get("net_pnl_per_share")), return_fraction=_text(details.get("return_fraction")),
         slippage_bps=str(slippage_bps), fee_per_order=str(fee_per_order), snapshot_hash=snapshot_hash,
     )
+    # `snapshot_hash` is provenance, not outcome content. The snapshot is built from whichever signals are
+    # still unresolved, so an identical retry can legitimately use a different snapshot; keeping it out of
+    # the content hash stops that from reading as a conflict, while any change to the outcome itself,
+    # the costs or the identifiers still does.
     content = asdict(unhashed)
-    del content["record_hash"]
+    del content["record_hash"], content["snapshot_hash"]
     return replace(unhashed, record_hash=hash_config(content))
 
 

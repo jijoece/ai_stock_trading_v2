@@ -238,6 +238,12 @@ Where the code differs from, or settles, the text above:
 - **Safety typecheck.** `nox -s safety_typecheck` covers a fixed file list in `pyright-safety.json`.
   Only `storage/schema_version.py` among the changed files is on it (clean). The `paper_books/` changes
   are not on that list; they are covered by the test suite only.
+- **Review follow-ups (PR 38).** The strategy cycle validates its whole configuration, including a disabled
+  ENHANCED book, before the lifecycle runs; pending entries count toward `max_open_positions`; shadow
+  `snapshot_hash` is provenance and no longer part of the outcome's content hash, so a retry on a different
+  fixture snapshot is not a conflict; `run_backtest` takes an optional `history_start` so each backtest or
+  split window keeps its indicator warm-up bars without widening the reporting window; and a split report
+  assigns each signal to the window its entry session falls in.
 - **Pinned trigger count.** The three new append-only tables raise the production trigger-protected table
   count from 50 to 53; the PR 13 scratch output, `EVALUATION.md` and `test_pr13_evaluation_docs.py` were
   updated to match after re-running `scratch_trigger_orm_vs_core.py`.

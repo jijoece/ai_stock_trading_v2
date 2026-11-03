@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any
 
 from ..analysis.screener import load_screening_config
+from ..evaluation.market_calendar import next_trading_session
 from ..hashing import hash_config
 from ..strategies.backtest_adapter import StrategyBacktestResult, run_strategy_backtest
 from ..strategies.config import load_strategy_config
@@ -183,12 +184,18 @@ def run_strategy_backtest_report(
         return run_strategy_backtest(
             strategy_id=strategy_id, signals=signals, configuration=config, data_provider=provider,
             conn=conn, run_context=run_context,
+            # Each window keeps the indicator history that precedes it, so signals near its start are
+            # not rejected for lack of ATR bars the snapshot already holds.
+            history_start=warmup_start(window_start),
         )
 
     def within(window_start: date, window_end: date) -> tuple[StrategySignal, ...]:
+        # A signal is generated at a session's close and can only execute in the next session, so it
+        # belongs to the window that session falls in. Assigning by generation date would put the
+        # signal from the last day of a window into a run that can never fill it.
         return tuple(
             s for s in replay.signals
-            if s.data_as_of is not None and window_start <= s.data_as_of.date() <= window_end
+            if s.data_as_of is not None and window_start <= next_trading_session(s.data_as_of.date()) <= window_end
         )
 
     primary = run(replay.signals, start, end, slippage_bps)

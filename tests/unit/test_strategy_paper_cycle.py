@@ -70,7 +70,7 @@ BOOK = "BASELINE"
 
 def _paper_config(*, max_order_notional="50000", stop_loss_percent="0.08", profit_target_percent="0.15",
                   maximum_holding_market_days=20, external=None,
-                  max_daily_new_notional="50000") -> PaperBooksConfiguration:
+                  max_daily_new_notional="50000", max_open_positions=20) -> PaperBooksConfiguration:
     kwargs = {} if external is None else {"external_broker": external}
     return PaperBooksConfiguration(
         version=1, enabled=True,
@@ -80,7 +80,7 @@ def _paper_config(*, max_order_notional="50000", stop_loss_percent="0.08", profi
         risk=RiskSection(
             max_position_weight=Decimal("0.9"), max_order_notional_usd=Decimal(max_order_notional),
             max_daily_new_notional_usd=Decimal(max_daily_new_notional), minimum_cash_buffer_weight=Decimal("0.02"),
-            max_open_positions=20, max_symbol_concentration_weight=Decimal("0.9"),
+            max_open_positions=max_open_positions, max_symbol_concentration_weight=Decimal("0.9"),
             reject_stale_market_price_seconds=999999,
         ),
         valuation=ValuationSection(price_source="persisted_market_bar", maximum_price_age_seconds=999999, missing_price_policy="MARK_UNVALUED"),
@@ -453,6 +453,47 @@ def test_cycle_creates_intents_then_the_next_session_fills_them(tmp_path, stored
     assert all(d["decision"] == "HOLD" for d in second["lifecycle"]["exit_decisions"])
 
 
+def _external_baseline_config():
+    from trading_research.paper_books.config import ExternalBrokerSection
+
+    external = ExternalBrokerSection.__new__(ExternalBrokerSection)
+    object.__setattr__(external, "enabled", True)
+    object.__setattr__(external, "enabled_book_ids", (BOOK,))
+    return replace(_paper_config(), external_broker=external)
+
+
+def _enhanced_enabled_config():
+    return replace(
+        _paper_config(),
+        enhanced=PaperBookDefinition(enabled=True, book_id="ENHANCED", starting_cash_usd=Decimal("100000")),
+    )
+
+
+@pytest.mark.parametrize("make_config, message", [
+    (_external_baseline_config, "external submission"),
+    (_enhanced_enabled_config, "ENHANCED"),
+])
+def test_an_unsupported_config_is_refused_before_the_lifecycle_or_any_snapshot_fetch(
+    tmp_path, stored, stage5_config, monkeypatch, make_config, message,
+):
+    """Review follow-up on PR 38: `run_paper_book_lifecycle` processes every enabled book and enqueues external
+    submissions, so a config the bridge would reject must be rejected before the lifecycle ever runs."""
+    from trading_research.forward_testing import paper_cycle
+
+    conn, day = stored
+    _entry(conn, _eligible(conn), day)  # seed a pending BASELINE order the lifecycle could otherwise touch
+    before = (_orders(conn), conn.execute("SELECT COUNT(*) FROM paper_external_submission_queue").fetchone()[0])
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("ran before the configuration was validated")
+
+    monkeypatch.setattr(paper_cycle.lifecycle, "run_paper_book_lifecycle", forbidden)
+    monkeypatch.setattr(paper_cycle, "acquire_snapshot", forbidden)
+    with pytest.raises(StrategyBridgeError, match=message):
+        _cycle(tmp_path, conn, add_trading_days(day, 1), stage5_config, cfg=make_config())
+    assert (_orders(conn), conn.execute("SELECT COUNT(*) FROM paper_external_submission_queue").fetchone()[0]) == before
+
+
 def test_cycle_rerun_for_the_same_session_adds_nothing(tmp_path, stored, stage5_config):
     conn, day = stored
     _cycle(tmp_path, conn, day, stage5_config)
@@ -665,6 +706,24 @@ def test_an_entry_is_skipped_when_the_book_keeps_changing_under_it(tmp_path, sto
     for table in ("paper_book_risk_decisions", "paper_order_execution_claims", "paper_book_strategy_links"):
         assert conn_a.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] == 0
     assert not conn_a.in_transaction
+
+
+def test_pending_entries_count_toward_the_open_position_limit(stored):
+    """Review follow-up on PR 38: approved intents stay pending until a later lifecycle run, and that fill path
+    does not re-check `max_open_positions`, so pending entries must already occupy a slot at approval time."""
+    conn, day = stored
+    first, second = _two_eligible(conn)
+    outcomes = _entry(conn, [first, second], day, cfg=_paper_config(max_open_positions=1))
+    assert [o.outcome for o in outcomes] == [OUTCOME_INTENT_CREATED_PENDING_FILL, OUTCOME_REJECTED_BY_RISK]
+    assert "REJECTED_MAX_OPEN_POSITIONS" in outcomes[1].reasons
+    assert len(_orders(conn)) == 1
+
+
+def test_pending_entries_for_symbols_already_held_do_not_take_a_second_slot(stored):
+    conn, day = stored
+    first, second = _two_eligible(conn)
+    outcomes = _entry(conn, [first, second], day, cfg=_paper_config(max_open_positions=2))
+    assert {o.outcome for o in outcomes} == {OUTCOME_INTENT_CREATED_PENDING_FILL}
 
 
 def test_daily_notional_counts_intents_committed_by_an_earlier_run(tmp_path, stored):

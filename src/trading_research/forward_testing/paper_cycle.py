@@ -95,7 +95,10 @@ def run_strategy_paper_cycle(
     if state.state != pause_mod.STATE_ACTIVE:
         raise BacktestError(f"shadow pause state is {state.state} ({state.reason}); the paper cycle fails closed")
 
-    book_id = cfg.baseline.book_id
+    # Validate the whole configuration before anything is fetched or written: the lifecycle below touches
+    # every enabled book and can enqueue external submissions, so it must not start on a config the entry
+    # step would reject.
+    book_id = strategy_bridge.validate_strategy_cycle_config(cfg, experiment_policy)
     rows = _unprocessed_rows(conn, session=as_of, strategy_id=strategy_id)
     symbols = tuple(sorted({row["symbol"] for row in rows} | _book_symbols(conn, book_id)))
     snapshot = None

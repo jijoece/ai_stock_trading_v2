@@ -34,7 +34,7 @@ market-data API (the paper broker is never touched).
 | `--benchmark` | Relative-strength and benchmark-return reference. Default `SPY`. |
 | `--slippage-bps`, `--fee-per-order` | Cost model for the primary run. |
 | `--cost-grid 0,10,25` | Re-run at each slippage level and report them side by side. |
-| `--split-date` | Report the window up to the date and the window after it separately. |
+| `--split-date` | Report the window up to the date and the window after it separately. A signal belongs to the window its entry session falls in, so one generated at the close of the split date is out-of-sample. Each window keeps the indicator warm-up bars that precede it. |
 | `--min-trades` | Round trips below this are flagged `INSUFFICIENT_SAMPLE`. Default 30. |
 | `--price-adjustment` | `split` (default), `raw` or `all`. Recorded in the snapshot and run identity. |
 | `--screening-config` | Alternative screening thresholds. Default `config/screening.yaml`. |

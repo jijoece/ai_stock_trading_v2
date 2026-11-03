@@ -231,6 +231,59 @@ def test_refuses_before_stage_4(tmp_path, stored):
     assert conn.execute("SELECT COUNT(*) FROM strategy_shadow_outcomes").fetchone()[0] == 0
 
 
+def test_a_retry_after_an_older_signal_resolved_does_not_conflict(tmp_path, stage4_config, full_replay):
+    """Review follow-up on PR 38: with no snapshot file the fixture snapshot is built from the unresolved
+    signals only, so resolving an older signal changed the snapshot hash and an identical retry of the same
+    session raised ShadowOutcomeConflictError for the still-pending signal."""
+    days = sorted({s.data_as_of.date() for s in full_replay.signals})
+    first = days[0]
+    second = next(day for day in days if day >= add_trading_days(first, 45))
+    conn = connect(tmp_path / "db.sqlite3")
+    for day in (first, second):
+        run_strategy_candidates(
+            strategy_ids=("momentum_breakout",), symbols=SYMBOLS, as_of=day, data_source="fixture",
+            snapshot_path=tmp_path / f"cand-{day}.snapshot.json", conn=conn, strategy_config_path=stage4_config,
+            now=NOW,
+        )
+    kwargs = dict(as_of=second, data_source="fixture", snapshot_path=None, conn=conn,
+                  strategy_config_path=stage4_config, now=NOW)
+    first_run = run_shadow_update(**kwargs)
+    assert first_run["states"].get("PENDING", 0) >= 1 and first_run["newly_terminal"] >= 1
+    stored = conn.execute("SELECT COUNT(*) FROM strategy_shadow_outcomes").fetchone()[0]
+
+    retry = run_shadow_update(**kwargs)  # must not raise
+    assert retry["recorded"] == 0
+    assert conn.execute("SELECT COUNT(*) FROM strategy_shadow_outcomes").fetchone()[0] == stored
+
+
+def test_a_genuinely_different_outcome_for_the_same_day_still_conflicts(tmp_path, stored, stage4_config):
+    """Provenance is not part of the content hash, but outcome content still is."""
+    from trading_research.storage.strategy_shadow_repositories import (
+        ShadowOutcomeConflictError,
+        insert_shadow_outcome,
+    )
+    from trading_research.forward_testing.shadow import build_outcome_record
+
+    conn, day = stored
+    row = _eligible_rows(conn)[0]
+    record = build_outcome_record(
+        row, as_of=day, state=PENDING, details={}, slippage_bps=Decimal("10"), fee_per_order=Decimal("0"),
+        snapshot_hash="a" * 64,
+    )
+    assert insert_shadow_outcome(conn, record, recorded_at="t") is True
+    same_content_other_snapshot = build_outcome_record(
+        row, as_of=day, state=PENDING, details={}, slippage_bps=Decimal("10"), fee_per_order=Decimal("0"),
+        snapshot_hash="b" * 64,
+    )
+    assert insert_shadow_outcome(conn, same_content_other_snapshot, recorded_at="t") is False
+    different = build_outcome_record(
+        row, as_of=day, state=PENDING, details={}, slippage_bps=Decimal("99"), fee_per_order=Decimal("0"),
+        snapshot_hash="a" * 64,
+    )
+    with pytest.raises(ShadowOutcomeConflictError):
+        insert_shadow_outcome(conn, different, recorded_at="t")
+
+
 # -- report ----------------------------------------------------------------------
 
 

@@ -86,7 +86,10 @@ Prerequisites, all in a config copy you pass with `--paper-books-config` (the sh
 - `lifecycle.pending_orders.expire_after_market_days: 2` or more. A strategy intent
   is created after the close and filled by the next session's lifecycle, so the
   shipped value of 1 would cancel it first; the command refuses a shorter expiry;
-- the BASELINE book not enabled for external submission.
+- the BASELINE book not enabled for external submission, and the ENHANCED book
+  disabled. The lifecycle that runs first processes every enabled book (and queues
+  external submissions for an externally enabled one), so the command validates all of
+  this before it fetches data or touches the lifecycle, and refuses otherwise.
 
 ```bash
 python -m trading_research.cli paper-book-run-strategy-cycle --as-of 2026-11-03 \
@@ -107,6 +110,8 @@ Things to know:
 - **Size.** A signal never sets its size. The proposal is 1% of the book's equity
   divided by the distance from the signal's limit to its own stop; `risk.py` then
   caps it. A risk rejection creates no intent and is stored as a risk decision.
+  Pending entries already count toward `max_open_positions` (the later fill does not
+  re-check it) and toward the daily new-notional cap.
 - **Exits.** A position opened from a signal is exited by that signal's stop, target
   and holding period. The generic fixed-percent stop no longer tightens the stop, and
   the config-wide holding limit no longer applies. Without a signal target the
