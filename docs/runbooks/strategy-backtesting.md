@@ -67,13 +67,15 @@ credentials or raw provider output.
   set only when the engine actually rejected entries for `DRAWDOWN_LIMIT` (`entries_blocked`).
   Timing separates the two cases: `first_blocked_session`, `last_blocked_session` and
   `blocked_sessions` bound the blocked period; `resumed` is true when a buy filled after the
-  first block (`first_fill_after_block`, `entries_after_block`) and the warning then covers only
-  the blocked sessions. `recovered` is read from the engine's per-session opening state, not
+  first block (`first_fill_after_block`, `entries_after_block`). That is history only: a run can
+  resume and then breach again, so `resumed` with `recovered` false means the breaker was active
+  at the final open, and the warning says so. `recovered` is read from the engine's per-session opening state, not
   from fills: it is true when a session opened inside the limit after the last breached one
   (`last_breach_session`, `recovered_on`), even if no entry filled again because no signal
   came or later signals were rejected for other reasons; the warning then limits the halt to
   the blocked sessions and notes the impaired base. When `resumed` and `recovered` are both
-  false, opening drawdown was still at the limit on the final session and the run is
+  false, or `resumed` is true and `recovered` is false, opening drawdown was still at the limit on
+  the final session and the run is
   impaired: read `last_fill_session`, since return, exposure and trade counts after the first
   blocked entry measure the halt, not the strategy, and a multi-year headline figure may
   describe only the months before it. Prefer windows that start fresh (`--split-date`) in
@@ -116,4 +118,7 @@ A snapshot holds the symbols, date range (including warm-up history before `--st
 adjustment, bars and a content hash. Reading it recomputes the hash and refuses a file
 that was altered. The file is never overwritten; to refetch, move it aside. A snapshot
 whose provider, adjustment, symbols or date coverage does not match the request is
-refused rather than silently reused.
+refused rather than silently reused. So is one fetched before every session up to `--end`
+had closed (for example an `--end` of today fetched before the close): the missing
+sessions would otherwise stay missing while the report names the full range. Move the
+file aside and refetch.

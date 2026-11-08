@@ -315,6 +315,47 @@ def test_missing_snapshot_is_fetched_and_written(tmp_path):
     assert read_snapshot(path).content_hash == snap.content_hash
 
 
+def test_snapshot_fetched_before_the_final_close_is_not_reused_as_complete(tmp_path):
+    path = tmp_path / "early.json"
+    mid_session = datetime(2025, 11, 28, 17, 0, tzinfo=timezone.utc)  # 12:00 ET, before the 13:00 ET close
+    early = load_or_fetch_snapshot(
+        path, client_factory=_client, symbols=("AAPL", "SPY"), start=NORMAL_DAY,
+        end=EARLY_CLOSE_DAY, adjustment="raw", as_of=mid_session, warmup_sessions=0,
+    )
+    assert early.end == EARLY_CLOSE_DAY
+    assert [b.session_date for b in early.bars_by_symbol["AAPL"]] == [NORMAL_DAY]
+
+    def explode():
+        raise AssertionError("an incomplete snapshot must be refused, not silently refetched")
+
+    # Same moment: nothing has closed since, so the snapshot is still complete for it.
+    again = load_or_fetch_snapshot(
+        path, client_factory=explode, symbols=("AAPL", "SPY"), start=NORMAL_DAY,
+        end=EARLY_CLOSE_DAY, adjustment="raw", as_of=mid_session, warmup_sessions=0,
+    )
+    assert again.content_hash == early.content_hash
+    with pytest.raises(BacktestError, match="move the file aside"):
+        load_or_fetch_snapshot(
+            path, client_factory=explode, symbols=("AAPL", "SPY"), start=NORMAL_DAY,
+            end=EARLY_CLOSE_DAY, adjustment="raw", as_of=AS_OF, warmup_sessions=0,
+        )
+
+
+def test_snapshot_fetched_after_the_final_close_stays_reusable_later(tmp_path):
+    path = tmp_path / "after.json"
+    after_close = datetime(2025, 11, 28, 19, 0, tzinfo=timezone.utc)  # 14:00 ET, after the 13:00 ET close
+    first = load_or_fetch_snapshot(
+        path, client_factory=_client, symbols=("AAPL", "SPY"), start=NORMAL_DAY,
+        end=EARLY_CLOSE_DAY, adjustment="raw", as_of=after_close, warmup_sessions=0,
+    )
+    assert [b.session_date for b in first.bars_by_symbol["AAPL"]] == [NORMAL_DAY, EARLY_CLOSE_DAY]
+    later = load_or_fetch_snapshot(
+        path, client_factory=_client, symbols=("AAPL", "SPY"), start=NORMAL_DAY,
+        end=EARLY_CLOSE_DAY, adjustment="raw", as_of=AS_OF, warmup_sessions=0,
+    )
+    assert later.content_hash == first.content_hash
+
+
 def test_existing_snapshot_must_match_requested_parameters(tmp_path):
     path = tmp_path / "snap.json"
     write_snapshot(path, _snapshot("raw"))

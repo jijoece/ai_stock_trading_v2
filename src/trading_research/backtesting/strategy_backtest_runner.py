@@ -121,7 +121,8 @@ def risk_breaker_summary(result: BacktestResult, drawdown_limit: Decimal) -> dic
     does not latch: open positions can recover and entries can fill again, so `tripped` means only that
     entries were blocked at some point. `first_blocked_session`, `last_blocked_session` and
     `first_fill_after_block` separate the blocked period from any resumed trading; `resumed` is set
-    when a buy filled after the first block. `recovered` is read from the engine's per-session opening
+    when a buy filled after the first block, which is history only: a run can resume and then breach
+    again, so `resumed` with `recovered` false means the breaker was active at the final open. `recovered` is read from the engine's per-session opening
     breaches (`drawdown_breach_sessions`), not from fills: it is set when a session opens inside the
     limit after the last breached one, even if no entry ever filled again. Closing drawdown is recorded after the entry decision, so a
     close at the limit can recover by the next open (or be the final session) without trading ever
@@ -158,7 +159,19 @@ def risk_breaker_summary(result: BacktestResult, drawdown_limit: Decimal) -> dic
     warning = observation = None
     if tripped:
         span = f"{len(blocked_sessions)} sessions ({first_blocked}..{last_blocked})"
-        if resumed:
+        if resumed and not recovered:
+            warning = (
+                f"The engine blocked {blocked} entries on {span} because drawdown was at or beyond the "
+                f"{drawdown_limit:.0%} limit at the session open. Entries resumed on {buys_after_block[0]}, "
+                f"but opening drawdown was at the limit again and still was at the open of the final session "
+                f"({last_breach}), so the breaker was active when the run ended. Return, exposure and trade "
+                f"counts after {first_blocked} mix resumed trading with later halted sessions and do not "
+                "measure the strategy"
+                + (" (the final close was still at the limit)" if ended_at_limit else "")
+                + "; the peak is never reset, so a run holding no positions cannot recover. "
+                "Compare windows that start fresh."
+            )
+        elif resumed:
             warning = (
                 f"The engine blocked {blocked} entries on {span} because drawdown was at or beyond the "
                 f"{drawdown_limit:.0%} limit at the session open. The breaker does not latch: entries "

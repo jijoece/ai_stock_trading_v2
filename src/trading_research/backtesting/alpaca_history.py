@@ -19,12 +19,12 @@ import os
 import tempfile
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Protocol
 
-from ..evaluation.market_calendar import MarketCalendarError, regular_session_close
+from ..evaluation.market_calendar import MarketCalendarError, is_trading_day, regular_session_close
 from ..evidence_providers.errors import ProviderError
 from ..evidence_providers.models import PriceBar
 from ..hashing import hash_config
@@ -322,6 +322,29 @@ def alpaca_client_from_environment(env: Mapping[str, str] | None = None, *, feed
     return AlpacaMarketDataClient(api_key=key, api_secret=secret, http_client=http, feed=feed)
 
 
+def _last_closed_session(moment: datetime, end: date) -> date | None:
+    """The latest trading session on or before `end` whose regular close is at or before `moment`."""
+    day = min(moment.astimezone(timezone.utc).date(), end)
+    for _ in range(14):
+        if is_trading_day(day) and regular_session_close(day) <= moment:
+            return day
+        day -= timedelta(days=1)
+    return None
+
+
+def _require_complete_for(snapshot: HistoricalSnapshot, *, end: date, as_of: datetime) -> None:
+    """Refuse a snapshot fetched before sessions that have closed since.
+
+    `fetch_snapshot` drops sessions that had not closed at its `as_of` but still records the requested
+    `end`, so the stored range alone cannot show that the final sessions are missing.
+    """
+    if _last_closed_session(snapshot.fetched_as_of, end) != _last_closed_session(as_of, end):
+        raise BacktestError(
+            f"snapshot was fetched at {snapshot.fetched_as_of.isoformat()}, before every session up to "
+            f"{end} had closed, so later sessions are missing; move the file aside to refetch"
+        )
+
+
 def load_or_fetch_snapshot(
     path: Path | str, *, client_factory: Callable[[], PriceHistoryClient], symbols: tuple[str, ...],
     start: date, end: date, adjustment: str, as_of: datetime,
@@ -348,6 +371,7 @@ def load_or_fetch_snapshot(
                 f"snapshot coverage {snapshot.fetch_start}..{snapshot.end} does not cover the "
                 f"requested warm-up and range ending {end}"
             )
+        _require_complete_for(snapshot, end=end, as_of=as_of)
         return snapshot
     snapshot = fetch_snapshot(
         client_factory(), symbols=names, start=start, end=end, adjustment=adjustment,

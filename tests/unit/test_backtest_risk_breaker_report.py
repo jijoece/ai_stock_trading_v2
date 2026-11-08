@@ -165,6 +165,33 @@ def test_a_breach_after_the_last_block_without_a_signal_delays_recovery():
     assert out["recovered"] is True and out["recovered_on"] == "2024-01-04"
 
 
+def test_resumed_then_rebreached_through_the_final_open_discloses_the_terminal_halt():
+    # Blocked on day 0, a buy fills on day 2, then the breaker trips again on days 3-4 (the final open).
+    out = risk_breaker_summary(
+        _result(["-0.16", "-0.05", "0", "-0.16", "-0.16"], ["DRAWDOWN_LIMIT", "DRAWDOWN_LIMIT"],
+                fill_days=(2,), rejected_days=(0, 3), breach_days=(0, 3, 4)),
+        LIMIT,
+    )
+    assert out["resumed"] is True and out["first_fill_after_block"] == "2024-01-04"
+    assert out["recovered"] is False and out["recovered_on"] is None
+    assert out["last_breach_session"] == "2024-01-06" and out["ended_at_limit"] is True
+    warning = out["warning"]
+    assert "Entries resumed on 2024-01-04" in warning and "final session (2024-01-06)" in warning
+    assert "breaker was active when the run ended" in warning and "Compare windows that start fresh" in warning
+    assert "does not latch" not in warning
+
+
+def test_resumed_then_recovered_at_the_end_is_still_described_as_recovered():
+    out = risk_breaker_summary(
+        _result(["-0.16", "-0.05", "0", "-0.16", "-0.05"], ["DRAWDOWN_LIMIT", "DRAWDOWN_LIMIT"],
+                fill_days=(2,), rejected_days=(0, 3), breach_days=(0, 3)),
+        LIMIT,
+    )
+    assert out["resumed"] is True and out["recovered"] is True and out["recovered_on"] == "2024-01-06"
+    assert out["last_breach_session"] == "2024-01-05"
+    assert "does not latch" in out["warning"] and "breaker was active when the run ended" not in out["warning"]
+
+
 def test_blocked_entries_alone_count_as_tripped():
     out = risk_breaker_summary(_result(["0", "-0.05"], ["DRAWDOWN_LIMIT"]), LIMIT)
     assert out["tripped"] is True and out["entries_blocked"] == 1
