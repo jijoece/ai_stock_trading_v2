@@ -416,6 +416,36 @@ def test_snapshot_claiming_completeness_without_the_final_bar_is_not_reused(tmp_
         load_or_fetch_snapshot(path, **_reuse_kwargs())
 
 
+def test_broader_snapshot_is_reused_for_a_shorter_requested_range(tmp_path):
+    path = tmp_path / "broad.json"
+    write_snapshot(path, _snapshot())  # covers 2025-11-26..2025-11-28
+    snap = load_or_fetch_snapshot(path, **_reuse_kwargs(client_factory=_explode, end=NORMAL_DAY))
+    assert snap.end == EARLY_CLOSE_DAY
+    assert [b.session_date for b in snap.bars_by_symbol["AAPL"]] == [NORMAL_DAY, EARLY_CLOSE_DAY]
+
+
+def test_broader_snapshot_missing_the_requested_end_bar_for_one_symbol_is_refused(tmp_path):
+    prior_day = date(2025, 11, 25)
+    client = StubClient({
+        "AAPL": [_price_bar("AAPL", d) for d in (prior_day, NORMAL_DAY, EARLY_CLOSE_DAY)],
+        "SPY": [_price_bar("SPY", d) for d in (prior_day, EARLY_CLOSE_DAY)],  # no bar for NORMAL_DAY
+    })
+    path = tmp_path / "gappy.json"
+    write_snapshot(path, fetch_snapshot(
+        client, symbols=("AAPL", "SPY"), start=prior_day, end=EARLY_CLOSE_DAY, adjustment="raw",
+        as_of=AS_OF, warmup_sessions=0,
+    ))
+    kwargs = _reuse_kwargs(client_factory=_explode, start=prior_day, end=NORMAL_DAY)
+    with pytest.raises(BacktestError, match="SPY.*final session's bar is missing"):
+        load_or_fetch_snapshot(path, **kwargs)
+    # The same file is still fine for a range whose terminal session every symbol has.
+    load_or_fetch_snapshot(path, **{**kwargs, "end": EARLY_CLOSE_DAY})
+
+
+def _explode():
+    raise AssertionError("an existing snapshot must be reused, not refetched")
+
+
 def test_fetch_fails_closed_when_a_symbol_lacks_the_final_session_bar():
     client = StubClient({
         "AAPL": [_price_bar("AAPL", NORMAL_DAY), _price_bar("AAPL", EARLY_CLOSE_DAY)],

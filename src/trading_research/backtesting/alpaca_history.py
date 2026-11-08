@@ -349,8 +349,11 @@ def _last_closed_session(moment: datetime, end: date) -> date | None:
 def _require_terminal_session(
     symbol: str, bars: tuple[HistoricalBar, ...], terminal: date | None,
 ) -> None:
-    """A complete history ends on the last session that had closed; a gap there is missing data."""
-    if not bars or bars[-1].session_date != terminal:
+    """A complete history holds the last session that had closed; a gap there is missing data.
+
+    Presence, not position: a broader snapshot reused for a shorter range legitimately runs past it.
+    """
+    if terminal is None or all(bar.session_date != terminal for bar in bars):
         last = bars[-1].session_date if bars else None
         raise BacktestError(
             f"{symbol}: history ends {last}, not on the last closed session {terminal}; "
