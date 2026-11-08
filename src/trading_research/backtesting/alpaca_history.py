@@ -102,8 +102,8 @@ class HistoricalSnapshot:
     adjustment: str
     bars_by_symbol: Mapping[str, tuple[HistoricalBar, ...]]
     content_hash: str
-    # Metadata only: deliberately outside the hash so refetching identical
-    # data yields the same identity.
+    # Outside `content_hash` so refetching identical data yields the same identity;
+    # the snapshot file authenticates it separately with an integrity hash.
     fetched_as_of: datetime
     provider: str = SNAPSHOT_PROVIDER
 
@@ -127,6 +127,13 @@ def _content_hash(
         "schema_version": SNAPSHOT_SCHEMA_VERSION, "provider": provider,
         "adjustment": adjustment, "fetch_start": fetch_start.isoformat(), "end": end.isoformat(),
         "bars": {symbol: [_row(bar) for bar in bars_by_symbol[symbol]] for symbol in sorted(bars_by_symbol)},
+    })
+
+
+def _integrity_hash(snapshot: HistoricalSnapshot) -> str:
+    """Binds the fetch time to the content hash without making it part of the data identity."""
+    return hash_config({
+        "content_hash": snapshot.content_hash, "fetched_as_of": snapshot.fetched_as_of.isoformat(),
     })
 
 
@@ -187,6 +194,7 @@ def fetch_snapshot(
             raise BacktestError(f"{symbol}: provider returned bars for a different symbol")
         if not known:
             raise BacktestError(f"no history returned for {symbol} between {fetch_start} and {end}")
+        _require_terminal_session(symbol, known, _last_closed_session(as_of, end))
         bars_by_symbol[symbol] = known
     return _build_snapshot(
         provider=provider, adjustment=adjustment, fetch_start=fetch_start, end=end,
@@ -202,7 +210,8 @@ def write_snapshot(path: Path | str, snapshot: HistoricalSnapshot) -> None:
         "schema_version": SNAPSHOT_SCHEMA_VERSION, "provider": snapshot.provider,
         "adjustment": snapshot.adjustment, "fetch_start": snapshot.fetch_start.isoformat(),
         "end": snapshot.end.isoformat(), "fetched_as_of": snapshot.fetched_as_of.isoformat(),
-        "content_hash": snapshot.content_hash, "symbols": list(snapshot.symbols),
+        "content_hash": snapshot.content_hash, "integrity_hash": _integrity_hash(snapshot),
+        "symbols": list(snapshot.symbols),
         "bars": {symbol: [_row(bar) for bar in snapshot.bars_by_symbol[symbol]] for symbol in snapshot.symbols},
     }
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -233,7 +242,10 @@ def read_snapshot(path: Path | str) -> HistoricalSnapshot:
         fetch_start = date.fromisoformat(document["fetch_start"])
         end = date.fromisoformat(document["end"])
         fetched_as_of = datetime.fromisoformat(document["fetched_as_of"])
+        if fetched_as_of.tzinfo is None:
+            raise BacktestError("snapshot fetched_as_of must be timezone-aware")
         stored_hash = document["content_hash"]
+        stored_integrity = document["integrity_hash"]
         raw_bars = document["bars"]
         if sorted(document["symbols"]) != sorted(raw_bars):
             raise BacktestError("snapshot symbols do not match its bar sets")
@@ -252,6 +264,8 @@ def read_snapshot(path: Path | str) -> HistoricalSnapshot:
     )
     if snapshot.content_hash != stored_hash:
         raise BacktestError(f"snapshot {source} content hash mismatch; file was altered or corrupted")
+    if _integrity_hash(snapshot) != stored_integrity:
+        raise BacktestError(f"snapshot {source} fetched_as_of does not match its integrity hash; file was altered")
     return snapshot
 
 
@@ -332,17 +346,35 @@ def _last_closed_session(moment: datetime, end: date) -> date | None:
     return None
 
 
-def _require_complete_for(snapshot: HistoricalSnapshot, *, end: date, as_of: datetime) -> None:
+def _require_terminal_session(
+    symbol: str, bars: tuple[HistoricalBar, ...], terminal: date | None,
+) -> None:
+    """A complete history ends on the last session that had closed; a gap there is missing data."""
+    if not bars or bars[-1].session_date != terminal:
+        last = bars[-1].session_date if bars else None
+        raise BacktestError(
+            f"{symbol}: history ends {last}, not on the last closed session {terminal}; "
+            "the final session's bar is missing"
+        )
+
+
+def _require_complete_for(
+    snapshot: HistoricalSnapshot, *, symbols: tuple[str, ...], end: date, as_of: datetime,
+) -> None:
     """Refuse a snapshot fetched before sessions that have closed since.
 
     `fetch_snapshot` drops sessions that had not closed at its `as_of` but still records the requested
-    `end`, so the stored range alone cannot show that the final sessions are missing.
+    `end`, so the stored range alone cannot show that the final sessions are missing. The fetch time
+    is checked against the bars themselves, so a snapshot cannot claim completeness it lacks.
     """
-    if _last_closed_session(snapshot.fetched_as_of, end) != _last_closed_session(as_of, end):
+    fetched_terminal = _last_closed_session(snapshot.fetched_as_of, end)
+    if fetched_terminal != _last_closed_session(as_of, end):
         raise BacktestError(
             f"snapshot was fetched at {snapshot.fetched_as_of.isoformat()}, before every session up to "
             f"{end} had closed, so later sessions are missing; move the file aside to refetch"
         )
+    for symbol in symbols:
+        _require_terminal_session(symbol, snapshot.bars_by_symbol[symbol], fetched_terminal)
 
 
 def load_or_fetch_snapshot(
@@ -371,7 +403,7 @@ def load_or_fetch_snapshot(
                 f"snapshot coverage {snapshot.fetch_start}..{snapshot.end} does not cover the "
                 f"requested warm-up and range ending {end}"
             )
-        _require_complete_for(snapshot, end=end, as_of=as_of)
+        _require_complete_for(snapshot, symbols=names, end=end, as_of=as_of)
         return snapshot
     snapshot = fetch_snapshot(
         client_factory(), symbols=names, start=start, end=end, adjustment=adjustment,

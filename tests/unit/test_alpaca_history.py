@@ -3,6 +3,7 @@ data snapshot. No network: a stub client stands in for AlpacaMarketDataClient.""
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from zoneinfo import ZoneInfo
@@ -214,7 +215,7 @@ def test_write_snapshot_refuses_to_overwrite(tmp_path):
 
 
 def test_empty_symbol_history_fails_closed():
-    client = StubClient({"AAPL": [_price_bar("AAPL", NORMAL_DAY)]})
+    client = StubClient({"AAPL": [_price_bar("AAPL", NORMAL_DAY), _price_bar("AAPL", EARLY_CLOSE_DAY)]})
     with pytest.raises(BacktestError, match="ZZZZ"):
         fetch_snapshot(
             client, symbols=("AAPL", "ZZZZ"), start=NORMAL_DAY, end=EARLY_CLOSE_DAY,
@@ -249,7 +250,9 @@ def test_warmup_start_covers_the_requested_number_of_sessions():
 
 
 def test_fetch_requests_warmup_range_before_start():
-    client = StubClient({"AAPL": [_price_bar("AAPL", NORMAL_DAY, adjusted=True)]})
+    client = StubClient({"AAPL": [
+        _price_bar("AAPL", NORMAL_DAY, adjusted=True), _price_bar("AAPL", EARLY_CLOSE_DAY, adjusted=True),
+    ]})
     start = date(2025, 11, 26)
     fetch_snapshot(
         client, symbols=("AAPL",), start=start, end=EARLY_CLOSE_DAY,
@@ -354,6 +357,83 @@ def test_snapshot_fetched_after_the_final_close_stays_reusable_later(tmp_path):
         end=EARLY_CLOSE_DAY, adjustment="raw", as_of=AS_OF, warmup_sessions=0,
     )
     assert later.content_hash == first.content_hash
+
+
+def _rewrite(path, **changes):
+    document = json.loads(path.read_text(encoding="utf-8"))
+    document.update(changes)
+    path.write_text(json.dumps(document), encoding="utf-8")
+
+
+def _reuse_kwargs(**overrides):
+    kwargs = dict(
+        client_factory=_client, symbols=("AAPL", "SPY"), start=NORMAL_DAY, end=EARLY_CLOSE_DAY,
+        adjustment="raw", as_of=AS_OF, warmup_sessions=0,
+    )
+    return {**kwargs, **overrides}
+
+
+def test_altered_fetched_as_of_is_rejected_by_the_integrity_hash(tmp_path):
+    path = tmp_path / "forged.json"
+    mid_session = datetime(2025, 11, 28, 17, 0, tzinfo=timezone.utc)
+    load_or_fetch_snapshot(path, **_reuse_kwargs(as_of=mid_session))
+    _rewrite(path, fetched_as_of=AS_OF.isoformat())  # content hash still matches; only freshness lies
+    with pytest.raises(BacktestError, match="integrity hash"):
+        read_snapshot(path)
+    with pytest.raises(BacktestError, match="integrity hash"):
+        load_or_fetch_snapshot(path, **_reuse_kwargs())
+
+
+def test_snapshot_without_integrity_hash_is_rejected(tmp_path):
+    path = tmp_path / "legacy.json"
+    write_snapshot(path, _snapshot())
+    document = json.loads(path.read_text(encoding="utf-8"))
+    del document["integrity_hash"]
+    path.write_text(json.dumps(document), encoding="utf-8")
+    with pytest.raises(BacktestError, match="malformed"):
+        read_snapshot(path)
+
+
+def test_naive_fetched_as_of_is_rejected(tmp_path):
+    path = tmp_path / "naive.json"
+    write_snapshot(path, _snapshot())
+    _rewrite(path, fetched_as_of="2025-12-31T23:59:59")
+    with pytest.raises(BacktestError, match="timezone-aware"):
+        read_snapshot(path)
+
+
+def test_snapshot_claiming_completeness_without_the_final_bar_is_not_reused(tmp_path):
+    # Consistently re-signed (hashes recomputed), so only the bars can expose the lie.
+    pre_close = fetch_snapshot(
+        _client(), symbols=("AAPL", "SPY"), start=NORMAL_DAY, end=EARLY_CLOSE_DAY, adjustment="raw",
+        as_of=datetime(2025, 11, 28, 17, 0, tzinfo=timezone.utc), warmup_sessions=0,
+    )
+    forged = replace(pre_close, fetched_as_of=AS_OF)
+    path = tmp_path / "resigned.json"
+    write_snapshot(path, forged)
+    assert read_snapshot(path).fetched_as_of == AS_OF
+    with pytest.raises(BacktestError, match="final session's bar is missing"):
+        load_or_fetch_snapshot(path, **_reuse_kwargs())
+
+
+def test_fetch_fails_closed_when_a_symbol_lacks_the_final_session_bar():
+    client = StubClient({
+        "AAPL": [_price_bar("AAPL", NORMAL_DAY), _price_bar("AAPL", EARLY_CLOSE_DAY)],
+        "SPY": [_price_bar("SPY", NORMAL_DAY)],  # SPY's bar for the closed final session is absent
+    })
+    with pytest.raises(BacktestError, match="SPY.*final session's bar is missing"):
+        fetch_snapshot(
+            client, symbols=("AAPL", "SPY"), start=NORMAL_DAY, end=EARLY_CLOSE_DAY, adjustment="raw",
+            as_of=AS_OF, warmup_sessions=0,
+        )
+
+
+def test_end_on_a_non_session_date_requires_the_prior_session_bar():
+    snap = fetch_snapshot(
+        _client(), symbols=("AAPL",), start=NORMAL_DAY, end=date(2025, 11, 30), adjustment="raw",
+        as_of=AS_OF, warmup_sessions=0,
+    )
+    assert snap.bars_by_symbol["AAPL"][-1].session_date == EARLY_CLOSE_DAY
 
 
 def test_existing_snapshot_must_match_requested_parameters(tmp_path):

@@ -115,10 +115,15 @@ Keep snapshots local: they are Alpaca market data and this repository is public.
 `data/backtests/.gitignore` ignores `*.snapshot.json` and the result databases.
 
 A snapshot holds the symbols, date range (including warm-up history before `--start`),
-adjustment, bars and a content hash. Reading it recomputes the hash and refuses a file
-that was altered. The file is never overwritten; to refetch, move it aside. A snapshot
+adjustment, bars, a content hash (the data identity) and an integrity hash that also covers
+the fetch time. Reading it recomputes both and refuses a file that was altered, including one
+whose fetch time alone was edited. Snapshots written before the integrity hash existed are
+refused as malformed; move them aside and refetch. The file is never overwritten; to refetch,
+move it aside. A snapshot
 whose provider, adjustment, symbols or date coverage does not match the request is
 refused rather than silently reused. So is one fetched before every session up to `--end`
 had closed (for example an `--end` of today fetched before the close): the missing
-sessions would otherwise stay missing while the report names the full range. Move the
+sessions would otherwise stay missing while the report names the full range. Every requested
+symbol must also have a bar on the last session that had closed at fetch time, both when
+fetching and when reusing a snapshot; a symbol with no bar there fails closed. Move the
 file aside and refetch.
