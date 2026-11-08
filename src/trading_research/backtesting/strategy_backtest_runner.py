@@ -34,7 +34,7 @@ from .alpaca_history import (
 )
 from .configuration import BacktestConfiguration
 from .fixture_history import FIXTURE_PROVIDER, FixtureHistoryClient, build_fixture_snapshot
-from .models import BacktestError
+from .models import BacktestError, BacktestResult
 from .screening_profile import profile_hash
 from .signal_replay import ReplayResult, replay_signals
 
@@ -113,7 +113,39 @@ def acquire_snapshot(
     )
 
 
-def _summary(result: StrategyBacktestResult) -> dict:
+def risk_breaker_summary(result: BacktestResult, drawdown_limit: Decimal) -> dict:
+    """Facts about the engine's drawdown breaker for one run.
+
+    The engine blocks new entries while drawdown from the run's peak equity is at or beyond the
+    limit, so after a trip the remaining sessions measure the halt, not the strategy.
+    """
+    at_limit = [state for state in result.daily_states if state.drawdown_fraction <= -drawdown_limit]
+    reasons = [row["reason"] for row in result.rejected_entries]
+    blocked = reasons.count("DRAWDOWN_LIMIT")
+    tripped = bool(at_limit) or blocked > 0
+    total = len(result.daily_states)
+    first = at_limit[0].market_date.isoformat() if at_limit else None
+    share = Decimal(len(at_limit)) / Decimal(total) if total else Decimal(0)
+    fills = [fill.market_date for fill in result.fills]
+    warning = None
+    if tripped:
+        since = f"on {first}" if first else "intraday"
+        warning = (
+            f"Drawdown reached the {drawdown_limit:.0%} limit {since}; the engine blocks new entries while "
+            f"drawdown is at or beyond it ({blocked} blocked, {len(at_limit)} of {total} sessions at the limit). "
+            "Return, exposure and trade counts from then on reflect the halt, not the strategy; compare "
+            "windows that start fresh."
+        )
+    return {
+        "drawdown_limit": str(drawdown_limit), "tripped": tripped, "first_session_at_limit": first,
+        "sessions_at_limit": len(at_limit), "sessions_total": total,
+        "share_of_sessions_at_limit": f"{share:.4f}", "entries_blocked": blocked,
+        "daily_loss_entries_blocked": reasons.count("DAILY_LOSS_LIMIT"),
+        "last_fill_session": max(fills).isoformat() if fills else None, "warning": warning,
+    }
+
+
+def _summary(result: StrategyBacktestResult, drawdown_limit: Decimal) -> dict:
     engine = result.backtest_result.metrics
     strategy_return, benchmark_return = engine["total_return"], engine["benchmark_return"]
     return _jsonable({
@@ -123,6 +155,7 @@ def _summary(result: StrategyBacktestResult) -> dict:
         "maximum_drawdown": engine["maximum_drawdown"],
         "exposure": result.metrics.exposure,
         "round_trips": result.metrics.number_of_trades,
+        "risk_breaker": risk_breaker_summary(result.backtest_result, drawdown_limit),
     })
 
 
@@ -140,6 +173,7 @@ def run_strategy_backtest_report(
     slippage_bps: Decimal = Decimal("0"), fee_per_order: Decimal = Decimal("0"),
     split_date: date | None = None, cost_grid: tuple[Decimal, ...] = (),
     min_trades: int = DEFAULT_MINIMUM_ROUND_TRIPS, adjustment: str = "split", conn=None,
+    max_drawdown_fraction: Decimal | None = None,
     strategy_config_path: Path | str | None = None, screening_config_path: Path | str | None = None,
     env: Mapping[str, str] | None = None, now: datetime | None = None,
 ) -> dict:
@@ -176,13 +210,26 @@ def run_strategy_backtest_report(
         "benchmark": benchmark, "universe": list(names),
     }
 
-    def run(signals: tuple[StrategySignal, ...], window_start: date, window_end: date, slippage: Decimal):
-        config = BacktestConfiguration(
+    # Only passed when set, so the engine default stays the single source of truth for the limit.
+    breaker_override: dict[str, Any] = (
+        {} if max_drawdown_fraction is None else {"max_drawdown_fraction": max_drawdown_fraction}
+    )
+
+    def configuration(window_start: date, window_end: date, slippage: Decimal) -> BacktestConfiguration:
+        return BacktestConfiguration(
             start_date=window_start, end_date=window_end, symbols=universe, initial_cash=initial_cash,
-            slippage_bps=slippage, fee_per_order=fee_per_order, benchmark_symbol=benchmark,
+            slippage_bps=slippage, fee_per_order=fee_per_order, benchmark_symbol=benchmark, **breaker_override,
         )
+
+    drawdown_limit = configuration(start, end, slippage_bps).max_drawdown_fraction
+    default_limit = next(
+        f.default for f in dataclasses.fields(BacktestConfiguration) if f.name == "max_drawdown_fraction"
+    )
+
+    def run(signals: tuple[StrategySignal, ...], window_start: date, window_end: date, slippage: Decimal):
         return run_strategy_backtest(
-            strategy_id=strategy_id, signals=signals, configuration=config, data_provider=provider,
+            strategy_id=strategy_id, signals=signals, configuration=configuration(window_start, window_end, slippage),
+            data_provider=provider,
             conn=conn, run_context=run_context,
             # Each window keeps the indicator history that precedes it, so signals near its start are
             # not rejected for lack of ATR bars the snapshot already holds.
@@ -207,6 +254,7 @@ def run_strategy_backtest_report(
             "strategy_config_hash": replay.configuration_hash, "start": start.isoformat(), "end": end.isoformat(),
             "symbols": list(names), "benchmark": benchmark, "initial_cash": str(initial_cash),
             "slippage_bps": str(slippage_bps), "fee_per_order": str(fee_per_order),
+            "max_drawdown_fraction": str(drawdown_limit),
         },
         "data": {
             "provider": snapshot.provider, "price_adjustment": snapshot.adjustment,
@@ -216,12 +264,20 @@ def run_strategy_backtest_report(
         "screening_profile": replay.screening_profile,
         "relative_strength": replay.relative_strength_definition,
         "signals": _signal_counts(replay),
-        "summary": _summary(primary),
+        "summary": _summary(primary, drawdown_limit),
         "sample": _sample(primary, min_trades),
         "engine_report": _jsonable(primary.backtest_result.metrics),
         "strategy_metrics": _jsonable(primary.metrics),
         "strategy_notes": [MEAN_REVERSION_NOTE] if strategy_id == "mean_reversion" else [],
-        "caveats": list(CAVEATS) + ([SYNTHETIC_CAVEAT] if snapshot.provider == FIXTURE_PROVIDER else []),
+        "caveats": (
+            list(CAVEATS)
+            + ([SYNTHETIC_CAVEAT] if snapshot.provider == FIXTURE_PROVIDER else [])
+            + ([
+                f"The drawdown circuit breaker was set to {drawdown_limit} (engine default {default_limit}); "
+                "these results are not comparable with default-limit runs, and a loose limit lets a losing "
+                "run keep trading."
+            ] if drawdown_limit != default_limit else [])
+        ),
     }
 
     if cost_grid:
@@ -230,7 +286,7 @@ def run_strategy_backtest_report(
             result = run(replay.signals, start, end, level)
             rows.append({
                 "slippage_bps": str(level), "backtest_run_id": result.backtest_result.backtest_run_id,
-                "summary": _summary(result), "sample": _sample(result, min_trades),
+                "summary": _summary(result, drawdown_limit), "sample": _sample(result, min_trades),
             })
         report["cost_sensitivity"] = rows
 
@@ -247,7 +303,7 @@ def run_strategy_backtest_report(
             split[label] = {
                 "window": {"start": window_start.isoformat(), "end": window_end.isoformat()},
                 "backtest_run_id": result.backtest_result.backtest_run_id, "signals": len(signals),
-                "summary": _summary(result), "sample": _sample(result, min_trades),
+                "summary": _summary(result, drawdown_limit), "sample": _sample(result, min_trades),
             }
         report["split"] = split
     return report

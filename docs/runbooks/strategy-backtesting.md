@@ -36,6 +36,7 @@ market-data API (the paper broker is never touched).
 | `--cost-grid 0,10,25` | Re-run at each slippage level and report them side by side. |
 | `--split-date` | Report the window up to the date and the window after it separately. A signal belongs to the window its entry session falls in, so one generated at the close of the split date is out-of-sample. Each window keeps the indicator warm-up bars that precede it. |
 | `--min-trades` | Round trips below this are flagged `INSUFFICIENT_SAMPLE`. Default 30. |
+| `--max-drawdown-fraction` | Engine drawdown circuit-breaker limit, in (0,1). Default 0.15. A different value changes the run identity and adds a caveat to the report; a loose limit (for example 0.99) lets a losing run keep trading, so use it to see what the breaker was hiding, not as a result to quote. |
 | `--price-adjustment` | `split` (default), `raw` or `all`. Recorded in the snapshot and run identity. |
 | `--screening-config` | Alternative screening thresholds. Default `config/screening.yaml`. |
 | `--db` | SQLite file for the `backtest_*` tables. Default: the configured research database. |
@@ -58,6 +59,13 @@ credentials or raw provider output.
   counts do not sum to the evaluation total.
 - `summary`: strategy return next to `benchmark_return`, drawdown, exposure and round
   trips. `sample.status` is `INSUFFICIENT_SAMPLE` until `--min-trades` is met.
+- `summary.risk_breaker` (also on every cost row and split window): whether the engine's
+  drawdown breaker stopped the run. The engine blocks new entries while drawdown from the
+  run's peak equity is at or beyond the limit (15% by default), and a run that has stopped
+  trading never resets its peak. When `tripped` is true, read `first_session_at_limit`,
+  `share_of_sessions_at_limit` and `last_fill_session`: return, exposure and trade counts
+  after that date measure the halt, not the strategy, and a multi-year headline figure may
+  describe only the months before it. Prefer windows that start fresh (`--split-date`).
 - `split`: use only `in_sample` for configuration tuning; judge on `out_of_sample`.
 - `cost_sensitivity`: the same signals at each slippage level.
 - `caveats`: always read them. They include survivorship bias, daily-bar limits and
@@ -85,6 +93,9 @@ credentials or raw provider output.
 - Fixture data is synthetic. Do not quote its numbers as performance.
 
 ## Snapshot files
+
+Keep snapshots local: they are Alpaca market data and this repository is public.
+`data/backtests/.gitignore` ignores `*.snapshot.json` and the result databases.
 
 A snapshot holds the symbols, date range (including warm-up history before `--start`),
 adjustment, bars and a content hash. Reading it recomputes the hash and refuses a file

@@ -14,6 +14,20 @@ BASE = [
 ]
 
 
+@pytest.fixture(autouse=True)
+def _no_dotenv_credentials(tmp_path, monkeypatch):
+    """The command loads `.env` via `load_config()`; a developer's real market-data keys must never
+    leak into these tests (it would turn an offline test into a live API call)."""
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(
+        "trading_research.cli.load_config",
+        lambda *a, **k: SimpleNamespace(research_database_path=tmp_path / "config.sqlite3"),
+    )
+    monkeypatch.delenv("ALPACA_MARKET_DATA_API_KEY", raising=False)
+    monkeypatch.delenv("ALPACA_MARKET_DATA_API_SECRET", raising=False)
+
+
 def _argv(tmp_path, *extra):
     return [*BASE, "--db", str(tmp_path / "bt.sqlite3"), *extra]
 
@@ -40,6 +54,17 @@ def test_optional_flags_add_report_sections(tmp_path, capsys):
     assert report["split"]["split_date"] == "2023-12-29"
     assert report["sample"]["minimum_round_trips"] == 5
     assert report["run"]["slippage_bps"] == "5" and report["run"]["fee_per_order"] == "1"
+
+
+def test_max_drawdown_fraction_flag_is_applied_and_validated(tmp_path, capsys):
+    assert main(_argv(tmp_path, "--max-drawdown-fraction", "0.4")) == 0
+    report = json.loads(capsys.readouterr().out)
+    assert report["run"]["max_drawdown_fraction"] == "0.4"
+    assert report["summary"]["risk_breaker"]["drawdown_limit"] == "0.4"
+    assert main(_argv(tmp_path, "--max-drawdown-fraction", "1.5")) == 2
+    assert json.loads(capsys.readouterr().out)["error"]["code"] == "BACKTEST_ERROR"
+    with pytest.raises(SystemExit):
+        main(_argv(tmp_path, "--max-drawdown-fraction", "lots"))
 
 
 def test_output_bytes_are_reproducible(tmp_path, capsys):

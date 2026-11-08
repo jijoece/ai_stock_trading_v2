@@ -59,6 +59,7 @@
   "end": "str",
   "fee_per_order": "str",
   "initial_cash": "str",
+  "max_drawdown_fraction": "str",
   "slippage_bps": "str",
   "start": "str",
   "strategy_config_hash": "str",
@@ -133,6 +134,18 @@
   "excess_return": "str",
   "exposure": "str",
   "maximum_drawdown": "str",
+  "risk_breaker": {
+   "daily_loss_entries_blocked": "int",
+   "drawdown_limit": "str",
+   "entries_blocked": "int",
+   "first_session_at_limit": "NoneType",
+   "last_fill_session": "str",
+   "sessions_at_limit": "int",
+   "sessions_total": "int",
+   "share_of_sessions_at_limit": "str",
+   "tripped": "bool",
+   "warning": "NoneType"
+  },
   "round_trips": "int",
   "strategy_return": "str"
  }

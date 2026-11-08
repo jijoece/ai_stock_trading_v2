@@ -2719,6 +2719,7 @@ def backtest_strategy_cli(
     db_path: Path, *, strategy: str, symbols: list[str], start, end, initial_cash, data_source: str,
     snapshot: Path | None, benchmark: str, slippage_bps, fee_per_order, split_date, cost_grid: tuple,
     min_trades: int, price_adjustment: str, screening_config: Path | None,
+    max_drawdown_fraction=None,
 ) -> dict:
     """`backtest-strategy` CLI command (docs/historical-backtesting-plan.md Step 3).
 
@@ -2739,6 +2740,7 @@ def backtest_strategy_cli(
                 data_source=data_source, snapshot_path=snapshot, benchmark=benchmark, slippage_bps=slippage_bps,
                 fee_per_order=fee_per_order, split_date=split_date, cost_grid=cost_grid, min_trades=min_trades,
                 adjustment=price_adjustment, conn=conn, screening_config_path=screening_config,
+                max_drawdown_fraction=max_drawdown_fraction,
             )
     except BacktestError as exc:  # curated messages; they never carry credentials or raw provider text
         return {"error": {"code": "BACKTEST_ERROR", "message": _bounded_message(exc)}}
@@ -3371,6 +3373,7 @@ def main(argv: list[str] | None = None) -> int:
     p_backtest_strategy.add_argument("--min-trades", type=int, default=30, help="Round trips below this are flagged INSUFFICIENT_SAMPLE")
     p_backtest_strategy.add_argument("--price-adjustment", choices=("split", "raw", "all"), default="split")
     p_backtest_strategy.add_argument("--screening-config", type=Path, default=None, help="Alternative screening thresholds (default config/screening.yaml)")
+    p_backtest_strategy.add_argument("--max-drawdown-fraction", type=_parse_decimal, default=None, help="Engine drawdown circuit-breaker limit in (0,1); default 0.15. Loosening it changes the run identity")
     p_backtest_strategy.add_argument("--db", type=Path, default=None, help="SQLite database (default: the configured research database)")
 
     p_candidates = sub.add_parser(
@@ -3434,6 +3437,7 @@ def main(argv: list[str] | None = None) -> int:
             benchmark=args.benchmark, slippage_bps=args.slippage_bps, fee_per_order=args.fee_per_order,
             split_date=args.split_date, cost_grid=args.cost_grid, min_trades=args.min_trades,
             price_adjustment=args.price_adjustment, screening_config=args.screening_config,
+            max_drawdown_fraction=args.max_drawdown_fraction,
         )
         print(json.dumps(outcome, indent=2, sort_keys=True, default=str))
         return 0 if "error" not in outcome else 2

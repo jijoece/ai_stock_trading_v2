@@ -1,0 +1,10 @@
+# Result databases are regenerated from the snapshots by rerunning
+# `backtest-strategy` (runs are idempotent) and change on every run.
+*.sqlite3
+*.sqlite3-shm
+*.sqlite3-wal
+
+# Snapshots are Alpaca market data; this repository is public and the provider's
+# terms limit redistribution, so they stay local. Refetch with
+# `backtest-strategy --data-source alpaca --snapshot <path>`.
+*.snapshot.json
