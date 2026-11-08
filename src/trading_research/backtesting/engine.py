@@ -197,6 +197,7 @@ def run_backtest(
     positions: dict[str, _Position] = {}
     fills: list[BacktestFill] = []
     daily_states: list[BacktestDailyState] = []
+    breach_sessions: list[date] = []
     unresolved: list[str] = []
     previous_closes: dict[str, Decimal] = {}
 
@@ -298,6 +299,8 @@ def run_backtest(
         pre_entry_equity, _ = mark_equity(current_date, "open")
         daily_fraction = (pre_entry_equity - start_equity) / start_equity if start_equity > 0 else Decimal("0")
         current_drawdown = (pre_entry_equity - peak_equity) / peak_equity
+        if current_drawdown <= -config.max_drawdown_fraction:
+            breach_sessions.append(current_date)
 
         for signal in eligible_signals.get(current_date, []):
             if signal.symbol in positions:
@@ -420,6 +423,7 @@ def run_backtest(
         backtest_run_id=run_id, configuration_hash=config_hash,
         daily_states=tuple(daily_states), fills=tuple(fills), rejected_entries=tuple(rejected),
         metrics=report, unresolved_evaluations=tuple(unresolved),
+        drawdown_breach_sessions=tuple(breach_sessions),
     )
     if conn is not None:
         _persist_result(

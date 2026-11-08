@@ -68,11 +68,16 @@ credentials or raw provider output.
   Timing separates the two cases: `first_blocked_session`, `last_blocked_session` and
   `blocked_sessions` bound the blocked period; `resumed` is true when a buy filled after the
   first block (`first_fill_after_block`, `entries_after_block`) and the warning then covers only
-  the blocked sessions. When `resumed` is false and `ended_at_limit` is true, the run is
+  the blocked sessions. `recovered` is read from the engine's per-session opening state, not
+  from fills: it is true when a session opened inside the limit after the last breached one
+  (`last_breach_session`, `recovered_on`), even if no entry filled again because no signal
+  came or later signals were rejected for other reasons; the warning then limits the halt to
+  the blocked sessions and notes the impaired base. When `resumed` and `recovered` are both
+  false, opening drawdown was still at the limit on the final session and the run is
   impaired: read `last_fill_session`, since return, exposure and trade counts after the first
   blocked entry measure the halt, not the strategy, and a multi-year headline figure may
   describe only the months before it. Prefer windows that start fresh (`--split-date`) in
-  either case. `first_close_at_limit`,
+  every case. `first_close_at_limit`,
   `closes_at_limit` and `share_of_closes_at_limit` count closing drawdowns at the limit; the
   breaker reads the next open, so a close at the limit that recovers, or falls on the final
   session, blocks nothing. Such a run has `tripped: false` and an `observation` instead.

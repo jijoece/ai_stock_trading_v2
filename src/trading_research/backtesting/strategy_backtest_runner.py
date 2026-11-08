@@ -121,7 +121,9 @@ def risk_breaker_summary(result: BacktestResult, drawdown_limit: Decimal) -> dic
     does not latch: open positions can recover and entries can fill again, so `tripped` means only that
     entries were blocked at some point. `first_blocked_session`, `last_blocked_session` and
     `first_fill_after_block` separate the blocked period from any resumed trading; `resumed` is set
-    when a buy filled after the first block. Closing drawdown is recorded after the entry decision, so a
+    when a buy filled after the first block. `recovered` is read from the engine's per-session opening
+    breaches (`drawdown_breach_sessions`), not from fills: it is set when a session opens inside the
+    limit after the last breached one, even if no entry ever filled again. Closing drawdown is recorded after the entry decision, so a
     close at the limit can recover by the next open (or be the final session) without trading ever
     being blocked; that is reported as an `observation`, not as a halt.
     """
@@ -144,6 +146,15 @@ def risk_breaker_summary(result: BacktestResult, drawdown_limit: Decimal) -> dic
     )
     resumed = bool(buys_after_block)
     ended_at_limit = bool(result.daily_states) and result.daily_states[-1].drawdown_fraction <= -drawdown_limit
+    # Session-level breaker state: a session whose open was at the limit blocked entries whether or not
+    # a signal arrived, so recovery is read from the last such session, not from a later fill.
+    breach_sessions = sorted({*result.drawdown_breach_sessions, *blocked_sessions})
+    last_breach = breach_sessions[-1] if breach_sessions else None
+    recovered_on = next(
+        (state.market_date for state in result.daily_states if last_breach and state.market_date > last_breach),
+        None,
+    )
+    recovered = tripped and recovered_on is not None
     warning = observation = None
     if tripped:
         span = f"{len(blocked_sessions)} sessions ({first_blocked}..{last_blocked})"
@@ -155,12 +166,23 @@ def risk_breaker_summary(result: BacktestResult, drawdown_limit: Decimal) -> dic
                 f"blocked sessions reflect the block, not the strategy; trades after {buys_after_block[0]} "
                 "were not blocked, but the run's peak is never reset, so they start from an impaired base."
             )
+        elif recovered:
+            warning = (
+                f"The engine blocked {blocked} entries on {span} because drawdown was at or beyond the "
+                f"{drawdown_limit:.0%} limit at the session open. Opening drawdown was back inside the limit "
+                f"from {recovered_on}, so the breaker no longer blocked entries, but no entry has filled "
+                f"since {first_blocked} (no later signal, or later signals were rejected for other reasons). "
+                f"Results over the blocked sessions (through {last_breach}) reflect the block, not the "
+                f"strategy; later results come from positions already open and the peak is never reset, so "
+                "they start from an impaired base."
+                + (" The final close was at the limit again." if ended_at_limit else "")
+            )
         else:
             warning = (
                 f"The engine blocked {blocked} entries on {span} because drawdown was at or beyond the "
-                f"{drawdown_limit:.0%} limit at the session open, and no entry has filled since "
-                f"{first_blocked}. Return, exposure and trade counts after the first blocked entry reflect "
-                "the halt, not the strategy"
+                f"{drawdown_limit:.0%} limit at the session open, which was still true at the open of the "
+                f"final session ({last_breach}), and no entry has filled since {first_blocked}. Return, "
+                "exposure and trade counts after the first blocked entry reflect the halt, not the strategy"
                 + (" (the final close was still at the limit)" if ended_at_limit else "")
                 + "; the peak is never reset, so a run holding no positions cannot recover. "
                 "Compare windows that start fresh."
@@ -180,6 +202,9 @@ def risk_breaker_summary(result: BacktestResult, drawdown_limit: Decimal) -> dic
         "resumed": resumed,
         "first_fill_after_block": buys_after_block[0].isoformat() if resumed else None,
         "entries_after_block": len(buys_after_block),
+        "last_breach_session": last_breach.isoformat() if tripped and last_breach else None,
+        "recovered": recovered,
+        "recovered_on": recovered_on.isoformat() if recovered and recovered_on else None,
         "ended_at_limit": ended_at_limit,
         "daily_loss_entries_blocked": reasons.count("DAILY_LOSS_LIMIT"),
         "last_fill_session": max(fills).isoformat() if fills else None,

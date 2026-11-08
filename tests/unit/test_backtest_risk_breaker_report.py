@@ -40,7 +40,7 @@ def _state(day: date, drawdown: str) -> BacktestDailyState:
 
 def _result(
     drawdowns: list[str], rejected: list[str], fill_days: tuple[int, ...] = (),
-    rejected_days: tuple[int, ...] | None = None,
+    rejected_days: tuple[int, ...] | None = None, breach_days: tuple[int, ...] = (),
 ) -> BacktestResult:
     base = date(2024, 1, 2)
     states = tuple(_state(base + timedelta(days=i), d) for i, d in enumerate(drawdowns))
@@ -59,6 +59,7 @@ def _result(
             for i, (reason, day) in enumerate(zip(rejected, rejected_days or tuple(range(len(rejected)))))
         ),
         metrics={}, unresolved_evaluations=(),
+        drawdown_breach_sessions=tuple(base + timedelta(days=day) for day in breach_days),
     )
 
 
@@ -75,7 +76,7 @@ def test_tripped_run_reports_when_how_long_and_what_was_blocked():
     out = risk_breaker_summary(
         _result(["0", "-0.10", "-0.16", "-0.16", "-0.16", "-0.16"],
                 ["DRAWDOWN_LIMIT", "DRAWDOWN_LIMIT", "DAILY_LOSS_LIMIT", "NO_NEXT_SESSION"], fill_days=(0, 1),
-                rejected_days=(2, 3, 3, 5)),
+                rejected_days=(2, 3, 3, 5), breach_days=(2, 3, 4, 5)),
         LIMIT,
     )
     assert out["tripped"] is True
@@ -114,6 +115,54 @@ def test_a_sell_after_the_block_is_not_resumed_trading():
     out = risk_breaker_summary(result, LIMIT)
     assert out["resumed"] is False and out["entries_after_block"] == 0
     assert "no entry has filled" in out["warning"]
+
+
+def test_recovery_without_a_later_fill_is_not_described_as_a_permanent_halt():
+    out = risk_breaker_summary(
+        _result(["-0.16", "-0.16", "-0.05", "-0.05"], ["DRAWDOWN_LIMIT"], rejected_days=(1,), breach_days=(1,)),
+        LIMIT,
+    )
+    assert out["tripped"] is True and out["resumed"] is False
+    assert out["recovered"] is True and out["recovered_on"] == "2024-01-04"
+    assert out["last_breach_session"] == "2024-01-03" and out["ended_at_limit"] is False
+    assert "back inside the limit from 2024-01-04" in out["warning"]
+    assert "reflect the halt" not in out["warning"] and "cannot recover" not in out["warning"]
+    assert "Compare windows that start fresh" not in out["warning"]
+
+
+def test_run_still_beyond_the_limit_at_the_final_open_is_still_a_halt():
+    out = risk_breaker_summary(
+        _result(["-0.16", "-0.16", "-0.16"], ["DRAWDOWN_LIMIT"], rejected_days=(0,), breach_days=(0, 1, 2)),
+        LIMIT,
+    )
+    assert out["recovered"] is False and out["recovered_on"] is None
+    assert out["last_breach_session"] == "2024-01-04" and out["resumed"] is False
+    assert "reflect the halt" in out["warning"] and "final session (2024-01-04)" in out["warning"]
+
+
+def test_noncontiguous_blocked_sessions_recover_only_after_the_last_breach():
+    reasons = ["DRAWDOWN_LIMIT", "DRAWDOWN_LIMIT"]
+    # Blocked on days 0 and 3 with an open back inside the limit on days 1-2: the later breach counts.
+    breached = _result(["-0.16", "-0.05", "-0.05", "-0.16", "-0.16"], reasons, rejected_days=(0, 3),
+                       breach_days=(0, 3, 4))
+    out = risk_breaker_summary(breached, LIMIT)
+    assert out["blocked_sessions"] == 2 and out["recovered"] is False
+    assert out["last_breach_session"] == "2024-01-06"
+    # The same blocks followed by a recovery that holds to the end.
+    recovered = _result(["-0.16", "-0.05", "-0.05", "-0.16", "-0.05"], reasons, rejected_days=(0, 3),
+                        breach_days=(0, 3))
+    out = risk_breaker_summary(recovered, LIMIT)
+    assert out["recovered"] is True and out["recovered_on"] == "2024-01-06"
+    assert out["first_blocked_session"] == "2024-01-02" and out["last_blocked_session"] == "2024-01-05"
+
+
+def test_a_breach_after_the_last_block_without_a_signal_delays_recovery():
+    out = risk_breaker_summary(
+        _result(["-0.16", "-0.16", "-0.05"], ["DRAWDOWN_LIMIT"], rejected_days=(0,), breach_days=(0, 1)),
+        LIMIT,
+    )
+    assert out["last_blocked_session"] == "2024-01-02" and out["last_breach_session"] == "2024-01-03"
+    assert out["recovered"] is True and out["recovered_on"] == "2024-01-04"
 
 
 def test_blocked_entries_alone_count_as_tripped():
@@ -245,6 +294,46 @@ def test_engine_rejection_then_recovery_then_a_later_fill_is_resumed_not_halted(
     assert out["entries_after_block"] == 1 and out["ended_at_limit"] is False
     assert "does not latch" in out["warning"] and days[5].isoformat() in out["warning"]
     assert "halt" not in out["warning"] and "no entry has filled" not in out["warning"]
+
+
+def test_engine_recovery_with_no_later_signal_is_not_reported_as_a_permanent_halt():
+    aaa = FLAT + [("100", "69"), ("69", "69"), ("100", "100")]
+    config, result = _engine_run(aaa=aaa, bbb=BBB_FLAT, last=5, aaa_stop="50")
+    days = [state.market_date for state in result.daily_states]
+    assert [(r["signal_id"], r["reason"]) for r in result.rejected_entries] == [("bbb", "DRAWDOWN_LIMIT")]
+    assert [f.symbol for f in result.fills if f.side == "BUY"] == ["AAA"]  # nothing filled after the block
+    assert result.drawdown_breach_sessions == (days[4],)  # the session-5 open was inside the limit
+    out = risk_breaker_summary(result, config.max_drawdown_fraction)
+    assert out["tripped"] is True and out["resumed"] is False
+    assert out["recovered"] is True and out["recovered_on"] == days[5].isoformat()
+    assert "reflect the halt" not in out["warning"] and days[5].isoformat() in out["warning"]
+
+
+def test_engine_recovery_followed_by_an_unrelated_rejection_is_not_reported_as_a_permanent_halt():
+    aaa = FLAT + [("100", "69"), ("69", "69"), ("100", "100")]
+    bbb = [("50", "50")] * 5 + [("60", "60")]  # the retry's 50 limit is not reachable on the last session
+    config, result = _engine_run(aaa=aaa, bbb=bbb, last=5, aaa_stop="50", retry_bbb=True)
+    days = [state.market_date for state in result.daily_states]
+    assert [(r["signal_id"], r["reason"]) for r in result.rejected_entries] == [
+        ("bbb", "DRAWDOWN_LIMIT"), ("bbb-retry", "LIMIT_NOT_FILLED"),
+    ]
+    assert [f.symbol for f in result.fills if f.side == "BUY"] == ["AAA"]
+    out = risk_breaker_summary(result, config.max_drawdown_fraction)
+    assert out["entries_blocked"] == 1 and out["resumed"] is False
+    assert out["recovered"] is True and out["recovered_on"] == days[5].isoformat()
+    assert "reflect the halt" not in out["warning"]
+
+
+def test_engine_unrecovered_run_records_every_breached_open_even_without_signals():
+    aaa = FLAT + [("100", "69"), ("69", "69"), ("69", "69")]
+    config, result = _engine_run(aaa=aaa, bbb=BBB_FLAT, last=5)
+    days = [state.market_date for state in result.daily_states]
+    assert [row["market_date"] for row in result.rejected_entries] == [days[4]]
+    assert result.drawdown_breach_sessions == (days[4], days[5])  # session 6 had no signal to reject
+    out = risk_breaker_summary(result, config.max_drawdown_fraction)
+    assert out["recovered"] is False and out["last_breach_session"] == days[5].isoformat()
+    assert out["last_blocked_session"] == days[4].isoformat()
+    assert "reflect the halt" in out["warning"]
 
 
 def test_limit_is_inclusive():
