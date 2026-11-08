@@ -304,10 +304,16 @@ def run_backtest(
                 rejected.append({"signal_id": signal.signal_id, "reason": "POSITION_ALREADY_OPEN"})
                 continue
             if daily_fraction <= -config.max_daily_loss_fraction:
-                rejected.append({"signal_id": signal.signal_id, "reason": "DAILY_LOSS_LIMIT"})
+                rejected.append({
+                    "signal_id": signal.signal_id, "reason": "DAILY_LOSS_LIMIT", "market_date": current_date,
+                })
                 continue
             if current_drawdown <= -config.max_drawdown_fraction:
-                rejected.append({"signal_id": signal.signal_id, "reason": "DRAWDOWN_LIMIT"})
+                # The date lets reports tell blocked periods from resumed ones: the breaker re-reads
+                # opening drawdown every session and does not latch.
+                rejected.append({
+                    "signal_id": signal.signal_id, "reason": "DRAWDOWN_LIMIT", "market_date": current_date,
+                })
                 continue
             entry_as_of = datetime.combine(current_date, time(14, 30), tzinfo=timezone.utc)
             blackout = evaluate_economic_event_blackout(

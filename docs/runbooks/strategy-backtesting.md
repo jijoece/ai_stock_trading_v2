@@ -60,13 +60,19 @@ credentials or raw provider output.
 - `summary`: strategy return next to `benchmark_return`, drawdown, exposure and round
   trips. `sample.status` is `INSUFFICIENT_SAMPLE` until `--min-trades` is met.
 - `summary.risk_breaker` (also on every cost row and split window): whether the engine's
-  drawdown breaker stopped the run. The engine blocks a new entry when the session's opening
-  equity is at or beyond the limit (15% by default) from the run's peak, and a run that has
-  stopped trading never resets its peak. `tripped` and `warning` are set only when the engine
-  actually rejected entries for `DRAWDOWN_LIMIT` (`entries_blocked`). Then read
-  `last_fill_session`: return, exposure and trade counts after the first blocked entry measure
-  the halt, not the strategy, and a multi-year headline figure may describe only the months
-  before it. Prefer windows that start fresh (`--split-date`). `first_close_at_limit`,
+  drawdown breaker blocked entries. The engine re-reads the session's opening equity at every
+  open and blocks a new entry while it is at or beyond the limit (15% by default) from the
+  run's peak. It does not latch: open positions can recover and later entries can fill, but the
+  peak never resets, so a run holding no positions cannot recover. `tripped` and `warning` are
+  set only when the engine actually rejected entries for `DRAWDOWN_LIMIT` (`entries_blocked`).
+  Timing separates the two cases: `first_blocked_session`, `last_blocked_session` and
+  `blocked_sessions` bound the blocked period; `resumed` is true when a buy filled after the
+  first block (`first_fill_after_block`, `entries_after_block`) and the warning then covers only
+  the blocked sessions. When `resumed` is false and `ended_at_limit` is true, the run is
+  impaired: read `last_fill_session`, since return, exposure and trade counts after the first
+  blocked entry measure the halt, not the strategy, and a multi-year headline figure may
+  describe only the months before it. Prefer windows that start fresh (`--split-date`) in
+  either case. `first_close_at_limit`,
   `closes_at_limit` and `share_of_closes_at_limit` count closing drawdowns at the limit; the
   breaker reads the next open, so a close at the limit that recovers, or falls on the final
   session, blocks nothing. Such a run has `tripped: false` and an `observation` instead.

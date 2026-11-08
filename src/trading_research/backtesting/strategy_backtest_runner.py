@@ -117,26 +117,54 @@ def risk_breaker_summary(result: BacktestResult, drawdown_limit: Decimal) -> dic
     """Facts about the engine's drawdown breaker for one run.
 
     The engine blocks new entries when the session's opening equity is at or beyond the drawdown
-    limit from the run's peak (a `DRAWDOWN_LIMIT` rejection). `tripped` and `warning` follow only
-    those rejections. Closing drawdown is recorded after the entry decision, so a close at the limit
-    can recover by the next open (or be the final session) without trading ever being blocked; that
-    is reported as an `observation`, not as a halt.
+    limit from the run's peak (a `DRAWDOWN_LIMIT` rejection). The check is repeated at every open and
+    does not latch: open positions can recover and entries can fill again, so `tripped` means only that
+    entries were blocked at some point. `first_blocked_session`, `last_blocked_session` and
+    `first_fill_after_block` separate the blocked period from any resumed trading; `resumed` is set
+    when a buy filled after the first block. Closing drawdown is recorded after the entry decision, so a
+    close at the limit can recover by the next open (or be the final session) without trading ever
+    being blocked; that is reported as an `observation`, not as a halt.
     """
     at_limit = [state for state in result.daily_states if state.drawdown_fraction <= -drawdown_limit]
     reasons = [row["reason"] for row in result.rejected_entries]
     blocked = reasons.count("DRAWDOWN_LIMIT")
+    blocked_sessions = sorted({
+        row["market_date"] for row in result.rejected_entries if row["reason"] == "DRAWDOWN_LIMIT"
+    })
+    first_blocked = blocked_sessions[0] if blocked_sessions else None
+    last_blocked = blocked_sessions[-1] if blocked_sessions else None
     tripped = blocked > 0
     total = len(result.daily_states)
     first = at_limit[0].market_date.isoformat() if at_limit else None
     share = Decimal(len(at_limit)) / Decimal(total) if total else Decimal(0)
     fills = [fill.market_date for fill in result.fills]
+    buys_after_block = sorted(
+        fill.market_date for fill in result.fills
+        if first_blocked is not None and fill.side == "BUY" and fill.market_date > first_blocked
+    )
+    resumed = bool(buys_after_block)
+    ended_at_limit = bool(result.daily_states) and result.daily_states[-1].drawdown_fraction <= -drawdown_limit
     warning = observation = None
     if tripped:
-        warning = (
-            f"The engine blocked {blocked} entries because drawdown was at or beyond the "
-            f"{drawdown_limit:.0%} limit at the session open. Return, exposure and trade counts after "
-            "the first blocked entry reflect the halt, not the strategy; compare windows that start fresh."
-        )
+        span = f"{len(blocked_sessions)} sessions ({first_blocked}..{last_blocked})"
+        if resumed:
+            warning = (
+                f"The engine blocked {blocked} entries on {span} because drawdown was at or beyond the "
+                f"{drawdown_limit:.0%} limit at the session open. The breaker does not latch: entries "
+                f"resumed on {buys_after_block[0]} once opening drawdown recovered. Results over the "
+                f"blocked sessions reflect the block, not the strategy; trades after {buys_after_block[0]} "
+                "were not blocked, but the run's peak is never reset, so they start from an impaired base."
+            )
+        else:
+            warning = (
+                f"The engine blocked {blocked} entries on {span} because drawdown was at or beyond the "
+                f"{drawdown_limit:.0%} limit at the session open, and no entry has filled since "
+                f"{first_blocked}. Return, exposure and trade counts after the first blocked entry reflect "
+                "the halt, not the strategy"
+                + (" (the final close was still at the limit)" if ended_at_limit else "")
+                + "; the peak is never reset, so a run holding no positions cannot recover. "
+                "Compare windows that start fresh."
+            )
     elif at_limit:
         observation = (
             f"Closing drawdown reached the {drawdown_limit:.0%} limit on {first} ({len(at_limit)} of {total} "
@@ -146,6 +174,13 @@ def risk_breaker_summary(result: BacktestResult, drawdown_limit: Decimal) -> dic
         "drawdown_limit": str(drawdown_limit), "tripped": tripped, "first_close_at_limit": first,
         "closes_at_limit": len(at_limit), "sessions_total": total,
         "share_of_closes_at_limit": f"{share:.4f}", "entries_blocked": blocked,
+        "blocked_sessions": len(blocked_sessions),
+        "first_blocked_session": first_blocked.isoformat() if first_blocked else None,
+        "last_blocked_session": last_blocked.isoformat() if last_blocked else None,
+        "resumed": resumed,
+        "first_fill_after_block": buys_after_block[0].isoformat() if resumed else None,
+        "entries_after_block": len(buys_after_block),
+        "ended_at_limit": ended_at_limit,
         "daily_loss_entries_blocked": reasons.count("DAILY_LOSS_LIMIT"),
         "last_fill_session": max(fills).isoformat() if fills else None,
         "warning": warning, "observation": observation,

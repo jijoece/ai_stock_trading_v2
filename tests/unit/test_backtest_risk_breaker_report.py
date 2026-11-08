@@ -2,6 +2,7 @@
 results after that point reflect the halt rather than the strategy."""
 from __future__ import annotations
 
+import dataclasses
 from datetime import date, timedelta
 from decimal import Decimal
 from typing import Any
@@ -37,7 +38,10 @@ def _state(day: date, drawdown: str) -> BacktestDailyState:
     )
 
 
-def _result(drawdowns: list[str], rejected: list[str], fill_days: tuple[int, ...] = ()) -> BacktestResult:
+def _result(
+    drawdowns: list[str], rejected: list[str], fill_days: tuple[int, ...] = (),
+    rejected_days: tuple[int, ...] | None = None,
+) -> BacktestResult:
     base = date(2024, 1, 2)
     states = tuple(_state(base + timedelta(days=i), d) for i, d in enumerate(drawdowns))
     fills = tuple(
@@ -50,7 +54,10 @@ def _result(drawdowns: list[str], rejected: list[str], fill_days: tuple[int, ...
     )
     return BacktestResult(
         backtest_run_id="r", configuration_hash="h", daily_states=states, fills=fills,
-        rejected_entries=tuple({"signal_id": f"s{i}", "reason": reason} for i, reason in enumerate(rejected)),
+        rejected_entries=tuple(
+            {"signal_id": f"s{i}", "reason": reason, "market_date": base + timedelta(days=day)}
+            for i, (reason, day) in enumerate(zip(rejected, rejected_days or tuple(range(len(rejected)))))
+        ),
         metrics={}, unresolved_evaluations=(),
     )
 
@@ -67,7 +74,8 @@ def test_untripped_run_reports_no_halt():
 def test_tripped_run_reports_when_how_long_and_what_was_blocked():
     out = risk_breaker_summary(
         _result(["0", "-0.10", "-0.16", "-0.16", "-0.16", "-0.16"],
-                ["DRAWDOWN_LIMIT", "DRAWDOWN_LIMIT", "DAILY_LOSS_LIMIT", "NO_NEXT_SESSION"], fill_days=(0, 1)),
+                ["DRAWDOWN_LIMIT", "DRAWDOWN_LIMIT", "DAILY_LOSS_LIMIT", "NO_NEXT_SESSION"], fill_days=(0, 1),
+                rejected_days=(2, 3, 3, 5)),
         LIMIT,
     )
     assert out["tripped"] is True
@@ -77,6 +85,35 @@ def test_tripped_run_reports_when_how_long_and_what_was_blocked():
     assert out["entries_blocked"] == 2 and out["daily_loss_entries_blocked"] == 1
     assert out["last_fill_session"] == "2024-01-03"
     assert "blocked 2 entries" in out["warning"] and "not the strategy" in out["warning"]
+    assert out["blocked_sessions"] == 2
+    assert out["first_blocked_session"] == "2024-01-04" and out["last_blocked_session"] == "2024-01-05"
+    assert out["resumed"] is False and out["first_fill_after_block"] is None and out["entries_after_block"] == 0
+    assert out["ended_at_limit"] is True and "final close was still at the limit" in out["warning"]
+
+
+def test_block_followed_by_a_later_buy_is_reported_as_resumed_not_halted():
+    out = risk_breaker_summary(
+        _result(["-0.16", "-0.16", "-0.05", "0", "0"], ["DRAWDOWN_LIMIT", "DRAWDOWN_LIMIT"],
+                fill_days=(0, 3), rejected_days=(1, 2)),
+        LIMIT,
+    )
+    assert out["tripped"] is True and out["entries_blocked"] == 2 and out["blocked_sessions"] == 2
+    assert out["first_blocked_session"] == "2024-01-03" and out["last_blocked_session"] == "2024-01-04"
+    assert out["resumed"] is True and out["first_fill_after_block"] == "2024-01-05"
+    assert out["entries_after_block"] == 1 and out["ended_at_limit"] is False
+    assert "does not latch" in out["warning"] and "resumed on 2024-01-05" in out["warning"]
+    assert "halt" not in out["warning"] and "no entry has filled" not in out["warning"]
+
+
+def test_a_sell_after_the_block_is_not_resumed_trading():
+    result = _result(["-0.16", "-0.16"], ["DRAWDOWN_LIMIT"], fill_days=(), rejected_days=(0,))
+    sell = dataclasses.replace(
+        _result(["0"], [], fill_days=(1,)).fills[0], side="SELL",
+    )
+    result = dataclasses.replace(result, fills=(sell,))
+    out = risk_breaker_summary(result, LIMIT)
+    assert out["resumed"] is False and out["entries_after_block"] == 0
+    assert "no entry has filled" in out["warning"]
 
 
 def test_blocked_entries_alone_count_as_tripped():
@@ -107,10 +144,15 @@ def _bar(symbol: str, day: date, open_: str, close: str) -> HistoricalBar:
     )
 
 
-def _engine_run(*, aaa: list[tuple[str, str]], bbb: list[tuple[str, str]], last: int):
+def _engine_run(
+    *, aaa: list[tuple[str, str]], bbb: list[tuple[str, str]], last: int, aaa_stop: str = "95",
+    retry_bbb: bool = False,
+):
     """AAA is bought on session 3 at 100 for 100 shares ($10k of $20k); BBB is signalled after session 3.
 
-    A close of 69 on AAA is a $3,100 loss on $20,000: a 15.5% drawdown, past the 15% limit.
+    A close of 69 on AAA is a $3,100 loss on $20,000: a 15.5% drawdown, past the 15% limit. With the
+    default stop of 95, AAA is sold at the next open and the loss is locked in; a lower `aaa_stop` keeps
+    the position open so it can recover. `retry_bbb` adds a second BBB signal after session 4.
     """
     days = session_dates(date(2024, 1, 2), 6)
     bars = {
@@ -120,7 +162,7 @@ def _engine_run(*, aaa: list[tuple[str, str]], bbb: list[tuple[str, str]], last:
     signals = (
         EntrySignal(
             signal_id="aaa", symbol="AAA", generated_after_session=days[2], limit_price=Decimal("100"),
-            quantity_hint=Decimal("100"), initial_stop_reference=Decimal("95"),
+            quantity_hint=Decimal("100"), initial_stop_reference=Decimal(aaa_stop),
             target_reference=Decimal("1000"), maximum_holding_sessions=100,
         ),
         EntrySignal(
@@ -129,6 +171,14 @@ def _engine_run(*, aaa: list[tuple[str, str]], bbb: list[tuple[str, str]], last:
             target_reference=Decimal("1000"), maximum_holding_sessions=100,
         ),
     )
+    if retry_bbb:
+        signals += (
+            EntrySignal(
+                signal_id="bbb-retry", symbol="BBB", generated_after_session=days[4], limit_price=Decimal("50"),
+                quantity_hint=Decimal("100"), initial_stop_reference=Decimal("45"),
+                target_reference=Decimal("1000"), maximum_holding_sessions=100,
+            ),
+        )
     config = BacktestConfiguration(
         start_date=days[0], end_date=days[last], symbols=("AAA", "BBB"), initial_cash=Decimal("20000"),
         atr_period=2, risk_fraction=Decimal("0.5"),
@@ -172,6 +222,29 @@ def test_engine_open_below_limit_blocks_the_entry_and_is_reported_as_a_halt():
     out = risk_breaker_summary(result, config.max_drawdown_fraction)
     assert out["tripped"] is True and out["entries_blocked"] == 1
     assert out["warning"] and out["observation"] is None
+    assert out["resumed"] is False and out["ended_at_limit"] is True
+    assert out["first_blocked_session"] == out["last_blocked_session"] == result.daily_states[4].market_date.isoformat()
+    assert "no entry has filled" in out["warning"] and "reflect the halt" in out["warning"]
+
+
+def test_engine_rejection_then_recovery_then_a_later_fill_is_resumed_not_halted():
+    # AAA stays open through the 31% dip (stop 50) and gaps back up, so opening drawdown recovers.
+    aaa = FLAT + [("100", "69"), ("69", "69"), ("100", "100")]
+    config, result = _engine_run(aaa=aaa, bbb=BBB_FLAT, last=5, aaa_stop="50", retry_bbb=True)
+    days = [state.market_date for state in result.daily_states]
+    rejected = [(row["signal_id"], row["reason"], row["market_date"]) for row in result.rejected_entries]
+    assert rejected == [("bbb", "DRAWDOWN_LIMIT", days[4])]  # blocked at the session-4 open ...
+    assert result.daily_states[4].drawdown_fraction <= -LIMIT  # ... still in breach at that close,
+    assert result.daily_states[5].drawdown_fraction > -LIMIT  # then recovered
+    buys = [(f.symbol, f.market_date) for f in result.fills if f.side == "BUY"]
+    assert buys == [("AAA", days[3]), ("BBB", days[5])]  # and a later entry filled
+    out = risk_breaker_summary(result, config.max_drawdown_fraction)
+    assert out["tripped"] is True and out["entries_blocked"] == 1 and out["blocked_sessions"] == 1
+    assert out["first_blocked_session"] == out["last_blocked_session"] == days[4].isoformat()
+    assert out["resumed"] is True and out["first_fill_after_block"] == days[5].isoformat()
+    assert out["entries_after_block"] == 1 and out["ended_at_limit"] is False
+    assert "does not latch" in out["warning"] and days[5].isoformat() in out["warning"]
+    assert "halt" not in out["warning"] and "no entry has filled" not in out["warning"]
 
 
 def test_limit_is_inclusive():
