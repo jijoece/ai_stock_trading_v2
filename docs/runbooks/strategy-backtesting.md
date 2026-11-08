@@ -60,12 +60,16 @@ credentials or raw provider output.
 - `summary`: strategy return next to `benchmark_return`, drawdown, exposure and round
   trips. `sample.status` is `INSUFFICIENT_SAMPLE` until `--min-trades` is met.
 - `summary.risk_breaker` (also on every cost row and split window): whether the engine's
-  drawdown breaker stopped the run. The engine blocks new entries while drawdown from the
-  run's peak equity is at or beyond the limit (15% by default), and a run that has stopped
-  trading never resets its peak. When `tripped` is true, read `first_session_at_limit`,
-  `share_of_sessions_at_limit` and `last_fill_session`: return, exposure and trade counts
-  after that date measure the halt, not the strategy, and a multi-year headline figure may
-  describe only the months before it. Prefer windows that start fresh (`--split-date`).
+  drawdown breaker stopped the run. The engine blocks a new entry when the session's opening
+  equity is at or beyond the limit (15% by default) from the run's peak, and a run that has
+  stopped trading never resets its peak. `tripped` and `warning` are set only when the engine
+  actually rejected entries for `DRAWDOWN_LIMIT` (`entries_blocked`). Then read
+  `last_fill_session`: return, exposure and trade counts after the first blocked entry measure
+  the halt, not the strategy, and a multi-year headline figure may describe only the months
+  before it. Prefer windows that start fresh (`--split-date`). `first_close_at_limit`,
+  `closes_at_limit` and `share_of_closes_at_limit` count closing drawdowns at the limit; the
+  breaker reads the next open, so a close at the limit that recovers, or falls on the final
+  session, blocks nothing. Such a run has `tripped: false` and an `observation` instead.
 - `split`: use only `in_sample` for configuration tuning; judge on `out_of_sample`.
 - `cost_sensitivity`: the same signals at each slippage level.
 - `caveats`: always read them. They include survivorship bias, daily-bar limits and

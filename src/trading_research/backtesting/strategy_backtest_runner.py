@@ -116,32 +116,39 @@ def acquire_snapshot(
 def risk_breaker_summary(result: BacktestResult, drawdown_limit: Decimal) -> dict:
     """Facts about the engine's drawdown breaker for one run.
 
-    The engine blocks new entries while drawdown from the run's peak equity is at or beyond the
-    limit, so after a trip the remaining sessions measure the halt, not the strategy.
+    The engine blocks new entries when the session's opening equity is at or beyond the drawdown
+    limit from the run's peak (a `DRAWDOWN_LIMIT` rejection). `tripped` and `warning` follow only
+    those rejections. Closing drawdown is recorded after the entry decision, so a close at the limit
+    can recover by the next open (or be the final session) without trading ever being blocked; that
+    is reported as an `observation`, not as a halt.
     """
     at_limit = [state for state in result.daily_states if state.drawdown_fraction <= -drawdown_limit]
     reasons = [row["reason"] for row in result.rejected_entries]
     blocked = reasons.count("DRAWDOWN_LIMIT")
-    tripped = bool(at_limit) or blocked > 0
+    tripped = blocked > 0
     total = len(result.daily_states)
     first = at_limit[0].market_date.isoformat() if at_limit else None
     share = Decimal(len(at_limit)) / Decimal(total) if total else Decimal(0)
     fills = [fill.market_date for fill in result.fills]
-    warning = None
+    warning = observation = None
     if tripped:
-        since = f"on {first}" if first else "intraday"
         warning = (
-            f"Drawdown reached the {drawdown_limit:.0%} limit {since}; the engine blocks new entries while "
-            f"drawdown is at or beyond it ({blocked} blocked, {len(at_limit)} of {total} sessions at the limit). "
-            "Return, exposure and trade counts from then on reflect the halt, not the strategy; compare "
-            "windows that start fresh."
+            f"The engine blocked {blocked} entries because drawdown was at or beyond the "
+            f"{drawdown_limit:.0%} limit at the session open. Return, exposure and trade counts after "
+            "the first blocked entry reflect the halt, not the strategy; compare windows that start fresh."
+        )
+    elif at_limit:
+        observation = (
+            f"Closing drawdown reached the {drawdown_limit:.0%} limit on {first} ({len(at_limit)} of {total} "
+            "closes), but the engine blocked no entries, so trading was not halted."
         )
     return {
-        "drawdown_limit": str(drawdown_limit), "tripped": tripped, "first_session_at_limit": first,
-        "sessions_at_limit": len(at_limit), "sessions_total": total,
-        "share_of_sessions_at_limit": f"{share:.4f}", "entries_blocked": blocked,
+        "drawdown_limit": str(drawdown_limit), "tripped": tripped, "first_close_at_limit": first,
+        "closes_at_limit": len(at_limit), "sessions_total": total,
+        "share_of_closes_at_limit": f"{share:.4f}", "entries_blocked": blocked,
         "daily_loss_entries_blocked": reasons.count("DAILY_LOSS_LIMIT"),
-        "last_fill_session": max(fills).isoformat() if fills else None, "warning": warning,
+        "last_fill_session": max(fills).isoformat() if fills else None,
+        "warning": warning, "observation": observation,
     }
 
 

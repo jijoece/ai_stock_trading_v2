@@ -135,14 +135,15 @@
   "exposure": "str",
   "maximum_drawdown": "str",
   "risk_breaker": {
+   "closes_at_limit": "int",
    "daily_loss_entries_blocked": "int",
    "drawdown_limit": "str",
    "entries_blocked": "int",
-   "first_session_at_limit": "NoneType",
+   "first_close_at_limit": "NoneType",
    "last_fill_session": "str",
-   "sessions_at_limit": "int",
+   "observation": "NoneType",
    "sessions_total": "int",
-   "share_of_sessions_at_limit": "str",
+   "share_of_closes_at_limit": "str",
    "tripped": "bool",
    "warning": "NoneType"
   },
