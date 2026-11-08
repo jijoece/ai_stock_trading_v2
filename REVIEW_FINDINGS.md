@@ -4,38 +4,39 @@
 
 - Repository: `/Users/jijopaul/workspace/ai_stock_trading_v2`
 - Branch: `feat/historical-backtest-step1`
-- Reviewed HEAD: `2198c1332f4a07886a43092b55cf434f26259dab`
-- Subject: Flag drawdown-breaker halts in backtest reports and add --max-drawdown-fraction
-- Claude commits reviewed: 2198c1332f4a07886a43092b55cf434f26259dab
+- Reviewed HEAD: `106bcc1e35d9f7785e8fb1d9d3e294d78d509538`
+- Subject: Record review fixes applied for 2198c13 (pending re-review)
+- Claude commits reviewed: 2198c1332f4a07886a43092b55cf434f26259dab,d22067d6a98dadaa08f800439a06e94bb986706e,106bcc1e35d9f7785e8fb1d9d3e294d78d509538
 - Review scope: INCREMENTAL
-- Fix round: 0
+- Fix round: 1
 - Trigger: local Git `post-commit`
 - Review status: FIXES_APPLIED_PENDING_REVIEW
 - Highest priority: P1
 - Finding count: 0
-- Fix commit: d22067d6a98dadaa08f800439a06e94bb986706e
+- Fix commit: 04f43e796e3374ab99da70ea12ba55032456f65f
 
 ## Findings
 
-### [P1] Investigate: end-of-session drawdown may be falsely reported as a trading halt
+### [P1] Investigate: a single blocked entry may be misreported as a permanent trading halt
 
 Commit: 2198c1332f4a07886a43092b55cf434f26259dab
 
-Location: src/trading_research/backtesting/strategy_backtest_runner.py:116-137
+Location: src/trading_research/backtesting/strategy_backtest_runner.py:125-151
 
-Concern: The new report may classify a run as breaker-tripped and state that subsequent results reflect a halt even when the engine never blocked an entry.
+Concern: Verify whether one `DRAWDOWN_LIMIT` rejection is sufficient to claim that all subsequent return, exposure, and trade counts reflect a halt. The engine’s breaker appears non-latching, so trading may resume after open positions recover.
 
-Evidence: `risk_breaker_summary()` sets `tripped` whenever any end-of-session `daily_state.drawdown_fraction` reaches the limit. However, the engine evaluates the breaker earlier using opening `pre_entry_equity` (`engine.py:298-310`), before calculating and recording the closing drawdown (`engine.py:382-387`). A position can therefore cross the threshold at the close, recover by the next opening evaluation, and never produce a `DRAWDOWN_LIMIT` rejection. Crossing on the final session is an even simpler false-positive case. The added `test_limit_is_inclusive` validates the summary helper with a synthetic closing state but does not verify that the engine actually halted trading.
+Evidence: `risk_breaker_summary()` sets `tripped` permanently when any entry was rejected and warns that all results after the first rejection “reflect the halt.” However, `engine.py:298-310` recomputes drawdown at every session open and blocks only currently eligible entries while the threshold is breached. It records no persistent halted state. Existing positions remain active and can recover; a later signal can therefore fill once opening drawdown moves above the limit. The added tests cover recovery before any rejection and a continuing breach, but not rejection followed by recovery and a successful later entry. The runbook repeats the permanent-halt interpretation at `docs/runbooks/strategy-backtesting.md:62-69`.
 
-Potential impact if confirmed: Backtest reports can incorrectly warn that returns, exposure, and trade counts “reflect the halt, not the strategy.” Researchers may discard or reinterpret valid results, choose split windows unnecessarily, or loosen the breaker based on a halt that did not occur.
+Potential impact if confirmed: Valid post-recovery trades and performance may be presented as meaningless halt-period output. Researchers could discard usable results, create unnecessary split windows, or loosen the breaker based on an inaccurately characterized run.
 
-Investigation and conditional remediation: Verify the concern against the current engine with a deterministic scenario where closing equity reaches the threshold but the next pre-entry opening equity is above it—or where the threshold is reached only on the final session—and confirm that no `DRAWDOWN_LIMIT` rejection occurs. If confirmed, distinguish “drawdown observed at/over limit” from “entry breaker activated,” and reserve halt language for evidence matching the engine’s actual decision point; add regression coverage using an engine-produced result. If disproved or already fixed, document the engine trace showing when entry blocking occurred and leave the code unchanged.
+Investigation and conditional remediation: First verify the concern against the current engine using a deterministic run where an entry is rejected for `DRAWDOWN_LIMIT`, an existing position subsequently restores opening equity above the threshold, and a later entry succeeds. If confirmed, report the breaker as episodic entry blocking rather than a permanent halt, expose enough timing information to distinguish blocked and resumed periods, and add regression coverage for rejection followed by recovery and a later fill. If the engine actually latches through another current-code path, or the scenario is otherwise impossible, document that evidence and leave the code unchanged.
 
-Validation: Add assertions that `tripped` and halt warnings follow actual breaker evaluations or blocked entries, while closing-threshold-only runs are reported without claiming trading stopped. Also cover recovery above the threshold and a final-session breach.
+Validation: Assert that the report accurately describes a run containing, in order, an actual drawdown rejection, recovery above the threshold, and a successful later entry. Confirm that the warning does not characterize post-recovery metrics as halted and that permanently impaired runs remain clearly flagged.
 
 Tests or diagnostics run:
 
-- `git diff --check ce09e01e79c00f93dd9e30264713b6e835da43fc..2198c1332f4a07886a43092b55cf434f26259dab` — passed.
-- Inspected the complete commit diff and current engine/configuration/reporting paths.
-- Canonical Nox tests could not run because `nox` was not on `PATH`; `uv run nox` was blocked by the read-only cache.
-- Direct `.venv/bin/pytest` was also blocked because the read-only environment provided no writable temporary directory.
+- `git diff --check ce09e01e79c00f93dd9e30264713b6e835da43fc..106bcc1e35d9f7785e8fb1d9d3e294d78d509538` — passed.
+- Full chronological patches for all three specified commits were inspected.
+- Current engine, configuration, report, tests, and strategy-backtesting runbook were inspected.
+- Targeted pytest invocation was blocked before collection because the read-only environment had no usable temporary directory.
+- No broker, credentialed, scheduler, model, order, or write operations were performed.
