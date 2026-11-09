@@ -83,8 +83,11 @@ def build_signal_record(
         data_provider=data_provider, snapshot_hash=snapshot_hash, screening_profile_hash=screening_profile_hash,
         relative_strength_hash=relative_strength_hash,
     )
+    # `snapshot_hash` is provenance, not evaluation content: it covers every symbol the batch requested,
+    # so rerunning a session with a wider universe changes it while an unchanged evaluation does not.
+    # Genuine content differences still change the signal fields hashed here and still conflict.
     content = asdict(unhashed)
-    del content["record_hash"]
+    del content["record_hash"], content["snapshot_hash"]
     return replace(unhashed, record_hash=hash_config(content))
 
 

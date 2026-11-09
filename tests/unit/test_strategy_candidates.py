@@ -112,6 +112,23 @@ def test_same_evaluation_with_different_content_is_rejected(tmp_path, stage3_con
         insert_strategy_signal(conn, replace(record, record_hash="different"), recorded_at="x")
 
 
+def test_rerunning_a_session_with_a_wider_universe_keeps_unchanged_evaluations(tmp_path, stage3_config, full_replay):
+    """Review follow-up on PR 38: `snapshot_hash` covers every requested symbol, so it is provenance and not part
+    of an evaluation's content hash. A wider universe must add the new symbols without conflicting on the old."""
+    conn = connect(tmp_path / "db.sqlite3")
+    day = full_replay.signals[0].data_as_of.date()
+    _candidates(tmp_path, conn, day, stage3_config, symbols=("BBB",), snapshot_path=None)
+    narrow = list_strategy_signals(conn)
+    assert [r["symbol"] for r in narrow] == ["BBB"]
+
+    wide = _candidates(tmp_path, conn, day, stage3_config, symbols=("AAA", "BBB"), snapshot_path=None)  # must not raise
+    assert wide["strategies"]["momentum_breakout"]["recorded"] == 1
+    assert wide["strategies"]["momentum_breakout"]["already_recorded"] == 1
+    rows = {r["symbol"]: r for r in list_strategy_signals(conn)}
+    assert set(rows) == {"AAA", "BBB"}
+    assert rows["BBB"]["snapshot_hash"] == narrow[0]["snapshot_hash"]  # first-recorded provenance is kept
+
+
 def test_both_screening_results_are_stored(tmp_path, stage3_config, full_replay):
     conn = connect(tmp_path / "db.sqlite3")
     _candidates(tmp_path, conn, full_replay.signals[0].data_as_of.date(), stage3_config)

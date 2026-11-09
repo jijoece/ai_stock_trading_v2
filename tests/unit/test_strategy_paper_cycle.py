@@ -1,6 +1,7 @@
 """Phase 3 of docs/paper-testing-plan.md: strategy signals into the local simulated paper book."""
 from __future__ import annotations
 
+import json
 import re
 import subprocess
 import sys
@@ -266,6 +267,17 @@ def test_strategy_cycle_refuses_unsupported_policy_disabled_books_and_external_b
     object.__setattr__(external, "enabled_book_ids", (BOOK,))
     with pytest.raises(StrategyBridgeError, match="external submission"):
         create_strategy_entry_intents(conn, cfg=replace(_paper_config(), external_broker=external), **kwargs)
+    assert _orders(conn) == []
+
+
+def test_a_cycle_with_lifecycle_exits_disabled_is_refused_before_any_exposure(stored):
+    """Review follow-up on PR 38: the lifecycle skips exit evaluation when `exits.enabled` is false, so a signal's
+    stop, target and holding period would never be enforced on an entry the cycle creates."""
+    conn, day = stored
+    cfg = _paper_config()
+    no_exits = replace(cfg, lifecycle=replace(cfg.lifecycle, exits=replace(cfg.lifecycle.exits, enabled=False)))
+    with pytest.raises(StrategyBridgeError, match="exits.enabled"):
+        _entry(conn, _eligible(conn), day, cfg=no_exits)
     assert _orders(conn) == []
 
 
@@ -724,6 +736,39 @@ def test_pending_entries_for_symbols_already_held_do_not_take_a_second_slot(stor
     first, second = _two_eligible(conn)
     outcomes = _entry(conn, [first, second], day, cfg=_paper_config(max_open_positions=2))
     assert {o.outcome for o in outcomes} == {OUTCOME_INTENT_CREATED_PENDING_FILL}
+
+
+def _same_symbol_twin(conn):
+    """The fixture day's one ELIGIBLE signal plus a stored distinct signal for the same symbol."""
+    (row,) = _eligible(conn)
+    factors = {**signal_from_row(row).factor_values, "twin": 1}
+    twin = replace(signal_from_row(row), factor_values=factors)
+    values = {key: row[key] for key in row.keys() if key != "recorded_at"}
+    values.update(
+        factor_values_json=json.dumps(factors), signal_content_id=derive_strategy_signal_content_id(twin),
+        strategy_evaluation_id=derive_strategy_evaluation_id(twin), record_hash="test-twin-same-symbol",
+        backtest_screening_passed=bool(values["backtest_screening_passed"]),
+    )
+    insert_strategy_signal(conn, StrategySignalRecord(**values), recorded_at=row["recorded_at"])
+    first, second = _eligible(conn)
+    assert first["symbol"] == second["symbol"] and first["signal_content_id"] != second["signal_content_id"]
+    return first, second
+
+
+def test_pending_entries_count_toward_the_same_symbols_exposure_caps(tmp_path, stored):
+    """Review follow-up on PR 38: the position-weight and symbol-concentration caps read only filled value, and the
+    later fill does not re-check them, so a second pending BUY for one symbol must see the first one's notional."""
+    conn, day = stored
+    first, second = _same_symbol_twin(conn)
+    solo = _solo_notional(tmp_path, conn, first, day)
+    nlv = Decimal("100000")
+    cap = solo * Decimal("1.5")
+    cfg = replace(_paper_config(), risk=replace(_paper_config().risk, max_symbol_concentration_weight=cap / nlv))
+    outcomes = _entry(conn, [first, second], day, cfg=cfg)
+    assert [o.outcome for o in outcomes][0] == OUTCOME_INTENT_CREATED_PENDING_FILL
+    total = sum(Decimal(o["notional_usd"]) for o in _orders(conn))
+    assert total <= cap, f"pending notional {total} exceeds the symbol cap {cap}"
+    assert len(_orders(conn)) == 1 or total > solo
 
 
 def test_daily_notional_counts_intents_committed_by_an_earlier_run(tmp_path, stored):

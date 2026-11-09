@@ -140,6 +140,11 @@ def validate_strategy_cycle_config(cfg: PaperBooksConfiguration, experiment_poli
             f"{MINIMUM_PENDING_EXPIRY_MARKET_DAYS}: a strategy intent is created after the close and fills in the "
             "next session's lifecycle, so a shorter expiry would cancel it before it could fill"
         )
+    if not cfg.lifecycle.exits.enabled:
+        raise StrategyBridgeError(
+            "paper_books.lifecycle.exits.enabled is false — the lifecycle would never evaluate exits, so a "
+            "signal's stop, target and maximum holding period would go unenforced; the strategy cycle fails closed"
+        )
     book_id = cfg.baseline.book_id
     if not cfg.is_book_enabled(book_id):
         raise StrategyBridgeError(f"paper book {book_id!r} is not enabled in config/paper_books.yaml")
@@ -177,6 +182,21 @@ def _pending_new_position_count(conn, book_id: str) -> int:
         if order["side"] == ORDER_SIDE_BUY and order["status"] == INTENT_STATUS_PENDING_SUBMISSION
         and order["symbol"] not in held
     })
+
+
+def _pending_symbol_notional(conn, book_id: str, symbol: str) -> Decimal:
+    """Notional reserved by pending BUYs of `symbol`, which no filled position reflects yet.
+
+    The position-weight and symbol-concentration caps read only the filled position value, and the later
+    lifecycle fill does not re-check them, so successive approvals for one symbol would each get a full allowance."""
+    return sum(
+        (
+            Decimal(order["notional_usd"]) for order in pb_repo.list_order_intents(conn, book_id)
+            if order["side"] == ORDER_SIDE_BUY and order["status"] == INTENT_STATUS_PENDING_SUBMISSION
+            and order["symbol"] == symbol
+        ),
+        Decimal("0"),
+    )
 
 
 def _risk_state_fingerprint(conn, book_id: str) -> tuple:
@@ -250,6 +270,8 @@ def create_strategy_entry_intents(
             )
             portfolio = replace(
                 portfolio, open_position_count=portfolio.open_position_count + _pending_new_position_count(conn, book_id),
+                current_position_market_value_usd=(portfolio.current_position_market_value_usd or Decimal("0"))
+                + _pending_symbol_notional(conn, book_id, signal.symbol),
             )
 
             # Risk-based size from the book's equity and the signal's own stop distance.
