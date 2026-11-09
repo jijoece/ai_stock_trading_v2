@@ -4,38 +4,39 @@
 
 - Repository: `/Users/jijopaul/workspace/ai_stock_trading_v2`
 - Branch: `feat/historical-backtest-step1`
-- Reviewed HEAD: `ee69c28fa17c3199e9a0aa70116b5e804d16afba`
-- Subject: Close the remaining PR 38 review findings on exits, pending exposure and candidate provenance
-- Claude commits reviewed: ee69c28fa17c3199e9a0aa70116b5e804d16afba
+- Reviewed HEAD: `01a5038369aaa774a2561167f3d3e2aec49bfe19`
+- Subject: Record review fixes applied for ee69c28 (pending re-review)
+- Claude commits reviewed: ee69c28fa17c3199e9a0aa70116b5e804d16afba,56c59f91b334af130a7f68a6833dcb84b2b601a2,01a5038369aaa774a2561167f3d3e2aec49bfe19
 - Review scope: INCREMENTAL
-- Fix round: 0
+- Fix round: 1
 - Trigger: local Git `post-commit`
 - Review status: FIXES_APPLIED_PENDING_REVIEW
 - Highest priority: P2
 - Finding count: 0
-- Fix commit: 56c59f91b334af130a7f68a6833dcb84b2b601a2
+- Fix commit: b2c3d6fed49067f8cb50e1ca071152b0444f40e2
 
 ## Findings
 
-### [P2] Investigate: revised market data can bypass append-only conflict detection
+### [P2] Investigate: price-adjustment changes may bypass signal conflict detection
 
-Commit: ee69c28fa17c3199e9a0aa70116b5e804d16afba
+Commit: 56c59f91b334af130a7f68a6833dcb84b2b601a2
 
-Location: src/trading_research/forward_testing/candidates.py:86-91
+Location: src/trading_research/forward_testing/candidates.py:96-102
 
-Concern: Investigate whether removing `snapshot_hash` from `record_hash` allows a rerun using genuinely revised market data to be accepted as an identical evaluation.
+Concern: Investigate whether rerunning an evaluation under a different price-adjustment regime can be accepted as identical when the resulting OHLCV rows happen to match.
 
-Evidence: `snapshot_hash` is the only persisted fingerprint of the complete market-data input. The commit excludes it unconditionally, while `insert_strategy_signal` determines equality solely from `record_hash`. Therefore, two snapshots with different underlying bars but coincidentally identical derived signal and screening fields produce the same `record_hash`; the second run is reported as already recorded, and its differing provenance is neither retained nor rejected. The added regression test covers a wider symbol universe, but not changed bars for an existing symbol. No per-symbol or per-evaluation source-data hash was found that distinguishes universe expansion from source-data revision.
+Evidence: `evaluation_input_hash()` fingerprints only each bar’s date and OHLCV values through `bars_fingerprint()`. The snapshot’s `adjustment` value is not included. `build_signal_record()` excludes `snapshot_hash`, and `StrategySignalRecord` has no separate adjustment field. Consequently, changing from `split` to `raw` or `all` can produce the same `record_hash` when no relevant corporate action changes the returned rows. The persisted row then retains only the first snapshot hash, while the later run is reported as already recorded. Existing tests cover revised bars and wider universes, but not changed adjustment semantics with identical rows.
 
-Potential impact if confirmed: Historical candidate records may silently conceal corrected or drifting price inputs, weakening reproducibility, point-in-time auditing, and detection of data-provider revisions.
+Potential impact if confirmed: Append-only candidate history may treat evaluations performed under materially different market-data semantics as identical, weakening reproducibility and provenance auditing. Later corporate-action corrections could make it unclear which adjustment policy governed the recorded evaluation.
 
-Investigation and conditional remediation: Verify this concern against the current code first by rerunning one evaluation with unchanged derived fields but a snapshot whose bars for that symbol differ. If the run is accepted as identical, preserve universe-expansion idempotency while incorporating a stable per-evaluation input fingerprint—such as the evaluated symbol’s bars and required benchmark inputs—into conflict detection, and add regression coverage for both wider-universe and revised-data cases. If another persisted invariant already detects the revision, document that evidence and leave the code unchanged.
+Investigation and conditional remediation: Verify the concern against the current code first by running the same evaluation twice with identical returned OHLCV rows but different snapshot adjustment values. If it is accepted as already recorded, bind the adjustment regime—along with any other required per-evaluation data semantics—to the input fingerprint or persisted record identity, while retaining wider-universe idempotency, and add regression coverage. If another current invariant rejects or distinctly records the second run, document that evidence and leave the code unchanged.
 
-Validation: Confirm that widening the universe with unchanged inputs remains idempotent, while changing an evaluated symbol’s or required benchmark’s input bars either produces a distinct evaluation record under the intended identity policy or fails closed with a provenance conflict.
+Validation: Add a case proving that identical OHLCV rows under different adjustment regimes conflict or receive distinct identities according to the intended persistence policy. Retain the existing wider-universe, revised-symbol-bars, and revised-benchmark-bars cases.
 
 Tests or diagnostics run:
 
-- `git diff ... --check` — passed.
-- Inspected the full commit diff, candidate persistence schema/repository, snapshot hashing implementation, relevant paper-risk and lifecycle paths, current plan, ADRs, and runbooks.
-- `nox` was unavailable directly.
-- `uv run nox -s tests -- tests/unit/test_strategy_candidates.py tests/unit/test_strategy_paper_cycle.py` could not start because the read-only environment prevented uv cache initialization; no tests executed.
+- Inspected all three specified commit diffs chronologically and traced the affected candidate persistence, historical-data, paper-risk, lifecycle, and test paths through HEAD `01a5038369aaa774a2561167f3d3e2aec49bfe19`.
+- `git diff --check b15a1d382f03db90ee4858e951fff011a6aca29c..01a5038369aaa774a2561167f3d3e2aec49bfe19` — passed.
+- Read-only AST parsing of the three modified Python modules — passed.
+- No test suite was executed because the environment is read-only and cannot provide pytest/Nox temporary or cache storage.
+- No broker, credentialed, network, model, scheduler, order, or write operations were performed.
