@@ -189,6 +189,45 @@ def test_revised_bars_for_a_newly_added_symbol_do_not_conflict_with_unchanged_ev
     assert again["strategies"]["momentum_breakout"]["already_recorded"] == 1
 
 
+@pytest.mark.parametrize("adjustment", ["raw", "all"])
+def test_a_different_price_adjustment_with_identical_bars_conflicts(
+    tmp_path, stage3_config, full_replay, monkeypatch, adjustment,
+):
+    """Review follow-up on PR 38: the adjustment regime is a data semantic of the evaluation. When no corporate
+    action separates the regimes the OHLCV rows are identical, so the input fingerprint must bind it explicitly."""
+    import trading_research.forward_testing.candidates as candidates
+
+    conn = connect(tmp_path / "db.sqlite3")
+    day = full_replay.signals[0].data_as_of.date()
+    _candidates(tmp_path, conn, day, stage3_config, symbols=("BBB",), snapshot_path=None, adjustment="split")
+    before = list_strategy_signals(conn)
+
+    original = candidates.acquire_snapshot
+
+    def same_rows_other_regime(**kwargs):
+        from trading_research.backtesting.alpaca_history import _build_snapshot
+
+        snapshot = original(**{**kwargs, "adjustment": "split"})
+        return _build_snapshot(
+            provider=snapshot.provider, adjustment=adjustment, fetch_start=snapshot.fetch_start, end=snapshot.end,
+            bars_by_symbol=snapshot.bars_by_symbol, fetched_as_of=snapshot.fetched_as_of,
+        )
+
+    monkeypatch.setattr(candidates, "acquire_snapshot", same_rows_other_regime)
+    with pytest.raises(StrategySignalConflictError):
+        _candidates(tmp_path, conn, day, stage3_config, symbols=("BBB",), snapshot_path=None, adjustment=adjustment)
+    assert [tuple(r) for r in list_strategy_signals(conn)] == [tuple(r) for r in before]
+
+
+def test_the_same_adjustment_with_identical_bars_stays_idempotent(tmp_path, stage3_config, full_replay):
+    conn = connect(tmp_path / "db.sqlite3")
+    day = full_replay.signals[0].data_as_of.date()
+    _candidates(tmp_path, conn, day, stage3_config, symbols=("BBB",), snapshot_path=None, adjustment="all")
+    again = _candidates(tmp_path, conn, day, stage3_config, symbols=("BBB",), snapshot_path=None, adjustment="all")
+    assert again["strategies"]["momentum_breakout"]["recorded"] == 0
+    assert again["strategies"]["momentum_breakout"]["already_recorded"] == 1
+
+
 def test_both_screening_results_are_stored(tmp_path, stage3_config, full_replay):
     conn = connect(tmp_path / "db.sqlite3")
     _candidates(tmp_path, conn, full_replay.signals[0].data_as_of.date(), stage3_config)

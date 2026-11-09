@@ -94,11 +94,19 @@ def build_signal_record(
 
 
 def evaluation_input_hash(provider: AlpacaHistoricalDataProvider, *, symbol: str, benchmark: str, session: date) -> str:
-    """Fingerprint of the bars one evaluation reads, fetched exactly as `replay_signals` fetches them."""
+    """Fingerprint of the bars one evaluation reads, fetched exactly as `replay_signals` fetches them.
+
+    The price-adjustment regime is bound in as well: `split`, `raw` and `all` return identical rows whenever no
+    corporate action separates them, so the rows alone cannot tell the regimes apart. The data provider is already
+    a persisted field of the record hash, so it is not repeated here.
+    """
     close = regular_session_close(session)
     return hash_config({
-        role: bars_fingerprint(provider.bars(symbol=name, start=warmup_start(session), end=session, as_of=close))
-        for role, name in (("symbol", symbol), ("benchmark", benchmark))
+        "adjustment": provider.snapshot.adjustment,
+        **{
+            role: bars_fingerprint(provider.bars(symbol=name, start=warmup_start(session), end=session, as_of=close))
+            for role, name in (("symbol", symbol), ("benchmark", benchmark))
+        },
     })
 
 
