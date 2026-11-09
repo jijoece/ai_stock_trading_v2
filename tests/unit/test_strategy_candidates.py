@@ -129,6 +129,66 @@ def test_rerunning_a_session_with_a_wider_universe_keeps_unchanged_evaluations(t
     assert rows["BBB"]["snapshot_hash"] == narrow[0]["snapshot_hash"]  # first-recorded provenance is kept
 
 
+def _revise_first_bar(monkeypatch, symbol):
+    """Make the next snapshot differ from the original only in `symbol`'s oldest open, a field no factor reads."""
+    import trading_research.forward_testing.candidates as candidates
+    from trading_research.backtesting.alpaca_history import _build_snapshot
+
+    original = candidates.acquire_snapshot
+
+    def revised(**kwargs):
+        snapshot = original(**kwargs)
+        bars = dict(snapshot.bars_by_symbol)
+        first = bars[symbol][0]
+        bars[symbol] = (replace(first, open=first.open - first.open / 1000), *bars[symbol][1:])
+        return _build_snapshot(
+            provider=snapshot.provider, adjustment=snapshot.adjustment, fetch_start=snapshot.fetch_start,
+            end=snapshot.end, bars_by_symbol=bars, fetched_as_of=snapshot.fetched_as_of,
+        )
+
+    monkeypatch.setattr(candidates, "acquire_snapshot", revised)
+
+
+def test_revised_bars_for_an_evaluated_symbol_conflict_even_when_the_signal_is_unchanged(
+    tmp_path, stage3_config, full_replay, monkeypatch,
+):
+    """Review follow-up on PR 38: `snapshot_hash` is out of the record hash, so the evaluation's own input bars
+    must be in it; otherwise a provider revision that leaves the derived fields alone is reported as a no-op."""
+    conn = connect(tmp_path / "db.sqlite3")
+    day = full_replay.signals[0].data_as_of.date()
+    _candidates(tmp_path, conn, day, stage3_config, symbols=("BBB",), snapshot_path=None)
+    before = list_strategy_signals(conn)
+
+    _revise_first_bar(monkeypatch, "BBB")
+    with pytest.raises(StrategySignalConflictError):
+        _candidates(tmp_path, conn, day, stage3_config, symbols=("BBB",), snapshot_path=None)
+    assert [tuple(r) for r in list_strategy_signals(conn)] == [tuple(r) for r in before]
+
+
+def test_revised_benchmark_bars_conflict_for_every_evaluated_symbol(tmp_path, stage3_config, full_replay, monkeypatch):
+    conn = connect(tmp_path / "db.sqlite3")
+    day = full_replay.signals[0].data_as_of.date()
+    _candidates(tmp_path, conn, day, stage3_config, symbols=("BBB",), snapshot_path=None)
+
+    _revise_first_bar(monkeypatch, "SPY")
+    with pytest.raises(StrategySignalConflictError):
+        _candidates(tmp_path, conn, day, stage3_config, symbols=("BBB",), snapshot_path=None)
+
+
+def test_revised_bars_for_a_newly_added_symbol_do_not_conflict_with_unchanged_evaluations(
+    tmp_path, stage3_config, full_replay, monkeypatch,
+):
+    """Only an evaluation's own symbol and the benchmark are its inputs, not the rest of the requested universe."""
+    conn = connect(tmp_path / "db.sqlite3")
+    day = full_replay.signals[0].data_as_of.date()
+    _candidates(tmp_path, conn, day, stage3_config, symbols=("BBB",), snapshot_path=None)
+
+    _revise_first_bar(monkeypatch, "CCC")
+    again = _candidates(tmp_path, conn, day, stage3_config, symbols=("BBB", "CCC"), snapshot_path=None)
+    assert again["strategies"]["momentum_breakout"]["recorded"] == 1
+    assert again["strategies"]["momentum_breakout"]["already_recorded"] == 1
+
+
 def test_both_screening_results_are_stored(tmp_path, stage3_config, full_replay):
     conn = connect(tmp_path / "db.sqlite3")
     _candidates(tmp_path, conn, full_replay.signals[0].data_as_of.date(), stage3_config)

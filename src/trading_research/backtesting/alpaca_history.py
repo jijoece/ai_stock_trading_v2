@@ -119,6 +119,11 @@ def _row(bar: HistoricalBar) -> list[str]:
     ]
 
 
+def bars_fingerprint(bars: tuple[HistoricalBar, ...]) -> str:
+    """Identity of a bar series, computed exactly as the snapshot hashes each symbol's rows."""
+    return hash_config({"bars": [_row(bar) for bar in bars]})
+
+
 def _content_hash(
     *, provider: str, adjustment: str, fetch_start: date, end: date,
     bars_by_symbol: Mapping[str, tuple[HistoricalBar, ...]],

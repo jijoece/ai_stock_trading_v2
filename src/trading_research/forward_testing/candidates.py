@@ -14,7 +14,7 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 
 from ..analysis.screener import ScreeningResult, load_screening_config
-from ..backtesting.alpaca_history import AlpacaHistoricalDataProvider, warmup_start
+from ..backtesting.alpaca_history import AlpacaHistoricalDataProvider, bars_fingerprint, warmup_start
 from ..backtesting.models import BacktestError
 from ..backtesting.screening_profile import profile_hash
 from ..backtesting.signal_replay import ReplayEvaluation, replay_signals
@@ -56,7 +56,7 @@ def _text(value) -> str | None:
 
 def build_signal_record(
     evaluation: ReplayEvaluation, *, data_provider: str, snapshot_hash: str, screening_profile_hash: str,
-    relative_strength_hash: str, production_screening: ScreeningResult | None = None,
+    relative_strength_hash: str, input_hash: str, production_screening: ScreeningResult | None = None,
 ) -> StrategySignalRecord:
     signal = evaluation.signal
     if production_screening is None:
@@ -83,12 +83,23 @@ def build_signal_record(
         data_provider=data_provider, snapshot_hash=snapshot_hash, screening_profile_hash=screening_profile_hash,
         relative_strength_hash=relative_strength_hash,
     )
-    # `snapshot_hash` is provenance, not evaluation content: it covers every symbol the batch requested,
-    # so rerunning a session with a wider universe changes it while an unchanged evaluation does not.
-    # Genuine content differences still change the signal fields hashed here and still conflict.
+    # `snapshot_hash` covers every symbol the batch requested, so rerunning a session with a wider universe
+    # changes it while an unchanged evaluation does not; it stays provenance and out of the content hash.
+    # `input_hash` replaces it: it covers only the bars this evaluation read (the symbol's and the benchmark's),
+    # so revised source data conflicts even when the derived signal fields happen to be identical.
     content = asdict(unhashed)
     del content["record_hash"], content["snapshot_hash"]
+    content["input_hash"] = input_hash
     return replace(unhashed, record_hash=hash_config(content))
+
+
+def evaluation_input_hash(provider: AlpacaHistoricalDataProvider, *, symbol: str, benchmark: str, session: date) -> str:
+    """Fingerprint of the bars one evaluation reads, fetched exactly as `replay_signals` fetches them."""
+    close = regular_session_close(session)
+    return hash_config({
+        role: bars_fingerprint(provider.bars(symbol=name, start=warmup_start(session), end=session, as_of=close))
+        for role, name in (("symbol", symbol), ("benchmark", benchmark))
+    })
 
 
 def _require_stage(activation_stage: str) -> None:
@@ -154,6 +165,9 @@ def run_strategy_candidates(
                     evaluation, data_provider=snapshot.provider, snapshot_hash=snapshot.content_hash,
                     screening_profile_hash=profile_hash(screening_config),
                     relative_strength_hash=hash_config(replay.relative_strength_definition),
+                    input_hash=evaluation_input_hash(
+                        provider, symbol=evaluation.signal.symbol, benchmark=benchmark, session=evaluation.session,
+                    ),
                     production_screening=(production_screening or {}).get(evaluation.signal.symbol),
                 )
                 added += insert_strategy_signal(conn, record, recorded_at=recorded_at)
