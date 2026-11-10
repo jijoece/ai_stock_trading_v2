@@ -101,3 +101,6 @@ class BacktestResult:
     rejected_entries: tuple[dict, ...]
     metrics: dict
     unresolved_evaluations: tuple[str, ...]
+    # Sessions whose opening drawdown was at or beyond the limit, whether or not a signal arrived to be
+    # rejected. Not persisted: it is derived from the same bars and configuration as the daily states.
+    drawdown_breach_sessions: tuple[date, ...] = ()

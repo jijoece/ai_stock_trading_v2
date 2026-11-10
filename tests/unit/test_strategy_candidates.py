@@ -1,0 +1,339 @@
+"""Phase 1 of docs/paper-testing-plan.md: strategy_signals store and the daily candidate list."""
+from __future__ import annotations
+
+import ast
+import pathlib
+import re
+import sqlite3
+from dataclasses import replace
+from datetime import date, datetime, timezone
+
+import pytest
+
+from trading_research.analysis.screener import load_screening_config
+from trading_research.backtesting.alpaca_history import AlpacaHistoricalDataProvider, warmup_start
+from trading_research.backtesting.fixture_history import build_fixture_snapshot
+from trading_research.backtesting.models import BacktestError
+from trading_research.backtesting.signal_replay import replay_signals
+from trading_research.backtesting.strategy_backtest_runner import build_strategy
+from trading_research.forward_testing.candidates import run_strategy_candidates
+from trading_research.storage.database import connect
+from trading_research.storage.schema_version import CURRENT_SCHEMA_VERSION
+from trading_research.storage.strategy_signals_repositories import (
+    StrategySignalConflictError,
+    insert_strategy_signal,
+    list_strategy_signals,
+)
+from trading_research.strategies.config import DEFAULT_STRATEGY_CONFIG_PATH
+from trading_research.strategies.contracts import derive_strategy_signal_content_id
+
+SYMBOLS = ("AAA", "BBB", "CCC")
+START, END = date(2023, 1, 3), date(2024, 12, 31)
+NOW = datetime(2025, 3, 1, tzinfo=timezone.utc)
+SRC = pathlib.Path(__file__).resolve().parents[2] / "src" / "trading_research"
+
+
+@pytest.fixture()
+def stage3_config(tmp_path):
+    text = DEFAULT_STRATEGY_CONFIG_PATH.read_text()
+    patched = re.sub(r"activation_stage: \w+", "activation_stage: STAGE_3_DAILY_READ_ONLY_CANDIDATE_LIST", text)
+    assert patched != text
+    path = tmp_path / "strategies.yaml"
+    path.write_text(patched)
+    return path
+
+
+@pytest.fixture(scope="module")
+def full_replay():
+    snapshot = build_fixture_snapshot(
+        symbols=("AAA", "BBB", "CCC", "SPY"), start=START, end=END, adjustment="split",
+        as_of=datetime(2024, 12, 31, 23, 59, 59, tzinfo=timezone.utc),
+    )
+    return replay_signals(
+        strategy=build_strategy("momentum_breakout", None), provider=AlpacaHistoricalDataProvider(snapshot),
+        symbols=SYMBOLS, start=START, end=END, history_start=warmup_start(START),
+        screening_config=load_screening_config(None),
+    )
+
+
+def _candidates(tmp_path, conn, as_of, config, **overrides):
+    kwargs = dict(
+        strategy_ids=("momentum_breakout",), symbols=SYMBOLS, as_of=as_of, data_source="fixture",
+        snapshot_path=tmp_path / f"{as_of}.snapshot.json", conn=conn, strategy_config_path=config, now=NOW,
+    )
+    kwargs.update(overrides)
+    return run_strategy_candidates(**kwargs)
+
+
+# -- storage ---------------------------------------------------------------------
+
+
+def test_migration_registers_strategy_signals(tmp_path):
+    conn = connect(tmp_path / "db.sqlite3")
+    assert conn.execute("SELECT MAX(version) FROM schema_version").fetchone()[0] == CURRENT_SCHEMA_VERSION
+    assert conn.execute("SELECT 1 FROM sqlite_master WHERE name = 'strategy_signals'").fetchone()
+
+
+def test_every_status_is_persisted_and_rerun_is_a_noop(tmp_path, stage3_config, full_replay):
+    conn = connect(tmp_path / "db.sqlite3")
+    day = full_replay.signals[0].data_as_of.date()
+    first = _candidates(tmp_path, conn, day, stage3_config)
+    rows = list_strategy_signals(conn, strategy_id="momentum_breakout", session_date=day.isoformat())
+    assert len(rows) == len(SYMBOLS) == first["strategies"]["momentum_breakout"]["evaluations"]
+    assert first["strategies"]["momentum_breakout"]["recorded"] == len(SYMBOLS)
+    assert {r["status"] for r in rows} >= {"ELIGIBLE"}
+
+    again = _candidates(tmp_path, conn, day, stage3_config)
+    assert again["strategies"]["momentum_breakout"]["recorded"] == 0
+    assert again["strategies"]["momentum_breakout"]["already_recorded"] == len(SYMBOLS)
+    assert len(list_strategy_signals(conn)) == len(SYMBOLS)
+
+
+def test_rows_cannot_be_updated_or_deleted(tmp_path, stage3_config, full_replay):
+    conn = connect(tmp_path / "db.sqlite3")
+    _candidates(tmp_path, conn, full_replay.signals[0].data_as_of.date(), stage3_config)
+    with pytest.raises(sqlite3.DatabaseError, match="append-only"):
+        conn.execute("UPDATE strategy_signals SET status = 'ELIGIBLE'")
+    with pytest.raises(sqlite3.DatabaseError, match="append-only"):
+        conn.execute("DELETE FROM strategy_signals")
+
+
+def test_same_evaluation_with_different_content_is_rejected(tmp_path, stage3_config, full_replay):
+    conn = connect(tmp_path / "db.sqlite3")
+    _candidates(tmp_path, conn, full_replay.signals[0].data_as_of.date(), stage3_config)
+    row = list_strategy_signals(conn)[0]
+    import trading_research.storage.strategy_signals_repositories as repo
+
+    record = repo.StrategySignalRecord(**{f: row[f] for f in repo.StrategySignalRecord.__dataclass_fields__
+                                          if f != "backtest_screening_passed"},
+                                       backtest_screening_passed=bool(row["backtest_screening_passed"]))
+    assert insert_strategy_signal(conn, record, recorded_at="x") is False
+    with pytest.raises(StrategySignalConflictError):
+        insert_strategy_signal(conn, replace(record, record_hash="different"), recorded_at="x")
+
+
+def test_rerunning_a_session_with_a_wider_universe_keeps_unchanged_evaluations(tmp_path, stage3_config, full_replay):
+    """Review follow-up on PR 38: `snapshot_hash` covers every requested symbol, so it is provenance and not part
+    of an evaluation's content hash. A wider universe must add the new symbols without conflicting on the old."""
+    conn = connect(tmp_path / "db.sqlite3")
+    day = full_replay.signals[0].data_as_of.date()
+    _candidates(tmp_path, conn, day, stage3_config, symbols=("BBB",), snapshot_path=None)
+    narrow = list_strategy_signals(conn)
+    assert [r["symbol"] for r in narrow] == ["BBB"]
+
+    wide = _candidates(tmp_path, conn, day, stage3_config, symbols=("AAA", "BBB"), snapshot_path=None)  # must not raise
+    assert wide["strategies"]["momentum_breakout"]["recorded"] == 1
+    assert wide["strategies"]["momentum_breakout"]["already_recorded"] == 1
+    rows = {r["symbol"]: r for r in list_strategy_signals(conn)}
+    assert set(rows) == {"AAA", "BBB"}
+    assert rows["BBB"]["snapshot_hash"] == narrow[0]["snapshot_hash"]  # first-recorded provenance is kept
+
+
+def _revise_first_bar(monkeypatch, symbol):
+    """Make the next snapshot differ from the original only in `symbol`'s oldest open, a field no factor reads."""
+    import trading_research.forward_testing.candidates as candidates
+    from trading_research.backtesting.alpaca_history import _build_snapshot
+
+    original = candidates.acquire_snapshot
+
+    def revised(**kwargs):
+        snapshot = original(**kwargs)
+        bars = dict(snapshot.bars_by_symbol)
+        first = bars[symbol][0]
+        bars[symbol] = (replace(first, open=first.open - first.open / 1000), *bars[symbol][1:])
+        return _build_snapshot(
+            provider=snapshot.provider, adjustment=snapshot.adjustment, fetch_start=snapshot.fetch_start,
+            end=snapshot.end, bars_by_symbol=bars, fetched_as_of=snapshot.fetched_as_of,
+        )
+
+    monkeypatch.setattr(candidates, "acquire_snapshot", revised)
+
+
+def test_revised_bars_for_an_evaluated_symbol_conflict_even_when_the_signal_is_unchanged(
+    tmp_path, stage3_config, full_replay, monkeypatch,
+):
+    """Review follow-up on PR 38: `snapshot_hash` is out of the record hash, so the evaluation's own input bars
+    must be in it; otherwise a provider revision that leaves the derived fields alone is reported as a no-op."""
+    conn = connect(tmp_path / "db.sqlite3")
+    day = full_replay.signals[0].data_as_of.date()
+    _candidates(tmp_path, conn, day, stage3_config, symbols=("BBB",), snapshot_path=None)
+    before = list_strategy_signals(conn)
+
+    _revise_first_bar(monkeypatch, "BBB")
+    with pytest.raises(StrategySignalConflictError):
+        _candidates(tmp_path, conn, day, stage3_config, symbols=("BBB",), snapshot_path=None)
+    assert [tuple(r) for r in list_strategy_signals(conn)] == [tuple(r) for r in before]
+
+
+def test_revised_benchmark_bars_conflict_for_every_evaluated_symbol(tmp_path, stage3_config, full_replay, monkeypatch):
+    conn = connect(tmp_path / "db.sqlite3")
+    day = full_replay.signals[0].data_as_of.date()
+    _candidates(tmp_path, conn, day, stage3_config, symbols=("BBB",), snapshot_path=None)
+
+    _revise_first_bar(monkeypatch, "SPY")
+    with pytest.raises(StrategySignalConflictError):
+        _candidates(tmp_path, conn, day, stage3_config, symbols=("BBB",), snapshot_path=None)
+
+
+def test_revised_bars_for_a_newly_added_symbol_do_not_conflict_with_unchanged_evaluations(
+    tmp_path, stage3_config, full_replay, monkeypatch,
+):
+    """Only an evaluation's own symbol and the benchmark are its inputs, not the rest of the requested universe."""
+    conn = connect(tmp_path / "db.sqlite3")
+    day = full_replay.signals[0].data_as_of.date()
+    _candidates(tmp_path, conn, day, stage3_config, symbols=("BBB",), snapshot_path=None)
+
+    _revise_first_bar(monkeypatch, "CCC")
+    again = _candidates(tmp_path, conn, day, stage3_config, symbols=("BBB", "CCC"), snapshot_path=None)
+    assert again["strategies"]["momentum_breakout"]["recorded"] == 1
+    assert again["strategies"]["momentum_breakout"]["already_recorded"] == 1
+
+
+@pytest.mark.parametrize("adjustment", ["raw", "all"])
+def test_a_different_price_adjustment_with_identical_bars_conflicts(
+    tmp_path, stage3_config, full_replay, monkeypatch, adjustment,
+):
+    """Review follow-up on PR 38: the adjustment regime is a data semantic of the evaluation. When no corporate
+    action separates the regimes the OHLCV rows are identical, so the input fingerprint must bind it explicitly."""
+    import trading_research.forward_testing.candidates as candidates
+
+    conn = connect(tmp_path / "db.sqlite3")
+    day = full_replay.signals[0].data_as_of.date()
+    _candidates(tmp_path, conn, day, stage3_config, symbols=("BBB",), snapshot_path=None, adjustment="split")
+    before = list_strategy_signals(conn)
+
+    original = candidates.acquire_snapshot
+
+    def same_rows_other_regime(**kwargs):
+        from trading_research.backtesting.alpaca_history import _build_snapshot
+
+        snapshot = original(**{**kwargs, "adjustment": "split"})
+        return _build_snapshot(
+            provider=snapshot.provider, adjustment=adjustment, fetch_start=snapshot.fetch_start, end=snapshot.end,
+            bars_by_symbol=snapshot.bars_by_symbol, fetched_as_of=snapshot.fetched_as_of,
+        )
+
+    monkeypatch.setattr(candidates, "acquire_snapshot", same_rows_other_regime)
+    with pytest.raises(StrategySignalConflictError):
+        _candidates(tmp_path, conn, day, stage3_config, symbols=("BBB",), snapshot_path=None, adjustment=adjustment)
+    assert [tuple(r) for r in list_strategy_signals(conn)] == [tuple(r) for r in before]
+
+
+def test_the_same_adjustment_with_identical_bars_stays_idempotent(tmp_path, stage3_config, full_replay):
+    conn = connect(tmp_path / "db.sqlite3")
+    day = full_replay.signals[0].data_as_of.date()
+    _candidates(tmp_path, conn, day, stage3_config, symbols=("BBB",), snapshot_path=None, adjustment="all")
+    again = _candidates(tmp_path, conn, day, stage3_config, symbols=("BBB",), snapshot_path=None, adjustment="all")
+    assert again["strategies"]["momentum_breakout"]["recorded"] == 0
+    assert again["strategies"]["momentum_breakout"]["already_recorded"] == 1
+
+
+def test_both_screening_results_are_stored(tmp_path, stage3_config, full_replay):
+    conn = connect(tmp_path / "db.sqlite3")
+    _candidates(tmp_path, conn, full_replay.signals[0].data_as_of.date(), stage3_config)
+    row = list_strategy_signals(conn)[0]
+    assert row["backtest_screening_json"] and row["screening_profile_hash"]
+    assert row["production_screening_status"] == "NOT_EVALUATED" and row["production_screening_json"] is None
+    assert len(row["snapshot_hash"]) == 64
+
+
+# -- gates -----------------------------------------------------------------------
+
+
+def test_refuses_before_stage_3(tmp_path):
+    conn = connect(tmp_path / "db.sqlite3")
+    with pytest.raises(BacktestError, match="STAGE_3"):
+        _candidates(tmp_path, conn, date(2024, 6, 3), DEFAULT_STRATEGY_CONFIG_PATH)
+    assert list_strategy_signals(conn) == []
+
+
+def test_refuses_a_session_that_has_not_closed(tmp_path, stage3_config):
+    conn = connect(tmp_path / "db.sqlite3")
+    with pytest.raises(BacktestError, match="not closed"):
+        _candidates(tmp_path, conn, date(2024, 6, 3), stage3_config, now=datetime(2024, 6, 3, 15, tzinfo=timezone.utc))
+    assert list_strategy_signals(conn) == []
+
+
+def test_non_trading_day_is_rejected(tmp_path, stage3_config):
+    conn = connect(tmp_path / "db.sqlite3")
+    with pytest.raises(BacktestError, match="not a trading session"):
+        _candidates(tmp_path, conn, date(2024, 6, 8), stage3_config)
+
+
+def test_missing_session_bar_is_never_eligible(tmp_path, stage3_config, full_replay):
+    """A snapshot that stops the day before `as_of` leaves every symbol stale."""
+    day = full_replay.signals[0].data_as_of.date()
+    full = build_fixture_snapshot(
+        symbols=("AAA", "BBB", "CCC", "SPY"), start=START, end=END, adjustment="split", as_of=NOW,
+    )
+    snapshot = replace(full, bars_by_symbol={
+        symbol: tuple(bar for bar in bars if bar.session_date != day) for symbol, bars in full.bars_by_symbol.items()
+    })
+    provider = AlpacaHistoricalDataProvider(snapshot)
+    result = replay_signals(
+        strategy=build_strategy("momentum_breakout", None), provider=provider, symbols=SYMBOLS, start=day, end=day,
+        history_start=warmup_start(day), screening_config=load_screening_config(None),
+    )
+    assert result.signals == ()
+    assert set(result.status_counts) <= {"STALE", "INCOMPLETE"}
+
+
+# -- parity ----------------------------------------------------------------------
+
+
+def test_candidates_match_the_backtest_replay_for_the_same_date(tmp_path, stage3_config, full_replay):
+    day = full_replay.signals[0].data_as_of.date()
+    expected = {derive_strategy_signal_content_id(s) for s in full_replay.signals if s.data_as_of.date() == day}
+    assert expected
+    result = _candidates(tmp_path, connect(tmp_path / "db.sqlite3"), day, stage3_config)
+    got = {s["signal_content_id"] for e in result["shortlist"] for s in e["signals"]}
+    assert got == expected
+
+
+# -- boundary --------------------------------------------------------------------
+
+
+def test_candidate_path_imports_no_broker_or_runtime_module():
+    forbidden = ("runtime", "execution", "paper_books", "shadow", "paper_runtime")
+    for relative in ("forward_testing/candidates.py", "storage/strategy_signals_repositories.py"):
+        tree = ast.parse((SRC / relative).read_text())
+        for node in ast.walk(tree):
+            names = []
+            if isinstance(node, ast.ImportFrom):
+                names = [(node.module or "")] if node.level == 0 else [(node.module or "").split(".")[0]]
+            elif isinstance(node, ast.Import):
+                names = [alias.name for alias in node.names]
+            for name in names:
+                assert name.split(".")[0] not in forbidden, f"{relative} imports {name}"
+
+
+# -- CLI -------------------------------------------------------------------------
+
+
+def _cli_argv(tmp_path, day, *extra):
+    return ["strategy-candidates", "--as-of", day.isoformat(), "--symbols", "AAA,BBB,CCC", "--strategies",
+            "momentum_breakout", "--data-source", "fixture", "--db", str(tmp_path / "cli.sqlite3"), *extra]
+
+
+def test_cli_prints_shortlist_and_persists(tmp_path, stage3_config, full_replay, capsys):
+    import json
+
+    from trading_research.cli import main
+
+    day = full_replay.signals[0].data_as_of.date()
+    assert main(_cli_argv(tmp_path, day, "--strategy-config", str(stage3_config))) == 0
+    out = json.loads(capsys.readouterr().out)
+    assert out["activation_stage"] == "STAGE_3_DAILY_READ_ONLY_CANDIDATE_LIST"
+    assert out["shortlist"]
+    assert len(list_strategy_signals(connect(tmp_path / "cli.sqlite3"))) == len(SYMBOLS)
+
+
+def test_cli_refuses_at_the_default_stage_and_exits_2(tmp_path, full_replay, capsys):
+    import json
+
+    from trading_research.cli import main
+
+    day = full_replay.signals[0].data_as_of.date()
+    assert main(_cli_argv(tmp_path, day)) == 2
+    assert json.loads(capsys.readouterr().out)["error"]["code"] == "CANDIDATES_ERROR"
+    assert list_strategy_signals(connect(tmp_path / "cli.sqlite3")) == []

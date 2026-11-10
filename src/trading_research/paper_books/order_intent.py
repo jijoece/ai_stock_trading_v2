@@ -23,18 +23,19 @@ EXECUTION_VERSION = "paper-books-execution-v1"
 
 def persist_risk_decision(
     conn, book_id: str, cycle_id: str, recommendation_id: str, symbol: str, decision,
-    portfolio_snapshot_id: str | None, clock,
+    portfolio_snapshot_id: str | None, clock, *, commit: bool = True,
 ) -> str:
     """Every risk decision (approved or rejected) gets a stable, deterministic
     ID and is persisted unconditionally — a rejected recommendation still has
-    a queryable audit trail (Step 11: "decisions persisted")."""
+    a queryable audit trail (Step 11: "decisions persisted"). `commit=False`
+    lets a caller persist an approved decision atomically with its intent."""
     import hashlib
 
     digest = hashlib.sha256(f"{book_id}:{cycle_id}:{recommendation_id}:{symbol}".encode()).hexdigest()[:32]
     risk_decision_id = f"pb-risk-{digest}"
     repo.save_risk_decision(
         conn, risk_decision_id, book_id, cycle_id, recommendation_id, symbol, decision,
-        portfolio_snapshot_id, clock(),
+        portfolio_snapshot_id, clock(), commit=commit,
     )
     return risk_decision_id
 

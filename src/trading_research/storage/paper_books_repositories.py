@@ -144,7 +144,7 @@ def list_cash_ledger_entries(conn: sqlite3.Connection, book_id: str) -> list[dic
 
 def save_risk_decision(conn: sqlite3.Connection, risk_decision_id: str, book_id: str, cycle_id: str,
                         recommendation_id: str, symbol: str, decision, portfolio_snapshot_id: str | None,
-                        created_at: datetime) -> bool:
+                        created_at: datetime, *, commit: bool = True) -> bool:
     existing = conn.execute(
         "SELECT 1 FROM paper_book_risk_decisions WHERE risk_decision_id = ?", (risk_decision_id,)
     ).fetchone()
@@ -161,7 +161,8 @@ def save_risk_decision(conn: sqlite3.Connection, risk_decision_id: str, book_id:
             portfolio_snapshot_id, _ts(created_at),
         ),
     )
-    conn.commit()
+    if commit:
+        conn.commit()
     return True
 
 

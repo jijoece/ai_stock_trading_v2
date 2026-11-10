@@ -259,6 +259,56 @@ def _migration_10_advanced_risk_controls(conn: sqlite3.Connection) -> None:
         raise SchemaVersionError(f"advanced-risk schema tables missing: {sorted(missing)}")
 
 
+def _migration_13_strategy_signals(conn: sqlite3.Connection) -> None:
+    """docs/paper-testing-plan.md Phase 1: the append-only `strategy_signals`
+    table is created by `strategy_signals_schema` before migrations run. The
+    ordered marker makes the upgrade auditable and keeps forward-version
+    refusal in force; it fails closed if the table or its triggers are absent."""
+    present = {
+        row[0] for row in conn.execute(
+            "SELECT name FROM sqlite_master WHERE name IN "
+            "('strategy_signals', 'trg_strategy_signals_no_update', 'trg_strategy_signals_no_delete')"
+        ).fetchall()
+    }
+    missing = {"strategy_signals", "trg_strategy_signals_no_update", "trg_strategy_signals_no_delete"} - present
+    if missing:
+        raise SchemaVersionError(f"strategy_signals schema objects missing: {sorted(missing)}")
+
+
+def _migration_14_strategy_shadow_outcomes(conn: sqlite3.Connection) -> None:
+    """docs/paper-testing-plan.md Phase 2: the append-only `strategy_shadow_outcomes`
+    table is created by `strategy_shadow_schema` before migrations run. Fails
+    closed if the table or its triggers are absent."""
+    wanted = {
+        "strategy_shadow_outcomes", "trg_strategy_shadow_outcomes_no_update",
+        "trg_strategy_shadow_outcomes_no_delete",
+    }
+    present = {
+        row[0] for row in conn.execute(
+            "SELECT name FROM sqlite_master WHERE name IN (?, ?, ?)", tuple(sorted(wanted)),
+        ).fetchall()
+    }
+    if wanted - present:
+        raise SchemaVersionError(f"strategy_shadow_outcomes schema objects missing: {sorted(wanted - present)}")
+
+
+def _migration_15_strategy_bridge(conn: sqlite3.Connection) -> None:
+    """docs/paper-testing-plan.md Phase 3: the append-only `paper_book_strategy_links`
+    table is created by `strategy_bridge_schema` before migrations run. Fails
+    closed if the table or its triggers are absent."""
+    wanted = {
+        "paper_book_strategy_links", "trg_paper_book_strategy_links_no_update",
+        "trg_paper_book_strategy_links_no_delete",
+    }
+    present = {
+        row[0] for row in conn.execute(
+            "SELECT name FROM sqlite_master WHERE name IN (?, ?, ?)", tuple(sorted(wanted)),
+        ).fetchall()
+    }
+    if wanted - present:
+        raise SchemaVersionError(f"paper_book_strategy_links schema objects missing: {sorted(wanted - present)}")
+
+
 # Ordered, idempotent migrations. Each callable must be safe to invoke more
 # than once (defense in depth on top of the version gate, which normally
 # prevents re-invocation) and must not raise on a database that already has
@@ -308,6 +358,18 @@ _MIGRATIONS: dict[int, tuple[str, Callable[[sqlite3.Connection], None]]] = {
     12: (
         "run the legacy research-token reservation migration automatically (Milestone 27 A2)",
         _migration_12_research_token_budget_legacy_migration,
+    ),
+    13: (
+        "add append-only strategy_signals table (docs/paper-testing-plan.md Phase 1)",
+        _migration_13_strategy_signals,
+    ),
+    14: (
+        "add append-only strategy_shadow_outcomes table (docs/paper-testing-plan.md Phase 2)",
+        _migration_14_strategy_shadow_outcomes,
+    ),
+    15: (
+        "add append-only paper_book_strategy_links table (docs/paper-testing-plan.md Phase 3)",
+        _migration_15_strategy_bridge,
     ),
 }
 

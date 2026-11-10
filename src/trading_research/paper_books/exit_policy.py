@@ -129,6 +129,7 @@ def evaluate_exit_decision(
     safety_full_exit: bool = False,
     partial_stage_id: int | None = None,
     partial_close_quantity: Decimal | None = None,
+    strategy_managed_exits: bool = False,
 ) -> PaperExitDecision:
     """Fixed, documented check order — same inputs always produce the same
     decision:
@@ -147,6 +148,10 @@ def evaluate_exit_decision(
     10. deterministic partial-profit stage
     11. final profit target
     12. otherwise HOLD
+
+    `strategy_managed_exits` (positions opened from a strategy signal) makes
+    the supplied `current_stop_price` the stop instead of letting the generic
+    fixed-percent stop override it; every other rule is unchanged.
 
     Missing/stale/unsafe prices never reach the trigger rules, so they can
     never fabricate an exit. Partial quantity is supplied by the deterministic
@@ -188,7 +193,13 @@ def evaluate_exit_decision(
 
     if cost_basis_per_share is not None and cost_basis_per_share > 0:
         fixed_stop = cost_basis_per_share * (Decimal("1") - stop_loss_percent)
-        stop_threshold = max(fixed_stop, current_stop_price or fixed_stop)
+        # A strategy-managed position keeps the stop its signal chose; the
+        # generic fixed-percent stop must not silently tighten it (paper
+        # testing plan Phase 3). Without a supplied stop the fixed one applies.
+        if strategy_managed_exits and current_stop_price is not None:
+            stop_threshold = current_stop_price
+        else:
+            stop_threshold = max(fixed_stop, current_stop_price or fixed_stop)
         if reference_price <= stop_threshold:
             stop_decision = (
                 DECISION_EXIT_TRAILING_STOP if trailing_stop_active

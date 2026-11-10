@@ -1,0 +1,27 @@
+# Backtest-only copy of config/screening.yaml. The ONLY change is max_share_price
+# (25.0 -> 100.0), requested by the operator for the AMC 2022 run. Production
+# screening is unchanged. Gates the backtest cannot evaluate are listed in the report.
+version: 1
+
+max_share_price: 100.0
+min_market_cap: 150000000
+min_avg_daily_dollar_volume: 2000000
+min_operating_history_years: 1.0
+
+exclude_otc: true
+exclude_inactive: true
+
+exclude_bankruptcy_or_distress: true
+exclude_going_concern_warning: true
+exclude_shell_company: true
+
+exclude_recent_reverse_split: true
+max_dilution_share_growth_yoy: 0.20
+min_cash_runway_quarters: 4.0
+
+earnings_blackout_days: 3.0
+max_realized_volatility: 0.08
+exclude_recent_halt: true
+max_bid_ask_spread_bps: 100.0
+
+max_data_staleness_seconds: 900.0

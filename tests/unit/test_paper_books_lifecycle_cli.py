@@ -23,6 +23,7 @@ from trading_research.paper_books.config import (
     SoakSection,
     ValuationSection,
 )
+from trading_research.storage import paper_books_repositories as pb_repo
 from trading_research.storage.database import connect
 
 DAY1 = datetime(2026, 1, 5, 20, 0, tzinfo=timezone.utc)
@@ -295,13 +296,18 @@ def test_forced_wallclock_created_at_desyncs_a_later_historical_replay(db_path, 
     conn.close()
 
     outcome = cli_support.paper_book_lifecycle_run_cli(db_path, as_of=DAY2)
-    # A book-level exception (here: market_days_held's own "as_of_date must
-    # not precede opened_on" guard) never raises out of the CLI — it is
-    # caught and recorded in failure_reasons, per lifecycle.py's own "one
-    # book's failure never mutates the other" contract. `books_processed`
-    # stays empty for this book precisely because the exception fired.
-    assert "BASELINE" not in outcome["books_processed"]
-    assert any("BASELINE" in reason for reason in outcome["failure_reasons"])
+    # PR 38 review follow-up: the lifecycle now refuses to work an order whose `created_at` is not before the
+    # replay's `as_of` (previously this surfaced only as a book-level `market_days_held` exception). The order is
+    # left pending and never filled or expired from a session that precedes its own creation; the book itself
+    # still processes.
+    assert "BASELINE" in outcome["books_processed"]
+    assert not any("BASELINE" in reason for reason in outcome["failure_reasons"])
+    assert outcome["pending_orders_filled"] == 0 and outcome["pending_orders_expired"] == 0
+    conn = connect(db_path)
+    try:
+        assert [o["status"] for o in pb_repo.list_order_intents(conn, "BASELINE")] == ["PENDING_SUBMISSION"]
+    finally:
+        conn.close()
 
 
 # --- paper-soak-run / paper-soak-readiness (Milestone 9.1) ---------------------

@@ -152,10 +152,10 @@ the ORM session's own connection, not the same connection an in-memory
    every `src/trading_research/storage/*_schema.py` module for a `CREATE
    TRIGGER ... BEFORE {INSERT,UPDATE,DELETE} ON <table> ... RAISE(ABORT ...
    END;` block (unconditional or `WHEN`-conditional, e.g. `recommendations`'
-   frozen-row guard) and collects `<table>` — currently **50** tables, not
+   frozen-row guard) and collects `<table>` — currently **53** tables, not
    2. The guard is then exercised against a disposable synthetic
-   single-column table for every one of the 50 discovered names (full
-   production DDL for 50 tables is unnecessary: the guard inspects each
+   single-column table for every one of the 53 discovered names (full
+   production DDL for 53 tables is unnecessary: the guard inspects each
    changed object's mapper tables and fires before any SQL reaches a real
    trigger), and every single one is rejected pre-SQL by
    `TriggerProtectedTableORMGuard`. Because the policy is re-derived from

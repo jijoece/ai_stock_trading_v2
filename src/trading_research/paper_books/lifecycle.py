@@ -45,6 +45,7 @@ from decimal import Decimal
 from typing import Any, Callable
 
 from ..storage import paper_books_repositories as repo
+from ..storage import strategy_bridge_repositories as strategy_bridge_repo
 from ..storage import trading_repositories as trading_repo
 from ..storage.transactions import transaction
 from ..analysis.indicators import OHLCBar, average_true_range
@@ -63,6 +64,7 @@ from .models import (
     INTENT_STATUS_FILLED,
     INTENT_STATUS_PENDING_SUBMISSION,
     INTENT_STATUS_REJECTED,
+    ORDER_SIDE_BUY,
     ORDER_SIDE_SELL,
     ORDER_TYPE_LIMIT,
     VALUATION_PARTIAL_STALE_PRICE,
@@ -186,6 +188,17 @@ def _process_pending_orders(
     pending = [o for o in repo.list_order_intents(conn, book_id) if o["status"] == INTENT_STATUS_PENDING_SUBMISSION]
     for row in pending:
         intent = _row_to_intent(row)
+        if intent.created_at >= as_of:
+            # An order is worked strictly after it was created. An earlier as_of would fill it at a price from
+            # before the decision with a fill timestamp that predates the order; an equal one (a rerun of the
+            # session that created it) would fill it at the very price the decision was made from.
+            _save_symbol_result(
+                conn, lifecycle_run_id=lifecycle_run_id, book_id=book_id, symbol=intent.symbol,
+                stage=STAGE_PENDING_ORDER, outcome=PENDING_OUTCOME_STILL_PENDING,
+                reasons=(f"order was created {intent.created_at.isoformat()}, not before this as_of {as_of.isoformat()}",),
+                paper_order_intent_id=intent.paper_order_intent_id, clock=clock,
+            )
+            continue
         if cfg.external_broker.enabled and book_id in cfg.external_broker.enabled_book_ids:
             repo.enqueue_external_submission(
                 conn,
@@ -228,6 +241,26 @@ def _process_pending_orders(
                 paper_order_intent_id=intent.paper_order_intent_id, clock=clock,
             )
             continue
+
+        if intent.side == ORDER_SIDE_BUY:
+            # A strategy entry whose price is already at or through the signal's own stop is an invalidated
+            # setup: the backtest rejects it (INVALID_STRATEGY_STOP), so it is cancelled here rather than
+            # filled and stopped out in the same session.
+            strategy_link = strategy_bridge_repo.get_strategy_link(conn, book_id, intent.paper_order_intent_id)
+            would_fill = execution.simulate_fill(intent, market_input, clock()) if strategy_link is not None else None
+            if strategy_link is not None and would_fill is not None and (
+                Decimal(strategy_link.strategy_stop) >= Decimal(would_fill["fill_price"])
+            ):
+                execution.expire_pending_intent(conn, intent, clock())
+                expired += 1
+                _save_symbol_result(
+                    conn, lifecycle_run_id=lifecycle_run_id, book_id=book_id, symbol=intent.symbol,
+                    stage=STAGE_PENDING_ORDER, outcome=PENDING_OUTCOME_EXPIRED,
+                    reasons=(f"INVALID_STRATEGY_STOP: simulated fill {would_fill['fill_price']} is at or below the "
+                             f"signal's stop {strategy_link.strategy_stop}; entry cancelled unfilled",),
+                    paper_order_intent_id=intent.paper_order_intent_id, clock=clock,
+                )
+                continue
 
         submit_result = execution.submit_and_simulate(conn, intent, market_input, clock())
         fill = submit_result.get("fill")
@@ -391,20 +424,38 @@ def _evaluate_exits(
                 if eligible is not None:
                     partial_stage_id, partial_quantity = eligible
 
+        # A position opened from a strategy signal is exited by that signal's
+        # own stop, target and holding period, not the generic ones
+        # (docs/paper-testing-plan.md Phase 3, gap 5), but only when that one
+        # signal opened every open lot of the symbol: exits sell the whole
+        # symbol-level quantity, so mixed provenance (an unlinked lot, or lots
+        # from different signals) falls back to the generic inputs. Every other
+        # position keeps the generic inputs unchanged.
+        maximum_holding_market_days = cfg.lifecycle.exits.maximum_holding_market_days
+        current_stop_price = lifecycle_state.current_stop_price if lifecycle_state else None
+        initial_target_price = lifecycle_state.initial_target_price if lifecycle_state else None
+        strategy_link = strategy_bridge_repo.exclusive_link_for_open_position(conn, book_id, symbol)
+        if strategy_link is not None:
+            maximum_holding_market_days = strategy_link.expected_holding_period
+            strategy_stop = Decimal(strategy_link.strategy_stop)
+            current_stop_price = strategy_stop if current_stop_price is None else max(strategy_stop, current_stop_price)
+            if strategy_link.strategy_target is not None:
+                initial_target_price = Decimal(strategy_link.strategy_target)
+
         decision = evaluate_exit_decision(
             book_id=book_id, symbol=symbol, position_quantity=Decimal(pos["quantity"]),
             cost_basis_per_share=cost_basis_per_share, position_opened_at=position_opened_at, as_of=as_of,
             reference_price=price_selection.price, price_point_in_time_safe=price_selection.point_in_time_safe,
             price_is_stale=price_is_stale, stop_loss_percent=cfg.lifecycle.exits.stop_loss_percent,
             profit_target_percent=cfg.lifecycle.exits.profit_target_percent,
-            maximum_holding_market_days=cfg.lifecycle.exits.maximum_holding_market_days,
+            maximum_holding_market_days=maximum_holding_market_days,
             exit_on_recommendation_reversal=cfg.lifecycle.exits.exit_on_recommendation_reversal,
             reversal_recommendation=reversal_recommendation, manual_request=manual_request,
-            current_stop_price=lifecycle_state.current_stop_price if lifecycle_state else None,
-            initial_target_price=lifecycle_state.initial_target_price if lifecycle_state else None,
+            current_stop_price=current_stop_price, initial_target_price=initial_target_price,
             trailing_stop_active=lifecycle_state.trailing_stop_active if lifecycle_state else False,
             breakeven_active=lifecycle_state.breakeven_active if lifecycle_state else False,
             partial_stage_id=partial_stage_id, partial_close_quantity=partial_quantity,
+            strategy_managed_exits=strategy_link is not None,
         )
         exit_decision_id = _exit_decision_id(book_id, symbol, as_of, decision.policy_version)
         manual_request_id = (

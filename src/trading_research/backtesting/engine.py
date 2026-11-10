@@ -8,12 +8,12 @@ from __future__ import annotations
 
 import hashlib
 from dataclasses import dataclass
-from datetime import datetime, time, timezone
+from datetime import date, datetime, time, timezone
 from decimal import ROUND_FLOOR, Decimal
 
 from ..analysis.indicators import OHLCBar, average_true_range, atr_risk_levels
 from ..evidence_providers.economic_calendar import evaluate_economic_event_blackout
-from ..hashing import hash_config
+from ..hashing import ConfigHashError, hash_config
 from ..paper_books.lifecycle_state import calculate_partial_close_quantity
 from .configuration import BacktestConfiguration
 from .data_provider import HistoricalDataProvider
@@ -124,24 +124,42 @@ def run_backtest(
     *, configuration: BacktestConfiguration, data_provider: HistoricalDataProvider,
     signals: tuple[EntrySignal, ...], economic_events=(), conn=None,
     strategy_id: str | None = None, strategy_version: str | None = None,
-    strategy_config_hash: str | None = None,
+    strategy_config_hash: str | None = None, run_context: dict | None = None,
+    history_start: date | None = None,
 ) -> BacktestResult:
+    """`history_start`, when given, loads bars from that earlier date so indicators (ATR) have the
+    warm-up history they need, while sessions, daily states and the benchmark return still cover only
+    `configuration.start_date..end_date`. Omitted, the run behaves exactly as before."""
     config = configuration
+    if history_start is not None and history_start > config.start_date:
+        raise BacktestError("history_start must not be after the configuration start_date")
     config_hash = _configuration_hash(config)
     signal_set_hash = _signal_set_hash(signals)
     # Milestone 24 Part C1: run identity must include the signal set, not
     # just the configuration — two different signal sets run against the
     # same configuration must never collide onto one persisted run ID.
-    input_hash = hash_config({
+    identity: dict = {
         "configuration_hash": config_hash, "signal_set_hash": signal_set_hash,
         "code_version": BACKTEST_CODE_VERSION,
-    })
+    }
+    # Optional caller-supplied provenance (e.g. a historical data snapshot
+    # hash and screening profile). Absent => the legacy identity is unchanged.
+    if run_context is not None:
+        try:
+            identity["run_context"] = hash_config(run_context)
+        except ConfigHashError as exc:
+            raise BacktestError(f"run_context must contain only canonical hashable values: {exc}") from exc
+    # The warm-up date changes which bars indicators see, so it is part of the run identity; absent
+    # (the legacy default) the identity is unchanged.
+    if history_start is not None:
+        identity["history_start"] = history_start.isoformat()
+    input_hash = hash_config(identity)
     run_id = "backtest-" + hashlib.sha256(input_hash.encode()).hexdigest()[:32]
     final_as_of = datetime.combine(config.end_date, time(23, 59, 59), tzinfo=timezone.utc)
     bars_by_symbol: dict[str, tuple[HistoricalBar, ...]] = {}
     for symbol in config.symbols:
         bars = data_provider.bars(
-            symbol=symbol, start=config.start_date, end=config.end_date, as_of=final_as_of,
+            symbol=symbol, start=history_start or config.start_date, end=config.end_date, as_of=final_as_of,
         )
         if not bars:
             raise BacktestError(f"empty historical dataset for {symbol}")
@@ -149,7 +167,10 @@ def run_backtest(
             raise BacktestError("historical provider returned a future-available bar")
         bars_by_symbol[symbol] = bars
 
-    sessions = sorted({bar.session_date for bars in bars_by_symbol.values() for bar in bars})
+    # Warm-up bars feed indicators only; the simulated sessions are the reporting window's.
+    sessions = sorted({
+        bar.session_date for bars in bars_by_symbol.values() for bar in bars if bar.session_date >= config.start_date
+    })
     if not sessions:
         raise BacktestError("historical dataset has no sessions")
     bar_maps = {symbol: {bar.session_date: bar for bar in bars} for symbol, bars in bars_by_symbol.items()}
@@ -163,7 +184,7 @@ def run_backtest(
             continue
         next_sessions = [
             bar.session_date for bar in bars_by_symbol[signal.symbol]
-            if bar.session_date > signal.generated_after_session
+            if bar.session_date > signal.generated_after_session and bar.session_date >= config.start_date
         ]
         if not next_sessions:
             rejected.append({"signal_id": signal.signal_id, "reason": "NO_NEXT_SESSION"})
@@ -176,6 +197,7 @@ def run_backtest(
     positions: dict[str, _Position] = {}
     fills: list[BacktestFill] = []
     daily_states: list[BacktestDailyState] = []
+    breach_sessions: list[date] = []
     unresolved: list[str] = []
     previous_closes: dict[str, Decimal] = {}
 
@@ -277,16 +299,24 @@ def run_backtest(
         pre_entry_equity, _ = mark_equity(current_date, "open")
         daily_fraction = (pre_entry_equity - start_equity) / start_equity if start_equity > 0 else Decimal("0")
         current_drawdown = (pre_entry_equity - peak_equity) / peak_equity
+        if current_drawdown <= -config.max_drawdown_fraction:
+            breach_sessions.append(current_date)
 
         for signal in eligible_signals.get(current_date, []):
             if signal.symbol in positions:
                 rejected.append({"signal_id": signal.signal_id, "reason": "POSITION_ALREADY_OPEN"})
                 continue
             if daily_fraction <= -config.max_daily_loss_fraction:
-                rejected.append({"signal_id": signal.signal_id, "reason": "DAILY_LOSS_LIMIT"})
+                rejected.append({
+                    "signal_id": signal.signal_id, "reason": "DAILY_LOSS_LIMIT", "market_date": current_date,
+                })
                 continue
             if current_drawdown <= -config.max_drawdown_fraction:
-                rejected.append({"signal_id": signal.signal_id, "reason": "DRAWDOWN_LIMIT"})
+                # The date lets reports tell blocked periods from resumed ones: the breaker re-reads
+                # opening drawdown every session and does not latch.
+                rejected.append({
+                    "signal_id": signal.signal_id, "reason": "DRAWDOWN_LIMIT", "market_date": current_date,
+                })
                 continue
             entry_as_of = datetime.combine(current_date, time(14, 30), tzinfo=timezone.utc)
             blackout = evaluate_economic_event_blackout(
@@ -371,7 +401,9 @@ def run_backtest(
 
     benchmark_return = None
     if config.benchmark_symbol:
-        benchmark = bars_by_symbol.get(config.benchmark_symbol)
+        benchmark = [
+            bar for bar in bars_by_symbol.get(config.benchmark_symbol, ()) if bar.session_date >= config.start_date
+        ]
         if not benchmark:
             raise BacktestError("benchmark dataset is unavailable")
         benchmark_return = (benchmark[-1].close - benchmark[0].close) / benchmark[0].close
@@ -385,10 +417,13 @@ def run_backtest(
         "symbols": list(config.symbols), "ambiguity_policy": config.ambiguity_policy,
         "configuration_hash": config_hash, "code_version": BACKTEST_CODE_VERSION,
     })
+    if run_context is not None:
+        report["run_context"] = run_context
     result = BacktestResult(
         backtest_run_id=run_id, configuration_hash=config_hash,
         daily_states=tuple(daily_states), fills=tuple(fills), rejected_entries=tuple(rejected),
         metrics=report, unresolved_evaluations=tuple(unresolved),
+        drawdown_breach_sessions=tuple(breach_sessions),
     )
     if conn is not None:
         _persist_result(
