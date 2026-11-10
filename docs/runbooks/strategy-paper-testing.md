@@ -86,6 +86,11 @@ Prerequisites, all in a config copy you pass with `--paper-books-config` (the sh
 - `lifecycle.pending_orders.expire_after_market_days: 2` or more. A strategy intent
   is created after the close and filled by the next session's lifecycle, so the
   shipped value of 1 would cancel it first; the command refuses a shorter expiry;
+- `lifecycle.trailing_stop`, `lifecycle.breakeven` and `lifecycle.partial_profit` all
+  disabled. They run on per-position lifecycle state that only the scheduled-integration
+  path creates, so a strategy fill would silently never get them; the command refuses
+  rather than pretend. A strategy position keeps its own signal's stop, target and
+  holding period;
 - the BASELINE book not enabled for external submission, and the ENHANCED book
   disabled. The lifecycle that runs first processes every enabled book (and queues
   external submissions for an externally enabled one), so the command validates all of
@@ -107,6 +112,14 @@ session's stored ELIGIBLE signals through the unchanged risk and intent code.
 
 Things to know:
 
+- **Forward only.** The command mutates one book, so it refuses a `--as-of` earlier than
+  work the book already holds (a lifecycle run or an order created later). Re-running the
+  latest session is fine. An order is only ever worked by a lifecycle run strictly after
+  its creation, so a rerun of the creating session cannot fill it at the price the
+  decision was made from.
+- **Invalidated entries.** If the next session's simulated fill is at or below the
+  signal's own stop, the entry is cancelled unfilled (`INVALID_STRATEGY_STOP`, as the
+  backtest rejects it) instead of being filled and stopped out at once.
 - **Size.** A signal never sets its size. The proposal is 1% of the book's equity
   divided by the distance from the signal's limit to its own stop; `risk.py` then
   caps it. A risk rejection creates no intent and is stored as a risk decision.

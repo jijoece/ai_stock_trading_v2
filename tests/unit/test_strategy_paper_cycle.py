@@ -6,7 +6,7 @@ import re
 import subprocess
 import sys
 from dataclasses import replace
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 
 import pytest
@@ -28,6 +28,7 @@ from trading_research.paper_books.config import (
     LifecycleSection,
     PaperBookDefinition,
     PaperBooksConfiguration,
+    PartialProfitStage,
     PendingOrdersSection,
     RiskSection,
     ScheduledIntegrationSection,
@@ -849,3 +850,97 @@ def test_a_successful_lifecycle_does_not_block_entries(tmp_path, stored, stage5_
     assert report["entries"]["blocked"] is False and "error" not in report
     assert report["lifecycle"]["reconciliation_statuses"] == {BOOK: "MATCHED"}
     assert not _entry_free(conn)
+
+
+# -- review follow-up on PR 38: chronology, invalidation and lifecycle-state policies ----------------------------
+
+def _session_before(day):
+    earlier = day - timedelta(days=1)
+    assert earlier.weekday() < 5, "the fixture session moved; pick the previous trading session explicitly"
+    return earlier
+
+
+def _pending_order_and_link(conn):
+    order = next(o for o in _orders(conn) if o["status"] == "PENDING_SUBMISSION")
+    return order, get_strategy_link(conn, BOOK, order["paper_order_intent_id"])
+
+
+def test_an_earlier_session_is_refused_before_it_can_fill_a_later_signals_entry(tmp_path, stored, stage5_config):
+    conn, day = stored
+    _cycle(tmp_path, conn, day, stage5_config)
+    before = [(o["paper_order_intent_id"], o["status"]) for o in _orders(conn)]
+    runs = conn.execute("SELECT COUNT(*) FROM paper_book_lifecycle_runs").fetchone()[0]
+    with pytest.raises(BacktestError, match="earlier than work already recorded"):
+        _cycle(tmp_path, conn, _session_before(day), stage5_config)
+    assert [(o["paper_order_intent_id"], o["status"]) for o in _orders(conn)] == before
+    assert conn.execute("SELECT COUNT(*) FROM paper_book_lifecycle_runs").fetchone()[0] == runs
+    assert conn.execute("SELECT COUNT(*) FROM paper_book_fills").fetchone()[0] == 0
+
+
+def test_the_lifecycle_never_works_an_order_at_or_before_its_creation(tmp_path, stored, stage5_config):
+    conn, day = stored
+    _cycle(tmp_path, conn, day, stage5_config)
+    order, _ = _pending_order_and_link(conn)
+    crossing = DeterministicPriceProvider()
+    for session in (_session_before(day), day):
+        crossing.register(order["symbol"], session, Decimal(order["limit_price"]) / 2)
+        result = run_paper_book_lifecycle(
+            conn, as_of=regular_session_close(session), paper_books_config=_paper_config(),
+            price_provider=crossing,
+        )
+        assert result.pending_orders_filled == 0
+    assert {o["status"] for o in _orders(conn)} == {"PENDING_SUBMISSION"}
+
+
+def test_a_gap_below_the_signals_stop_cancels_the_entry_instead_of_filling_it(tmp_path, stored, stage5_config):
+    conn, day = stored
+    _cycle(tmp_path, conn, day, stage5_config)
+    order, link = _pending_order_and_link(conn)
+    next_day = add_trading_days(day, 1)
+    gapped = DeterministicPriceProvider()
+    gapped.register(order["symbol"], next_day, Decimal(link.strategy_stop) * Decimal("0.9"))
+    result = run_paper_book_lifecycle(
+        conn, as_of=regular_session_close(next_day), paper_books_config=_paper_config(), price_provider=gapped,
+    )
+    stored_order = pb_repo.load_order_intent(conn, BOOK, order["paper_order_intent_id"])
+    assert stored_order["status"] == "EXPIRED"
+    assert result.pending_orders_expired >= 1
+    assert conn.execute(
+        "SELECT COUNT(*) FROM paper_book_fills WHERE paper_order_intent_id = ?", (order["paper_order_intent_id"],)
+    ).fetchone()[0] == 0
+    assert not any(d["symbol"] == order["symbol"] and d["decision"] == "EXIT_STOP_LOSS" for d in result.exit_decisions)
+    reasons = conn.execute(
+        "SELECT reasons_json FROM paper_book_lifecycle_symbol_results WHERE paper_order_intent_id = ?",
+        (order["paper_order_intent_id"],),
+    ).fetchall()
+    assert any("INVALID_STRATEGY_STOP" in row[0] for row in reasons)
+
+
+def test_an_entry_above_the_signals_stop_still_fills(tmp_path, stored, stage5_config):
+    conn, day = stored
+    _cycle(tmp_path, conn, day, stage5_config)
+    order, link = _pending_order_and_link(conn)
+    next_day = add_trading_days(day, 1)
+    healthy = DeterministicPriceProvider()
+    stop, limit = Decimal(link.strategy_stop), Decimal(order["limit_price"])
+    assert stop < limit
+    healthy.register(order["symbol"], next_day, (stop + limit) / 2)  # between the stop and the limit: fillable, valid
+    run_paper_book_lifecycle(
+        conn, as_of=regular_session_close(next_day), paper_books_config=_paper_config(), price_provider=healthy,
+    )
+    assert pb_repo.load_order_intent(conn, BOOK, order["paper_order_intent_id"])["status"] == "FILLED"
+
+
+@pytest.mark.parametrize("section", ["trailing_stop", "breakeven", "partial_profit"])
+def test_lifecycle_policies_that_need_per_position_state_are_refused_for_strategy_cycles(stored, section):
+    """Review follow-up on PR 38: strategy fills do not receive the lifecycle state those policies run on."""
+    conn, day = stored
+    cfg = _paper_config()
+    extra = {"stages": (PartialProfitStage(stage=1, trigger_r_multiple=Decimal("1.5"), close_fraction=Decimal("0.5")),)} \
+        if section == "partial_profit" else {}
+    enabled = replace(cfg, lifecycle=replace(
+        cfg.lifecycle, **{section: replace(getattr(cfg.lifecycle, section), enabled=True, **extra)},
+    ))
+    with pytest.raises(StrategyBridgeError, match=section):
+        _entry(conn, _eligible(conn), day, cfg=enabled)
+    assert _orders(conn) == []

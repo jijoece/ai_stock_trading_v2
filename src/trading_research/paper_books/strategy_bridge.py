@@ -145,6 +145,19 @@ def validate_strategy_cycle_config(cfg: PaperBooksConfiguration, experiment_poli
             "paper_books.lifecycle.exits.enabled is false — the lifecycle would never evaluate exits, so a "
             "signal's stop, target and maximum holding period would go unenforced; the strategy cycle fails closed"
         )
+    state_policies = [
+        name for name, section in (
+            ("trailing_stop", cfg.lifecycle.trailing_stop), ("breakeven", cfg.lifecycle.breakeven),
+            ("partial_profit", cfg.lifecycle.partial_profit),
+        ) if section.enabled
+    ]
+    if state_policies:
+        raise StrategyBridgeError(
+            f"paper_books.lifecycle.{'/'.join(state_policies)} enabled — those policies run on per-position "
+            "lifecycle state that only the scheduled-integration path creates, and strategy fills do not get one, "
+            "so they would silently not apply; a strategy position is exited by its own signal's stop, target and "
+            "holding period. Disable them for strategy cycles"
+        )
     book_id = cfg.baseline.book_id
     if not cfg.is_book_enabled(book_id):
         raise StrategyBridgeError(f"paper book {book_id!r} is not enabled in config/paper_books.yaml")

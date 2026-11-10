@@ -64,6 +64,7 @@ from .models import (
     INTENT_STATUS_FILLED,
     INTENT_STATUS_PENDING_SUBMISSION,
     INTENT_STATUS_REJECTED,
+    ORDER_SIDE_BUY,
     ORDER_SIDE_SELL,
     ORDER_TYPE_LIMIT,
     VALUATION_PARTIAL_STALE_PRICE,
@@ -187,6 +188,17 @@ def _process_pending_orders(
     pending = [o for o in repo.list_order_intents(conn, book_id) if o["status"] == INTENT_STATUS_PENDING_SUBMISSION]
     for row in pending:
         intent = _row_to_intent(row)
+        if intent.created_at >= as_of:
+            # An order is worked strictly after it was created. An earlier as_of would fill it at a price from
+            # before the decision with a fill timestamp that predates the order; an equal one (a rerun of the
+            # session that created it) would fill it at the very price the decision was made from.
+            _save_symbol_result(
+                conn, lifecycle_run_id=lifecycle_run_id, book_id=book_id, symbol=intent.symbol,
+                stage=STAGE_PENDING_ORDER, outcome=PENDING_OUTCOME_STILL_PENDING,
+                reasons=(f"order was created {intent.created_at.isoformat()}, not before this as_of {as_of.isoformat()}",),
+                paper_order_intent_id=intent.paper_order_intent_id, clock=clock,
+            )
+            continue
         if cfg.external_broker.enabled and book_id in cfg.external_broker.enabled_book_ids:
             repo.enqueue_external_submission(
                 conn,
@@ -229,6 +241,26 @@ def _process_pending_orders(
                 paper_order_intent_id=intent.paper_order_intent_id, clock=clock,
             )
             continue
+
+        if intent.side == ORDER_SIDE_BUY:
+            # A strategy entry whose price is already at or through the signal's own stop is an invalidated
+            # setup: the backtest rejects it (INVALID_STRATEGY_STOP), so it is cancelled here rather than
+            # filled and stopped out in the same session.
+            strategy_link = strategy_bridge_repo.get_strategy_link(conn, book_id, intent.paper_order_intent_id)
+            would_fill = execution.simulate_fill(intent, market_input, clock()) if strategy_link is not None else None
+            if strategy_link is not None and would_fill is not None and (
+                Decimal(strategy_link.strategy_stop) >= Decimal(would_fill["fill_price"])
+            ):
+                execution.expire_pending_intent(conn, intent, clock())
+                expired += 1
+                _save_symbol_result(
+                    conn, lifecycle_run_id=lifecycle_run_id, book_id=book_id, symbol=intent.symbol,
+                    stage=STAGE_PENDING_ORDER, outcome=PENDING_OUTCOME_EXPIRED,
+                    reasons=(f"INVALID_STRATEGY_STOP: simulated fill {would_fill['fill_price']} is at or below the "
+                             f"signal's stop {strategy_link.strategy_stop}; entry cancelled unfilled",),
+                    paper_order_intent_id=intent.paper_order_intent_id, clock=clock,
+                )
+                continue
 
         submit_result = execution.submit_and_simulate(conn, intent, market_input, clock())
         fill = submit_result.get("fill")

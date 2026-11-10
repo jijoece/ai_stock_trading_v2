@@ -70,6 +70,24 @@ def _entry_block_reasons(lifecycle_result, book_id: str) -> tuple[str, ...]:
     return tuple(reasons)
 
 
+def _require_chronological(conn, *, book_id: str, close: datetime, as_of: date) -> None:
+    """The cycle mutates one live book, so a session earlier than work the book already holds would be
+    processed against future state: a later signal's pending entry could fill at the earlier session's price,
+    with a fill timestamp that predates its own signal. Re-running the latest session is allowed; going back is not."""
+    def _utc(value) -> datetime:
+        parsed = value if isinstance(value, datetime) else datetime.fromisoformat(value)
+        return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+
+    seen = [_utc(run["as_of"]) for run in pb_repo.list_lifecycle_runs(conn)]
+    seen += [_utc(order["created_at"]) for order in pb_repo.list_order_intents(conn, book_id)]
+    latest = max(seen, default=None)
+    if latest is not None and latest > close:
+        raise BacktestError(
+            f"session {as_of} is earlier than work already recorded for book {book_id!r} (latest {latest.isoformat()}); "
+            "the paper cycle only moves forward, because an earlier session would be processed against future state"
+        )
+
+
 def run_strategy_paper_cycle(
     *, as_of: date, data_source: str, snapshot_path: Path | str | None, conn, cfg: PaperBooksConfiguration,
     strategy_id: str | None = None, experiment_policy: str = ep.BASELINE_ONLY, adjustment: str = "split",
@@ -99,6 +117,7 @@ def run_strategy_paper_cycle(
     # every enabled book and can enqueue external submissions, so it must not start on a config the entry
     # step would reject.
     book_id = strategy_bridge.validate_strategy_cycle_config(cfg, experiment_policy)
+    _require_chronological(conn, book_id=book_id, close=close, as_of=as_of)
     rows = _unprocessed_rows(conn, session=as_of, strategy_id=strategy_id)
     symbols = tuple(sorted({row["symbol"] for row in rows} | _book_symbols(conn, book_id)))
     snapshot = None
