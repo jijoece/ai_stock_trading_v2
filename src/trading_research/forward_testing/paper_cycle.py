@@ -73,13 +73,19 @@ def _entry_block_reasons(lifecycle_result, book_id: str) -> tuple[str, ...]:
 def _require_chronological(conn, *, book_id: str, close: datetime, as_of: date) -> None:
     """The cycle mutates one live book, so a session earlier than work the book already holds would be
     processed against future state: a later signal's pending entry could fill at the earlier session's price,
-    with a fill timestamp that predates its own signal. Re-running the latest session is allowed; going back is not."""
+    with a fill timestamp that predates its own signal. Re-running the latest session is allowed; going back is not.
+    Only lifecycle runs and orders belonging to this book count; another book's later work does not."""
     def _utc(value) -> datetime:
         parsed = value if isinstance(value, datetime) else datetime.fromisoformat(value)
         return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
 
-    seen = [_utc(run["as_of"]) for run in pb_repo.list_lifecycle_runs(conn)]
-    seen += [_utc(order["created_at"]) for order in pb_repo.list_order_intents(conn, book_id)]
+    def _touched(run: dict) -> bool:
+        # Lifecycle runs are global, but each only mutates the books it processed. A book that failed part-way
+        # may already have been mutated, so a failure naming the book counts as touching it (fail closed).
+        return book_id in run["books_processed"] or any(f"book {book_id!r}" in r for r in run["failure_reasons"])
+
+    seen = [_utc(run["as_of"]) for run in pb_repo.list_lifecycle_runs(conn) if _touched(run)]
+    seen +=[_utc(order["created_at"]) for order in pb_repo.list_order_intents(conn, book_id)]
     latest = max(seen, default=None)
     if latest is not None and latest > close:
         raise BacktestError(

@@ -877,6 +877,57 @@ def test_an_earlier_session_is_refused_before_it_can_fill_a_later_signals_entry(
     assert conn.execute("SELECT COUNT(*) FROM paper_book_fills").fetchone()[0] == 0
 
 
+def _lifecycle_run_for(conn, session, cfg):
+    return run_paper_book_lifecycle(
+        conn, as_of=regular_session_close(session), paper_books_config=cfg, price_provider=DeterministicPriceProvider(),
+    )
+
+
+def _enhanced_only_config():
+    cfg = _paper_config()
+    return replace(
+        cfg, baseline=replace(cfg.baseline, enabled=False), enhanced=replace(cfg.enhanced, enabled=True),
+    )
+
+
+def test_a_later_lifecycle_run_for_another_book_does_not_block_an_earlier_baseline_session(
+    tmp_path, stored, stage5_config,
+):
+    """Review follow-up on PR 38: chronology is per book, so ENHANCED-only work must not advance BASELINE's."""
+    conn, day = stored
+    later = _lifecycle_run_for(conn, add_trading_days(day, 1), _enhanced_only_config())
+    assert later.books_processed == ("ENHANCED",)
+    report = _cycle(tmp_path, conn, _session_before(day), stage5_config)
+    assert report["book_id"] == BOOK and report["lifecycle"]["failure_reasons"] == []
+
+
+def test_a_later_lifecycle_run_that_processed_the_strategy_book_still_blocks_an_earlier_session(
+    tmp_path, stored, stage5_config,
+):
+    conn, day = stored
+    assert _lifecycle_run_for(conn, add_trading_days(day, 1), _paper_config()).books_processed == (BOOK,)
+    runs = conn.execute("SELECT COUNT(*) FROM paper_book_lifecycle_runs").fetchone()[0]
+    with pytest.raises(BacktestError, match="earlier than work already recorded"):
+        _cycle(tmp_path, conn, _session_before(day), stage5_config)
+    assert conn.execute("SELECT COUNT(*) FROM paper_book_lifecycle_runs").fetchone()[0] == runs
+
+
+def test_a_later_failed_lifecycle_run_naming_the_strategy_book_still_blocks_an_earlier_session(
+    tmp_path, stored, stage5_config,
+):
+    """A book that failed part-way may already have been mutated, so it is not treated as untouched."""
+    conn, day = stored
+    close = regular_session_close(add_trading_days(day, 1))
+    assert pb_repo.save_lifecycle_run(conn, {
+        "lifecycle_run_id": "failed-baseline-run", "as_of": close, "processed_cycle_ids": [], "books_processed": [],
+        "pending_orders_filled": 0, "pending_orders_expired": 0, "exit_decisions": [], "exit_orders_created": 0,
+        "exit_orders_filled": 0, "snapshot_ids": {}, "reconciliation_statuses": {}, "metrics_ids": {},
+        "failure_reasons": [f"book {BOOK!r} lifecycle processing failed: boom"], "config_hash": "h", "created_at": close,
+    })
+    with pytest.raises(BacktestError, match="earlier than work already recorded"):
+        _cycle(tmp_path, conn, _session_before(day), stage5_config)
+
+
 def test_the_lifecycle_never_works_an_order_at_or_before_its_creation(tmp_path, stored, stage5_config):
     conn, day = stored
     _cycle(tmp_path, conn, day, stage5_config)
