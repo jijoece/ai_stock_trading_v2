@@ -4,39 +4,39 @@
 
 - Repository: `/Users/jijopaul/workspace/ai_stock_trading_v2`
 - Branch: `feat/automated-live-trading-phases-0-3-spike`
-- Reviewed HEAD: `0b570bf65a68738db7c48631068de82651bd1ac4`
-- Subject: Add automated-live-trading handoff scratchpad and record Phase 1 progress
-- Claude commits reviewed: 65fc53c5b87d3af37ef7e67672cf299361b7b8a7,0b570bf65a68738db7c48631068de82651bd1ac4
+- Reviewed HEAD: `61668730af922794d826f92cc6af09e8f68b9089`
+- Subject: Mark review findings as fixed pending re-review (fix commit 0e6f286)
+- Claude commits reviewed: 65fc53c5b87d3af37ef7e67672cf299361b7b8a7,0b570bf65a68738db7c48631068de82651bd1ac4,0e6f286d3911366bead442cb36be07607dc68282,f8b8086c6917a48bb9971fb5cb098a0cbfbdee1c,61668730af922794d826f92cc6af09e8f68b9089
 - Review scope: INCREMENTAL
-- Fix round: 1
+- Fix round: 2
 - Trigger: local Git `post-commit`
 - Review status: FIXES_APPLIED_PENDING_REVIEW
-- Fix commit: 0e6f286d3911366bead442cb36be07607dc68282
+- Fix commit: 113a7da9fb9d8604b8b6ee7794dbc7baee8977e0
 - Highest priority: P2
 - Finding count: 0
 
 ## Findings
 
-### [P2] Investigate: approved decisions omit their strategy-control audit record
+### [P2] Investigate: malformed strategy controls can silently enable unrestricted paper trading
 
-Commit: 0b570bf65a68738db7c48631068de82651bd1ac4
+Commit: 65fc53c5b87d3af37ef7e67672cf299361b7b8a7
 
-Location: src/trading_research/paper_books/strategy_bridge.py:448-465
+Location: src/trading_research/strategies/config.py:193-220
 
-Concern: Approved or resized risk decisions may remain untraceable to the strategy controls that governed them.
+Concern: Malformed but falsey `strategy_controls` values may be silently replaced with permissive defaults instead of failing closed.
 
-Evidence: This commit adds `save_decision_controls` for rejected decisions at lines 405–414, but the transaction persisting approved decisions and their order intents at lines 448–465 never calls it. The new table explicitly promises one row per accepted, resized, or rejected decision, while repository-wide search shows no other approved-path writer. Existing tests also contain no assertions for these audit records.
+Evidence: `_parse_controls` uses `raw.get("strategy_controls") or {}`, `section.get(strategy_id) or {}`, and `entry.get("symbol_allowlist") or []` before validating types. Consequently, YAML such as `strategy_controls: []` defaults every known strategy to paper mode with no budgets or allowlist; `momentum_breakout: []` defaults that strategy similarly; and `symbol_allowlist: ""` becomes an unrestricted empty allowlist. The strict-loader regression cases cover truthy malformed values but not these falsey forms.
 
-Potential impact if confirmed: The decisions that actually create exposure cannot establish which mode, activation stage, allowlist, capital budget, risk budget, and validity window authorized them. This weakens reproducibility, incident investigation, and the audit evidence required by the proposed live-trading migration.
+Potential impact if confirmed: An operator configuration error intended to disable or restrict a strategy could instead enable it for the local paper book without strategy-specific capital, risk, or symbol restrictions, producing unintended simulated exposure and invalidating paper-soak evidence used for later activation decisions.
 
-Investigation and conditional remediation: Verify the concern against the current code first by creating one approved and one rejected strategy decision, then query `paper_book_decision_strategy_controls` for both risk-decision IDs. Only if the approved row is absent should the fixer persist the controls inside the same transaction as the approved decision, intent, reservation, and strategy link, and add regression coverage for approved, resized, rejected, rollback, and retry paths. If the concern is disproved or already fixed, document the evidence and leave the code unchanged.
+Investigation and conditional remediation: Verify the concern against the current committed code first by loading configurations containing `strategy_controls: []`, a strategy entry of `[]`, and `symbol_allowlist: ""`, then inspect the resulting controls. Only if confirmed should the fixer distinguish absent or explicit empty mappings/lists from wrong-typed falsey values, reject malformed types before applying defaults, and add regression coverage for each falsey malformed form. If the concern is disproved or already fixed, document the evidence and leave the code unchanged.
 
-Validation: Confirm every persisted strategy risk decision has exactly one immutable controls record, and that failure to record it rolls back the associated approval and order intent.
+Validation: Confirm that omitted controls and valid empty mappings/lists retain their documented defaults, while falsey values of the wrong type fail closed and cannot produce unrestricted paper controls.
 
 Tests or diagnostics run:
 
-- Read-only inspection of both full commit diffs and relevant code, tests, configuration, ADR, implementation plan, requirements matrix, schema, and current persistence paths.
-- Repository-wide search for all readers and writers of `paper_book_decision_strategy_controls`.
-- `git diff --check 8c53e26035f5e1228861f9798ff8104e2b322a0d..65fc53c5b87d3af37ef7e67672cf299361b7b8a7` — one trailing blank line in the ADR; excluded as non-consequential.
-- `git diff --check 65fc53c5b87d3af37ef7e67672cf299361b7b8a7..0b570bf65a68738db7c48631068de82651bd1ac4` — passed.
-- Test execution was not attempted because the filesystem is read-only and the worktree contains unrelated local modifications, including overlapping test and implementation files.
+- Inspected every specified commit chronologically and traced its changes through HEAD `61668730af922794d826f92cc6af09e8f68b9089`.
+- Reviewed the relevant committed code, tests, configuration, persistence schema and migrations, proposed ADR, implementation plan, and current runbook.
+- `git diff --check 8c53e26035f5e1228861f9798ff8104e2b322a0d..61668730af922794d826f92cc6af09e8f68b9089` — reported only an extra blank line at the end of the proposed ADR; excluded as non-consequential.
+- Pytest/Nox not run because the environment is read-only and cannot create required temporary files.
+- No files, brokers, models, credentials, schedulers, orders, network services, or GitHub resources were modified or accessed.
