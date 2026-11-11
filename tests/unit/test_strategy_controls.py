@@ -607,7 +607,8 @@ def test_every_persisted_risk_decision_has_exactly_one_controls_record(conn):
     _store(conn, "beta", "BBB", MON, strength=0.5)  # shrunk by the strategy's capital budget
     _store(conn, "gamma", "CCC", MON, strength=0.1, entry="100", limit="90", stop="90")  # rejected
     outcomes = _enter(conn, _rows(conn), controls=_controls(beta={"capital_budget_usd": D("5000")}))
-    decisions = {o.symbol: pb_repo.load_risk_decision(conn, o.risk_decision_id)["decision"] for o in outcomes}
+    assert all(o.risk_decision_id for o in outcomes)
+    decisions = {o.symbol: (pb_repo.load_risk_decision(conn, str(o.risk_decision_id)) or {})["decision"] for o in outcomes}
     assert decisions["AAA"] == "APPROVED" and decisions["BBB"] == "APPROVED_REDUCED"
     assert decisions["CCC"].startswith("REJECTED")
     risk_ids = {row[0] for row in conn.execute("SELECT risk_decision_id FROM paper_book_risk_decisions")}
