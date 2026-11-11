@@ -194,7 +194,11 @@ def _parse_controls(raw: dict, global_stage: str) -> dict[str, StrategyControls]
     """Build the per-strategy controls from the optional `strategy_controls` section.
 
     A strategy may not be configured past the global stage, which stays the ceiling for every strategy."""
-    section = raw.get("strategy_controls") or {}
+    # Only an absent or null section/entry means "use the defaults"; any other non-mapping value (including
+    # falsy ones such as [] or false) is a malformed config and must not fall back to permissive defaults.
+    section = raw.get("strategy_controls")
+    if section is None:
+        section = {}
     if not isinstance(section, dict):
         raise StrategyConfigError("strategy_controls must be a mapping of strategy id to settings")
     unknown = sorted(set(section) - set(KNOWN_STRATEGY_IDS))
@@ -202,7 +206,9 @@ def _parse_controls(raw: dict, global_stage: str) -> dict[str, StrategyControls]
         raise StrategyConfigError(f"strategy_controls names unknown strategies: {unknown}")
     controls: dict[str, StrategyControls] = {}
     for strategy_id in KNOWN_STRATEGY_IDS:
-        entry = section.get(strategy_id) or {}
+        entry = section.get(strategy_id)
+        if entry is None:
+            entry = {}
         if not isinstance(entry, dict):
             raise StrategyConfigError(f"strategy_controls.{strategy_id} must be a mapping")
         extra = sorted(set(entry) - _CONTROL_KEYS)
@@ -216,7 +222,9 @@ def _parse_controls(raw: dict, global_stage: str) -> dict[str, StrategyControls]
                 f"strategy_controls.{strategy_id}.activation_stage {stage} is past the global stage {global_stage}; "
                 "the global stage is the ceiling"
             )
-        allowlist = entry.get("symbol_allowlist") or []
+        allowlist = entry.get("symbol_allowlist")
+        if allowlist is None:
+            allowlist = []
         if not isinstance(allowlist, list) or not all(isinstance(item, str) for item in allowlist):
             raise StrategyConfigError(f"strategy_controls.{strategy_id}.symbol_allowlist must be a list of symbols")
         validity = entry.get("signal_validity_sessions", DEFAULT_SIGNAL_VALIDITY_SESSIONS)

@@ -202,6 +202,39 @@ def test_invalid_controls_fail_closed(tmp_path, body, fragment):
         load_strategy_config(_write(tmp_path, f"strategy_controls:\n{body}\n", stage="STAGE_5_LOCAL_PAPER_BOOK"))
 
 
+@pytest.mark.parametrize("section", ["[]", "false", "0", '""'])
+def test_a_present_non_mapping_controls_section_fails_closed_even_when_falsy(tmp_path, section):
+    with pytest.raises(StrategyConfigError, match="must be a mapping"):
+        load_strategy_config(_write(tmp_path, f"strategy_controls: {section}\n"))
+
+
+@pytest.mark.parametrize("value", ["false", "[]", "0", '""'])
+def test_a_present_non_mapping_strategy_entry_fails_closed_even_when_falsy(tmp_path, value):
+    with pytest.raises(StrategyConfigError, match="momentum_breakout must be a mapping"):
+        load_strategy_config(_write(tmp_path, f"strategy_controls:\n  momentum_breakout: {value}\n"))
+
+
+@pytest.mark.parametrize("value", ["false", "0", '""'])
+def test_a_present_non_list_allowlist_fails_closed_even_when_falsy(tmp_path, value):
+    with pytest.raises(StrategyConfigError, match="symbol_allowlist must be a list"):
+        load_strategy_config(_write(tmp_path, f"strategy_controls:\n  momentum_breakout: {{symbol_allowlist: {value}}}\n"))
+
+
+@pytest.mark.parametrize("extra", [
+    "strategy_controls:\n",  # explicit null section
+    "strategy_controls:\n  momentum_breakout:\n",  # explicit null entry
+    "strategy_controls:\n  momentum_breakout: {symbol_allowlist: null}\n",
+    "strategy_controls: {}\n",  # valid empty mapping / list keep the defaults
+    "strategy_controls:\n  momentum_breakout: {}\n",
+    "strategy_controls:\n  momentum_breakout: {symbol_allowlist: []}\n",
+])
+def test_omitted_or_null_controls_keep_the_documented_defaults(tmp_path, extra):
+    config = load_strategy_config(_write(tmp_path, extra))
+    assert config.controls_for("momentum_breakout") == StrategyControls(
+        strategy_id="momentum_breakout", mode="paper", activation_stage=STAGE_5,
+    )
+
+
 def test_live_mode_cannot_be_built_even_in_code():
     with pytest.raises(StrategyControlsError, match="ADR 0010"):
         StrategyControls(strategy_id="alpha", mode="live", activation_stage=STAGE_5)
