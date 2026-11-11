@@ -9,12 +9,20 @@ the whole file's hash.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
 import yaml
 
 from ..hashing import hash_config
+from .controls import (
+    DEFAULT_SIGNAL_VALIDITY_SESSIONS,
+    KNOWN_STRATEGY_IDS,
+    STRATEGY_MODE_PAPER,
+    StrategyControls,
+    StrategyControlsError,
+)
 
 DEFAULT_STRATEGY_CONFIG_PATH = Path(__file__).resolve().parents[3] / "config" / "strategies.yaml"
 
@@ -151,6 +159,82 @@ class StrategyConfig:
     shortlist: ShortlistConfig
     config_hash: str
     raw: dict
+    # One entry per known strategy; a strategy with no `strategy_controls` entry gets the defaults
+    # (paper mode, the global stage, no allowlist, no budgets, one session of signal validity).
+    controls: dict[str, StrategyControls] = field(default_factory=dict)
+
+    def controls_for(self, strategy_id: str) -> StrategyControls:
+        try:
+            return self.controls[strategy_id]
+        except KeyError:
+            raise StrategyConfigError(f"no strategy controls for {strategy_id!r}") from None
+
+
+_CONTROL_KEYS = {
+    "mode", "activation_stage", "symbol_allowlist", "capital_budget_usd", "risk_budget_fraction",
+    "signal_validity_sessions",
+}
+
+
+def _optional_decimal(value: object, name: str) -> Decimal | None:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        raise StrategyConfigError(f"{name} must be a number")
+    try:
+        parsed = Decimal(str(value))
+    except InvalidOperation as exc:
+        raise StrategyConfigError(f"{name} must be a number") from exc
+    if not parsed.is_finite():
+        raise StrategyConfigError(f"{name} must be finite")
+    return parsed
+
+
+def _parse_controls(raw: dict, global_stage: str) -> dict[str, StrategyControls]:
+    """Build the per-strategy controls from the optional `strategy_controls` section.
+
+    A strategy may not be configured past the global stage, which stays the ceiling for every strategy."""
+    section = raw.get("strategy_controls") or {}
+    if not isinstance(section, dict):
+        raise StrategyConfigError("strategy_controls must be a mapping of strategy id to settings")
+    unknown = sorted(set(section) - set(KNOWN_STRATEGY_IDS))
+    if unknown:
+        raise StrategyConfigError(f"strategy_controls names unknown strategies: {unknown}")
+    controls: dict[str, StrategyControls] = {}
+    for strategy_id in KNOWN_STRATEGY_IDS:
+        entry = section.get(strategy_id) or {}
+        if not isinstance(entry, dict):
+            raise StrategyConfigError(f"strategy_controls.{strategy_id} must be a mapping")
+        extra = sorted(set(entry) - _CONTROL_KEYS)
+        if extra:
+            raise StrategyConfigError(f"strategy_controls.{strategy_id} has unknown keys: {extra}")
+        stage = entry.get("activation_stage", global_stage)
+        if stage not in ACTIVATION_STAGES:
+            raise StrategyConfigError(f"strategy_controls.{strategy_id}.activation_stage {stage!r} is not a known stage")
+        if ACTIVATION_STAGES.index(stage) > ACTIVATION_STAGES.index(global_stage):
+            raise StrategyConfigError(
+                f"strategy_controls.{strategy_id}.activation_stage {stage} is past the global stage {global_stage}; "
+                "the global stage is the ceiling"
+            )
+        allowlist = entry.get("symbol_allowlist") or []
+        if not isinstance(allowlist, list) or not all(isinstance(item, str) for item in allowlist):
+            raise StrategyConfigError(f"strategy_controls.{strategy_id}.symbol_allowlist must be a list of symbols")
+        validity = entry.get("signal_validity_sessions", DEFAULT_SIGNAL_VALIDITY_SESSIONS)
+        if isinstance(validity, bool) or not isinstance(validity, int):
+            raise StrategyConfigError(f"strategy_controls.{strategy_id}.signal_validity_sessions must be an integer")
+        try:
+            controls[strategy_id] = StrategyControls(
+                strategy_id=strategy_id, mode=str(entry.get("mode", STRATEGY_MODE_PAPER)), activation_stage=stage,
+                symbol_allowlist=tuple(allowlist),
+                capital_budget_usd=_optional_decimal(
+                    entry.get("capital_budget_usd"), f"strategy_controls.{strategy_id}.capital_budget_usd"),
+                risk_budget_fraction=_optional_decimal(
+                    entry.get("risk_budget_fraction"), f"strategy_controls.{strategy_id}.risk_budget_fraction"),
+                signal_validity_sessions=validity,
+            )
+        except StrategyControlsError as exc:
+            raise StrategyConfigError(str(exc)) from exc
+    return controls
 
 
 def _sub_hash(raw: dict, key: str) -> str:
@@ -280,4 +364,5 @@ def load_strategy_config(path: str | Path | None = None) -> StrategyConfig:
         ),
         config_hash=hash_config(raw),
         raw=raw,
+        controls=_parse_controls(raw, selection["activation_stage"]),
     )

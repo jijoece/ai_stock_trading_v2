@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import sqlite3
 from dataclasses import asdict, dataclass, fields
+from datetime import datetime
 
 
 @dataclass(frozen=True)
@@ -59,6 +60,22 @@ def get_link_for_signal(conn: sqlite3.Connection, book_id: str, strategy_signal_
         "SELECT * FROM paper_book_strategy_links WHERE book_id = ? AND strategy_signal_id = ?",
         (book_id, strategy_signal_id),
     ).fetchone())
+
+
+def latest_linked_data_as_of(
+    conn: sqlite3.Connection, book_id: str, strategy_id: str, symbol: str,
+) -> datetime | None:
+    """The newest `data_as_of` among signals of this strategy and symbol the book has already acted on.
+
+    A signal older than this is out of order: a later one for the same strategy and symbol was already
+    turned into an intent, so acting on the older one would reverse the book's own chronology."""
+    rows = conn.execute(
+        "SELECT s.data_as_of FROM paper_book_strategy_links k "
+        "JOIN strategy_signals s ON s.strategy_evaluation_id = k.strategy_evaluation_id "
+        "WHERE k.book_id = ? AND k.strategy_id = ? AND s.symbol = ? AND s.data_as_of IS NOT NULL",
+        (book_id, strategy_id, symbol),
+    ).fetchall()
+    return max((datetime.fromisoformat(row["data_as_of"]) for row in rows), default=None)
 
 
 def exclusive_link_for_open_position(conn: sqlite3.Connection, book_id: str, symbol: str) -> StrategyLink | None:

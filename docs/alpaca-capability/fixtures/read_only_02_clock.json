@@ -1,0 +1,10 @@
+{
+  "request": {},
+  "response": {
+    "is_open": true,
+    "next_close": "2026-11-11T16:00:00-05:00",
+    "next_open": "2026-11-12T09:30:00-05:00",
+    "timestamp": "2026-11-11T13:10:45.069142-05:00"
+  },
+  "step": "clock"
+}

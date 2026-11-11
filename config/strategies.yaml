@@ -19,6 +19,30 @@ strategy_candidate_selection:
   enabled: false
   activation_stage: STAGE_2_HISTORICAL_BACKTEST
 
+# Per-strategy operating controls (docs/automated-live-trading-implementation-plan.md Phase 2).
+# Optional; a strategy left out gets these defaults. Read by the paper bridge only; no setting here
+# can send an order.
+#   mode: backtest | shadow | paper. `live` is recognised but refused by the loader while ADR 0010 is
+#     not accepted. Only `paper` signals reach the local paper book.
+#   activation_stage: this strategy's own stage. It may not be past the global stage above, which is the
+#     ceiling. Defaults to the global stage.
+#   symbol_allowlist: symbols this strategy may enter. Empty or absent means no restriction.
+#   capital_budget_usd: most notional the strategy may hold plus have pending. Absent means none.
+#   risk_budget_fraction: most planned open risk (shares x (entry - stop)) as a fraction of book
+#     equity. Absent means none.
+#   signal_validity_sessions: a signal is valid until the close of this many sessions after its own
+#     session. Later signals are skipped, never acted on late. Default 1.
+strategy_controls:
+  momentum_breakout:
+    mode: paper
+    signal_validity_sessions: 1
+  mean_reversion:
+    mode: paper
+    signal_validity_sessions: 1
+  event_catalyst:
+    mode: paper
+    signal_validity_sessions: 1
+
 momentum_breakout:
   enabled: true
   breakout_lookback_days: 20

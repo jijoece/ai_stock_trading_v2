@@ -1,0 +1,10 @@
+{
+  "request": {
+    "symbol": "SPY"
+  },
+  "response": [
+    761.3,
+    761.35
+  ],
+  "step": "latest_quote"
+}

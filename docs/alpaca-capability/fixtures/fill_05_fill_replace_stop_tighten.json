@@ -1,0 +1,43 @@
+{
+  "request": {
+    "stop_price": 739.36
+  },
+  "response": {
+    "asset_class": "us_equity",
+    "asset_id": "b28f4066-5c6d-479b-a2af-85dc1a8f16fb",
+    "canceled_at": null,
+    "client_order_id": "d077d209-4753-448f-bc6c-ab87cfb5df2c",
+    "created_at": "2026-11-11T18:23:45.264509Z",
+    "expired_at": null,
+    "expires_at": "2027-02-09T21:00:00Z",
+    "extended_hours": false,
+    "failed_at": null,
+    "filled_at": null,
+    "filled_avg_price": null,
+    "filled_qty": "0",
+    "hwm": null,
+    "id": "f01d9202-56c7-4168-83ad-063904670abb",
+    "legs": null,
+    "limit_price": null,
+    "notional": null,
+    "order_class": "oto",
+    "order_type": "stop",
+    "position_intent": "sell_to_close",
+    "qty": "1",
+    "ratio_qty": null,
+    "replaced_at": null,
+    "replaced_by": null,
+    "replaces": "3f29c7f5-bc83-415b-87c2-5abf835bed9a",
+    "side": "sell",
+    "status": "new",
+    "stop_price": "739.36",
+    "submitted_at": "2026-11-11T18:23:45.264509Z",
+    "symbol": "SPY",
+    "time_in_force": "gtc",
+    "trail_percent": null,
+    "trail_price": null,
+    "type": "stop",
+    "updated_at": "2026-11-11T18:23:45.264860Z"
+  },
+  "step": "fill_replace_stop_tighten"
+}

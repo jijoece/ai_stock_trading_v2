@@ -25,6 +25,7 @@ import yaml
 
 from ..config import REPO_ROOT
 from ..hashing import hash_config
+from .allocation import AllocationLimits
 from ..evidence_providers.economic_calendar import (
     EconomicEventBlackoutConfiguration,
     KNOWN_IMPORTANCE,
@@ -224,6 +225,9 @@ class RiskSection:
     drawdown_action: str = "PAUSE_NEW_ENTRIES"
     require_reconciled_risk_state: bool = True
     maximum_risk_state_age_seconds: int = 900
+    # Cross-strategy limits (planned open risk, per-trade risk, stop validation). Unset limits are not
+    # enforced; symbol ownership and stop-below-entry always are.
+    allocation: AllocationLimits = AllocationLimits()
 
     def __post_init__(self) -> None:
         for field_name in ("max_position_weight", "minimum_cash_buffer_weight", "max_symbol_concentration_weight"):
@@ -610,9 +614,18 @@ def load_paper_books_config(path: str | Path | None = None) -> PaperBooksConfigu
             "minimum_cash_buffer_weight", "max_open_positions", "max_symbol_concentration_weight",
             "reject_stale_market_price_seconds", "max_daily_loss_fraction", "max_drawdown_fraction",
             "daily_loss_action", "drawdown_action", "require_reconciled_risk_state",
-            "maximum_risk_state_age_seconds",
+            "maximum_risk_state_age_seconds", "allocation",
         },
         "risk",
+    )
+    allocation_raw = risk.get("allocation", {})
+    if not isinstance(allocation_raw, dict):
+        raise PaperBooksConfigError("risk.allocation must be a mapping")
+    _require_no_unknown_keys(
+        allocation_raw,
+        {"max_planned_open_risk_fraction", "max_risk_per_trade_fraction", "min_stop_distance_fraction",
+         "max_stop_distance_fraction", "tick_size"},
+        "risk.allocation",
     )
     _require_no_unknown_keys(valuation, {"price_source", "maximum_price_age_seconds", "missing_price_policy"}, "valuation")
 
@@ -666,6 +679,10 @@ def load_paper_books_config(path: str | Path | None = None) -> PaperBooksConfigu
                 risk.get("maximum_risk_state_age_seconds", risk["reject_stale_market_price_seconds"]),
                 "risk.maximum_risk_state_age_seconds", minimum=1,
             ),
+            allocation=AllocationLimits(**{
+                name: _decimal(allocation_raw[name], f"risk.allocation.{name}")
+                for name in allocation_raw  # unknown keys were rejected above; AllocationLimits validates ranges
+            }),
         )
         valuation_section = ValuationSection(
             price_source=str(valuation["price_source"]),

@@ -18,14 +18,27 @@ import json
 from dataclasses import dataclass, replace
 from datetime import date, datetime
 from decimal import ROUND_FLOOR, Decimal
-from typing import Any, Callable
+from typing import Any, Callable, Mapping
 
 from ..evidence_providers.economic_calendar import evaluate_economic_event_blackout
 from ..research import experiment_policy as ep
 from ..storage import paper_books_repositories as pb_repo
 from ..storage.paper_books_repositories import EXECUTION_NAMESPACE_LOCAL
-from ..storage.strategy_bridge_repositories import StrategyLink, get_link_for_signal, insert_strategy_link
+from ..storage.strategy_bridge_repositories import (
+    StrategyLink,
+    get_link_for_signal,
+    insert_strategy_link,
+    latest_linked_data_as_of,
+)
 from ..storage.transactions import transaction
+from ..strategies.config import ACTIVATION_STAGES
+from ..strategies.controls import (
+    MINIMUM_PAPER_STAGE,
+    STRATEGY_MODE_PAPER,
+    StrategyControls,
+    signal_expires_at,
+)
+from ..strategies.selector import signal_rank_key
 from ..strategies.contracts import (
     StrategySignal,
     StrategyStatus,
@@ -37,6 +50,7 @@ from . import cash_ledger, order_intent, reconciliation, safety_pause, valuation
 from . import daily_risk as daily_risk_module
 from . import risk as risk_module
 from .config import PaperBooksConfiguration
+from .strategy_exposure import read_book_exposure
 from .models import (
     APPROVED_RISK_DECISIONS,
     INTENT_STATUS_PENDING_SUBMISSION,
@@ -60,6 +74,10 @@ OUTCOME_SKIPPED_ALREADY_PROCESSED = "SKIPPED_ALREADY_PROCESSED"
 OUTCOME_SKIPPED_BOUNDARY = "SKIPPED_BOUNDARY_VIOLATION"
 OUTCOME_SKIPPED_FUTURE_SIGNAL = "SKIPPED_SIGNAL_AFTER_AS_OF"
 OUTCOME_SKIPPED_STALE_RISK_STATE = "SKIPPED_RISK_STATE_CHANGED"
+OUTCOME_SKIPPED_STRATEGY_NOT_ENABLED = "SKIPPED_STRATEGY_NOT_ENABLED_FOR_PAPER"
+OUTCOME_SKIPPED_SYMBOL_NOT_ALLOWED = "SKIPPED_SYMBOL_NOT_IN_STRATEGY_ALLOWLIST"
+OUTCOME_SKIPPED_EXPIRED = "SKIPPED_SIGNAL_EXPIRED"
+OUTCOME_SKIPPED_OUT_OF_ORDER = "SKIPPED_SIGNAL_OUT_OF_ORDER"
 
 
 class StrategyBridgeError(RuntimeError):
@@ -79,6 +97,14 @@ class StrategyEntryOutcome:
     reasons: tuple[str, ...] = ()
     risk_decision_id: str | None = None
     paper_order_intent_id: str | None = None
+
+
+def _controls_for(controls: Mapping[str, StrategyControls] | None, strategy_id: str) -> StrategyControls | None:
+    """The strategy's controls. No mapping means the paper-mode defaults; a mapping that lacks the strategy
+    means the strategy is not enabled (fails closed)."""
+    if controls is None:
+        return StrategyControls(strategy_id=strategy_id, mode=STRATEGY_MODE_PAPER, activation_stage=MINIMUM_PAPER_STAGE)
+    return controls.get(strategy_id)
 
 
 def derive_strategy_recommendation_id(strategy_signal_id: str) -> str:
@@ -224,13 +250,21 @@ def _risk_state_fingerprint(conn, book_id: str) -> tuple:
 def create_strategy_entry_intents(
     conn, *, strategy_rows: list, as_of: datetime, cfg: PaperBooksConfiguration, price_provider: Any,
     clock: Callable[[], datetime], experiment_policy: str = ep.BASELINE_ONLY, economic_events=None,
+    controls: Mapping[str, StrategyControls] | None = None,
 ) -> list[StrategyEntryOutcome]:
     """Turn stored ELIGIBLE signal rows into risk-gated, pending paper order intents.
 
     Each approval is registered under `BEGIN IMMEDIATE`, and only if the book's risk-relevant state is
     exactly what the decision was computed from; otherwise the decision is recomputed from the committed
     state. Two concurrent cycles can therefore never both approve against the same stale cash, position
-    count or daily-notional state."""
+    count or daily-notional state.
+
+    Signals are handled in one deterministic order, strongest first (`selector.signal_rank_key`, then
+    strategy, symbol and evaluation id), so when signals compete for the same cash or symbol the same
+    one wins on every run. Each strategy's `controls` (mode, stage, symbol allowlist, budgets, signal
+    validity) gate its signals; with `controls=None` every strategy gets the paper-mode defaults, and
+    with a mapping a strategy missing from it is not enabled. A signal past its validity window, or
+    older than a signal of the same strategy and symbol the book already acted on, creates no intent."""
     book_id = validate_strategy_cycle_config(cfg, experiment_policy)
     book_def = cfg.book(book_id)
     book = cash_ledger.open_book(
@@ -239,8 +273,16 @@ def create_strategy_entry_intents(
     authoritative_enabled = "max_daily_loss_fraction" in cfg.raw.get("paper_books", {}).get("risk", {})
     outcomes: list[StrategyEntryOutcome] = []
 
-    for row in strategy_rows:
-        signal = signal_from_row(row)
+    # Rebuild and verify every signal before anything is written, so a row that does not reproduce its
+    # recorded identity stops the batch instead of leaving it half done.
+    prepared = sorted(
+        ((row, signal_from_row(row)) for row in strategy_rows),
+        key=lambda pair: (
+            signal_rank_key(pair[1]), pair[1].strategy_id, pair[1].symbol, pair[0]["strategy_evaluation_id"],
+        ),
+    )
+
+    for row, signal in prepared:
 
         def outcome(code: str, *reasons: str, **extra) -> StrategyEntryOutcome:
             return StrategyEntryOutcome(
@@ -270,6 +312,29 @@ def create_strategy_entry_intents(
                 return outcome(OUTCOME_SKIPPED_ALREADY_PROCESSED, "this signal was already evaluated for the book")
             if signal.data_as_of is None or signal.data_as_of > as_of:
                 return outcome(OUTCOME_SKIPPED_FUTURE_SIGNAL, "signal data is after the cycle as_of")
+            strategy_controls = _controls_for(controls, signal.strategy_id)
+            if strategy_controls is None:
+                return outcome(OUTCOME_SKIPPED_STRATEGY_NOT_ENABLED, "the strategy has no controls entry")
+            if strategy_controls.mode != STRATEGY_MODE_PAPER or ACTIVATION_STAGES.index(
+                strategy_controls.activation_stage
+            ) < ACTIVATION_STAGES.index(MINIMUM_PAPER_STAGE):
+                return outcome(
+                    OUTCOME_SKIPPED_STRATEGY_NOT_ENABLED,
+                    f"strategy mode is {strategy_controls.mode!r} at {strategy_controls.activation_stage}; "
+                    f"the paper book needs mode 'paper' at {MINIMUM_PAPER_STAGE} or later",
+                )
+            if not strategy_controls.allows_symbol(signal.symbol):
+                return outcome(OUTCOME_SKIPPED_SYMBOL_NOT_ALLOWED, f"{signal.symbol} is not in the strategy's allowlist")
+            expires_at = signal_expires_at(date.fromisoformat(row["session_date"]), strategy_controls.signal_validity_sessions)
+            if as_of > expires_at:
+                return outcome(OUTCOME_SKIPPED_EXPIRED, f"signal expired at {expires_at.isoformat()}")
+            newest_acted_on = latest_linked_data_as_of(conn, book_id, signal.strategy_id, signal.symbol)
+            if newest_acted_on is not None and signal.data_as_of < newest_acted_on:
+                return outcome(
+                    OUTCOME_SKIPPED_OUT_OF_ORDER,
+                    f"the book already acted on a {signal.strategy_id} signal for {signal.symbol} "
+                    f"from {newest_acted_on.isoformat()}, which is later than this one",
+                )
 
             reference_price = signal.limit_reference
             assert reference_price is not None  # guaranteed by build_strategy_order_intent_context / the contract
@@ -322,6 +387,13 @@ def create_strategy_entry_intents(
                 reference_price_age_seconds=int((as_of - signal.data_as_of).total_seconds()),
                 reference_price_point_in_time_safe=True, risk_config=cfg.risk, daily_risk_state=daily_state,
                 economic_blackout_decision=blackout_decision, enforce_authoritative_state=authoritative_enabled,
+                # Symbol ownership, stop validity and the risk and capital budgets. Read from the same
+                # committed state the fingerprint above guards, so a change underneath forces a recompute.
+                allocation=read_book_exposure(conn, book_id).inputs_for(
+                    strategy_id=signal.strategy_id, symbol=signal.symbol, stop=context.strategy_stop,
+                    limits=cfg.risk.allocation, capital_budget_usd=strategy_controls.capital_budget_usd,
+                    risk_budget_fraction=strategy_controls.risk_budget_fraction,
+                ),
             )
             approved = decision.decision in APPROVED_RISK_DECISIONS
             # A rejection is final and is persisted on its own. An approved decision

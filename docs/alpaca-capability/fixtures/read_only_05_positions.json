@@ -1,0 +1,29 @@
+{
+  "request": {},
+  "response": [
+    {
+      "asset_class": "us_equity",
+      "asset_id": "b0b6dd9d-8b9b-48a9-ba46-b9d54906e415",
+      "asset_marginable": true,
+      "avg_entry_price": "333.16",
+      "avg_entry_swap_rate": null,
+      "change_today": "0.01822",
+      "cost_basis": "333.16",
+      "current_price": "354.86",
+      "exchange": "NASDAQ",
+      "lastday_price": "348.51",
+      "market_value": "354.86",
+      "qty": "1",
+      "qty_available": "1",
+      "side": "long",
+      "swap_rate": null,
+      "symbol": "AAPL",
+      "unrealized_intraday_pl": "6.35",
+      "unrealized_intraday_plpc": "0.01822",
+      "unrealized_pl": "21.7",
+      "unrealized_plpc": "0.06513",
+      "usd": null
+    }
+  ],
+  "step": "positions"
+}

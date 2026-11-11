@@ -1,0 +1,12 @@
+{
+  "error": {
+    "code": 42210000,
+    "message": "{\"code\":42210000,\"message\":\"order already replaced\"}",
+    "status_code": 422,
+    "type": "APIError"
+  },
+  "request": {
+    "stop_price": 738.86
+  },
+  "step": "fill_replace_stop_loosen"
+}

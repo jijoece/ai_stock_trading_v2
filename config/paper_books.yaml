@@ -95,6 +95,16 @@ paper_books:
     drawdown_action: PAUSE_NEW_ENTRIES
     require_reconciled_risk_state: true
     maximum_risk_state_age_seconds: 900
+    # Cross-strategy limits (docs/automated-live-trading-implementation-plan.md Phase 3). Planned risk is
+    # shares x (entry - stop), a plan and not a cap on actual loss. Symbol ownership (one strategy per
+    # symbol per book) and stop-below-entry are always enforced and are not settings. Omit a key to leave
+    # that limit off. These paper values are a starting point for the operator to review.
+    allocation:
+      max_risk_per_trade_fraction: "0.01"       # of book equity; matches the bridge's sizing fraction
+      max_planned_open_risk_fraction: "0.10"    # across every open position and pending entry
+      min_stop_distance_fraction: "0.005"       # a stop closer than 0.5% of entry is rejected
+      max_stop_distance_fraction: "0.25"        # a stop further than 25% of entry is rejected
+      tick_size: "0.01"                         # the stop is rounded down to this before risk is computed
 
   valuation:
     price_source: evidence_snapshot        # evidence_snapshot | persisted_market_bar — unknown values fail closed

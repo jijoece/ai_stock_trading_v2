@@ -1,0 +1,25 @@
+{
+  "error": {
+    "code": 42210000,
+    "message": "{\"code\":42210000,\"message\":\"client_order_id must be unique\"}",
+    "status_code": 422,
+    "type": "APIError"
+  },
+  "request": {
+    "client_order_id": "p1spike-duplicate-e89e3ffc",
+    "extended_hours": null,
+    "legs": null,
+    "limit_price": 609.1,
+    "notional": null,
+    "order_class": null,
+    "position_intent": null,
+    "qty": 1.0,
+    "side": "buy",
+    "stop_loss": null,
+    "symbol": "SPY",
+    "take_profit": null,
+    "time_in_force": "gtc",
+    "type": "limit"
+  },
+  "step": "submit_duplicate_second"
+}
