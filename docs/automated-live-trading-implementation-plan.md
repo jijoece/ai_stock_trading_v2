@@ -21,7 +21,7 @@ explicitly asks. Nothing here is financial advice.
 | Phase | State |
 |---|---|
 | 0 | Matrix and doc-edit list written. **Not done**: the owner has not answered O1–O16 or accepted the ADR. |
-| 1 | **Not started.** Needs credentialed Alpaca paper calls, which the operator must ask for. |
+| 1 | Spike run on Alpaca paper (`read-only`, `rest`, `fill`); evidence in [`alpaca-capability/README.md`](alpaca-capability/README.md). A2, A3, A4 confirmed, A9 revised. **Not done:** overnight GTC stop survival (project gate), whether a bracket's `held` stop protects the position, partial fills, gaps, GTC age expiry, corporate actions, rate limits. |
 | 2 | Built for the local paper path: per-strategy mode, stage, allowlist and budgets; signal expiry and chronology at the bridge. Production screening, the trailing rule and `candidates`/`shadow` use of the mode are **not** done. See the matrix, Section 3. |
 | 3 | Built for the local paper path: symbol ownership, per-trade, per-strategy and book planned-risk limits, strategy capital budgets, stop validation, signal ordering, property tests. The stale-quote rule is the existing price-age limit. |
 | 4–9 | **Not started.** They depend on Phase 1 and on the owner's acceptance of the ADR. |

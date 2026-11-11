@@ -29,6 +29,7 @@ from ..storage.strategy_bridge_repositories import (
     get_link_for_signal,
     insert_strategy_link,
     latest_linked_data_as_of,
+    save_decision_controls,
 )
 from ..storage.transactions import transaction
 from ..strategies.config import ACTIVATION_STAGES
@@ -402,9 +403,15 @@ def create_strategy_entry_intents(
             # (the retry check above would otherwise skip the signal forever).
             persisted_risk_id = risk_decision_id
             if not approved:
-                order_intent.persist_risk_decision(
-                    conn, book_id, cycle_id, recommendation_id, signal.symbol, decision, snap.snapshot_id, clock,
-                )
+                with transaction(conn):
+                    order_intent.persist_risk_decision(
+                        conn, book_id, cycle_id, recommendation_id, signal.symbol, decision, snap.snapshot_id, clock,
+                        commit=False,
+                    )
+                    save_decision_controls(
+                        conn, risk_decision_id=persisted_risk_id, book_id=book_id, controls=strategy_controls,
+                        created_at=clock().isoformat(),
+                    )
             if daily_state is not None and decision.decision in (
                 RISK_REJECTED_DAILY_LOSS_LIMIT, RISK_REJECTED_DRAWDOWN_LIMIT,
             ):

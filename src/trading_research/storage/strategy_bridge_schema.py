@@ -39,6 +39,29 @@ BEGIN SELECT RAISE(ABORT, 'paper_book_strategy_links is append-only'); END;
 CREATE TRIGGER IF NOT EXISTS trg_paper_book_strategy_links_no_delete
 BEFORE DELETE ON paper_book_strategy_links
 BEGIN SELECT RAISE(ABORT, 'paper_book_strategy_links is append-only'); END;
+
+-- The strategy controls (mode, stage, allowlist, budgets, validity) a risk decision was evaluated under.
+-- One row per decision, accepted, resized or rejected, so a decision can be traced to the exact settings
+-- that produced it even after config/strategies.yaml changes. Append-only.
+CREATE TABLE IF NOT EXISTS paper_book_decision_strategy_controls (
+    risk_decision_id TEXT PRIMARY KEY REFERENCES paper_book_risk_decisions(risk_decision_id),
+    book_id TEXT NOT NULL,
+    strategy_id TEXT NOT NULL,
+    controls_hash TEXT NOT NULL,
+    controls_json TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_paper_book_decision_strategy_controls_hash
+    ON paper_book_decision_strategy_controls(controls_hash);
+
+CREATE TRIGGER IF NOT EXISTS trg_paper_book_decision_strategy_controls_no_update
+BEFORE UPDATE ON paper_book_decision_strategy_controls
+BEGIN SELECT RAISE(ABORT, 'paper_book_decision_strategy_controls is append-only'); END;
+
+CREATE TRIGGER IF NOT EXISTS trg_paper_book_decision_strategy_controls_no_delete
+BEFORE DELETE ON paper_book_decision_strategy_controls
+BEGIN SELECT RAISE(ABORT, 'paper_book_decision_strategy_controls is append-only'); END;
 """
 
 

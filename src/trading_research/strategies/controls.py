@@ -15,6 +15,7 @@ from datetime import date, datetime
 from decimal import Decimal
 
 from ..evaluation.market_calendar import add_trading_days, regular_session_close
+from ..hashing import hash_config
 
 STRATEGY_MODE_BACKTEST = "backtest"
 STRATEGY_MODE_SHADOW = "shadow"
@@ -35,6 +36,11 @@ KNOWN_STRATEGY_IDS = ("momentum_breakout", "mean_reversion", "event_catalyst")
 
 class StrategyControlsError(ValueError):
     """A strategy's operating controls are invalid."""
+
+
+def _canonical_decimal(value: Decimal | None) -> str | None:
+    """Fixed-point text with no trailing zeros, so 5000 and 5000.00 are one setting."""
+    return None if value is None else format(value.normalize(), "f")
 
 
 @dataclass(frozen=True)
@@ -78,6 +84,25 @@ class StrategyControls:
 
     def allows_symbol(self, symbol: str) -> bool:
         return not self.symbol_allowlist or symbol in self.symbol_allowlist
+
+    def audit_record(self) -> dict:
+        """Every setting that can change a decision, in a canonical form, so it can be stored and re-hashed.
+
+        The allowlist is sorted because its order carries no meaning."""
+        return {
+            "strategy_id": self.strategy_id,
+            "mode": self.mode,
+            "activation_stage": self.activation_stage,
+            "symbol_allowlist": sorted(self.symbol_allowlist),
+            "capital_budget_usd": _canonical_decimal(self.capital_budget_usd),
+            "risk_budget_fraction": _canonical_decimal(self.risk_budget_fraction),
+            "signal_validity_sessions": self.signal_validity_sessions,
+        }
+
+    @property
+    def controls_hash(self) -> str:
+        """Identity of the effective controls. Changing any setting changes it."""
+        return hash_config(self.audit_record())
 
 
 def signal_expires_at(session_date: date, validity_sessions: int) -> datetime:
