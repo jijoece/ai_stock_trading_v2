@@ -171,7 +171,8 @@ def run_strategy_paper_cycle(
             "outcomes": [
                 {"symbol": o.symbol, "strategy_id": o.strategy_id, "strategy_signal_id": o.strategy_signal_id,
                  "outcome": o.outcome, "reasons": list(o.reasons), "risk_decision_id": o.risk_decision_id,
-                 "paper_order_intent_id": o.paper_order_intent_id}
+                 "paper_order_intent_id": o.paper_order_intent_id,
+                 "strategy_controls_hash": o.strategy_controls_hash}
                 for o in outcomes
             ],
         },

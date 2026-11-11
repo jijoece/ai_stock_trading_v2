@@ -98,6 +98,9 @@ class StrategyEntryOutcome:
     reasons: tuple[str, ...] = ()
     risk_decision_id: str | None = None
     paper_order_intent_id: str | None = None
+    # Identity of the strategy controls the persisted risk decision was evaluated under; see
+    # `paper_book_decision_strategy_controls`. None when no decision was persisted.
+    strategy_controls_hash: str | None = None
 
 
 def _controls_for(controls: Mapping[str, StrategyControls] | None, strategy_id: str) -> StrategyControls | None:
@@ -355,9 +358,12 @@ def create_strategy_entry_intents(
 
             # Risk-based size from the book's equity and the signal's own stop distance.
             # The signal never sets a size; risk.py below caps whatever this proposes.
+            # A stop at or above the limit price has no risk distance to size from; leaving the hint unset
+            # makes the risk gate reject (and persist) the decision instead of dividing by zero mid-batch.
             quantity_hint = None
-            if portfolio.net_liquidation_value_usd is not None and portfolio.net_liquidation_value_usd > 0:
-                risk_per_share = reference_price - context.strategy_stop
+            risk_per_share = reference_price - context.strategy_stop
+            if portfolio.net_liquidation_value_usd is not None and portfolio.net_liquidation_value_usd > 0 \
+                    and risk_per_share > 0:
                 quantity_hint = (
                     portfolio.net_liquidation_value_usd * RISK_FRACTION / risk_per_share
                 ).to_integral_value(rounding=ROUND_FLOOR)
@@ -420,7 +426,10 @@ def create_strategy_entry_intents(
                     reason="; ".join(decision.reasons), at=clock(),
                 )
             if not approved:
-                return outcome(OUTCOME_REJECTED_BY_RISK, decision.decision, *decision.reasons, risk_decision_id=persisted_risk_id)
+                return outcome(
+                    OUTCOME_REJECTED_BY_RISK, decision.decision, *decision.reasons, risk_decision_id=persisted_risk_id,
+                    strategy_controls_hash=strategy_controls.controls_hash,
+                )
 
             intent = order_intent.build_order_intent(
                 book_id=book_id, experiment_arm=book.experiment_arm, cycle_id=cycle_id,
@@ -454,6 +463,10 @@ def create_strategy_entry_intents(
                     conn, book_id, cycle_id, recommendation_id, signal.symbol, decision, snap.snapshot_id, clock,
                     commit=False,
                 )
+                save_decision_controls(
+                    conn, risk_decision_id=persisted_risk_id, book_id=book_id, controls=strategy_controls,
+                    created_at=clock().isoformat(),
+                )
                 pb_repo.claim_execution_namespace(
                     conn, book_id, intent.paper_order_intent_id, EXECUTION_NAMESPACE_LOCAL, clock(),
                     "local_simulator", commit=False,
@@ -466,6 +479,7 @@ def create_strategy_entry_intents(
             return outcome(
                 OUTCOME_INTENT_CREATED_PENDING_FILL, risk_decision_id=persisted_risk_id,
                 paper_order_intent_id=intent.paper_order_intent_id,
+                strategy_controls_hash=strategy_controls.controls_hash,
             )
 
         result = None

@@ -7,6 +7,7 @@ case states exactly the numbers it depends on. Local simulated paper book only; 
 from __future__ import annotations
 
 import json
+import sqlite3
 from dataclasses import replace
 from datetime import date
 from decimal import Decimal
@@ -16,11 +17,13 @@ import pytest
 
 from tests.unit.test_strategy_paper_cycle import BOOK, _paper_config
 from trading_research.evaluation.market_calendar import regular_session_close
+from trading_research.hashing import hash_config
 from trading_research.paper_books import cash_ledger
 from trading_research.paper_books.allocation import AllocationLimits
 from trading_research.paper_books.strategy_bridge import (
     OUTCOME_INTENT_CREATED_PENDING_FILL,
     OUTCOME_REJECTED_BY_RISK,
+    OUTCOME_SKIPPED_ALREADY_PROCESSED,
     OUTCOME_SKIPPED_EXPIRED,
     OUTCOME_SKIPPED_OUT_OF_ORDER,
     OUTCOME_SKIPPED_STRATEGY_NOT_ENABLED,
@@ -29,6 +32,7 @@ from trading_research.paper_books.strategy_bridge import (
 )
 from trading_research.storage import paper_books_repositories as pb_repo
 from trading_research.storage.database import connect
+from trading_research.storage.strategy_bridge_repositories import get_decision_controls, save_decision_controls
 from trading_research.storage.strategy_signals_repositories import (
     StrategySignalRecord,
     insert_strategy_signal,
@@ -56,11 +60,12 @@ STAGE_5 = "STAGE_5_LOCAL_PAPER_BOOK"
 # -- helpers ---------------------------------------------------------------------
 
 
-def _store(conn, strategy_id, symbol, session, *, strength=0.5, entry="100", stop="92") -> None:
+def _store(conn, strategy_id, symbol, session, *, strength=0.5, entry="100", stop="92", limit=None) -> None:
+    limit = limit or entry
     close = regular_session_close(session)
     signal = StrategySignal(
         strategy_id=strategy_id, strategy_version="v1", symbol=symbol, signal_timestamp=close, data_as_of=close,
-        status=StrategyStatus.ELIGIBLE, signal_strength=strength, entry_reference=D(entry), limit_reference=D(entry),
+        status=StrategyStatus.ELIGIBLE, signal_strength=strength, entry_reference=D(entry), limit_reference=D(limit),
         invalidation_price=D(stop), initial_stop_reference=D(stop), target_reference=None,
         expected_holding_period=10, reason_codes=("test",), factor_values={}, data_quality="complete",
         configuration_hash="cfg",
@@ -70,7 +75,7 @@ def _store(conn, strategy_id, symbol, session, *, strength=0.5, entry="100", sto
         strategy_evaluation_id=evaluation_id, signal_content_id=derive_strategy_signal_content_id(signal),
         strategy_id=strategy_id, strategy_version="v1", configuration_hash="cfg", symbol=symbol,
         session_date=session.isoformat(), signal_timestamp=close.isoformat(), data_as_of=close.isoformat(),
-        status="ELIGIBLE", signal_strength=strength, entry_reference=entry, limit_reference=entry,
+        status="ELIGIBLE", signal_strength=strength, entry_reference=entry, limit_reference=limit,
         invalidation_price=stop, initial_stop_reference=stop, target_reference=None, expected_holding_period=10,
         reason_codes_json=json.dumps(["test"]), factor_values_json="{}", data_quality="complete",
         backtest_screening_passed=True, backtest_screening_json="{}", production_screening_status="NOT_EVALUATED",
@@ -447,3 +452,157 @@ def test_the_config_loader_reads_the_allocation_section(tmp_path):
     bad.write_text(text.replace('max_risk_per_trade_fraction: "0.01"', 'max_risk_per_trade_fraction: "2"', 1))
     with pytest.raises(PaperBooksConfigError, match="max_risk_per_trade_fraction"):
         load_paper_books_config(bad)
+
+
+# -- review finding: the controls a decision was made under are part of its audit record ------------------
+
+
+def _decision_controls(conn, outcome) -> tuple[dict, dict]:
+    decision = pb_repo.load_risk_decision(conn, outcome.risk_decision_id)
+    stored = get_decision_controls(conn, outcome.risk_decision_id)
+    assert decision is not None and stored is not None
+    return decision, stored
+
+
+@pytest.mark.parametrize("change", [
+    {"mode": "shadow"},
+    {"activation_stage": "STAGE_6_SUPERVISED_ALPACA_PAPER"},
+    {"symbol_allowlist": ("AAA",)},
+    {"capital_budget_usd": D("5000")},
+    {"risk_budget_fraction": D("0.004")},
+    {"signal_validity_sessions": 2},
+])
+def test_every_control_setting_changes_the_controls_hash(change):
+    base: dict[str, Any] = {"strategy_id": "alpha", "mode": "paper", "activation_stage": STAGE_5}
+    assert StrategyControls(**base).controls_hash != StrategyControls(**{**base, **change}).controls_hash
+
+
+def test_the_controls_hash_ignores_representation_only_differences():
+    base: dict[str, Any] = {"strategy_id": "alpha", "mode": "paper", "activation_stage": STAGE_5}
+    first = StrategyControls(**base, symbol_allowlist=("AAA", "BBB"), capital_budget_usd=D("5000"))
+    second = StrategyControls(**base, symbol_allowlist=("BBB", "AAA"), capital_budget_usd=D("5000.00"))
+    assert first.controls_hash == second.controls_hash
+
+
+def test_an_approved_decision_records_the_controls_it_was_evaluated_under(conn):
+    _store(conn, "alpha", "AAA", MON)
+    controls = _controls(alpha={
+        "symbol_allowlist": ("AAA", "BBB"), "capital_budget_usd": D("5000"), "risk_budget_fraction": D("0.004"),
+        "signal_validity_sessions": 2,
+    })
+    (outcome,) = _enter(conn, _rows(conn), controls=controls)
+    decision, stored = _decision_controls(conn, outcome)
+    assert outcome.outcome == OUTCOME_INTENT_CREATED_PENDING_FILL and decision is not None
+    assert stored["controls_hash"] == outcome.strategy_controls_hash == controls["alpha"].controls_hash
+    assert stored["controls"] == {
+        "strategy_id": "alpha", "mode": "paper", "activation_stage": STAGE_5, "symbol_allowlist": ["AAA", "BBB"],
+        "capital_budget_usd": "5000", "risk_budget_fraction": "0.004", "signal_validity_sessions": 2,
+    }
+    assert hash_config(stored["controls"]) == stored["controls_hash"]
+    (order,) = _orders(conn)
+    assert order["risk_decision_id"] == outcome.risk_decision_id  # intent -> decision -> controls
+
+
+def test_a_rejected_decision_records_the_controls_it_was_evaluated_under(conn):
+    _store(conn, "alpha", "AAA", MON)
+    cfg = replace(_cfg(), risk=replace(_cfg().risk, reject_stale_market_price_seconds=60))
+    controls = _controls(alpha={"capital_budget_usd": D("5000")})
+    (outcome,) = _enter(conn, _rows(conn), as_of_session=TUE, cfg=cfg, controls=controls)
+    _, stored = _decision_controls(conn, outcome)
+    assert outcome.outcome == OUTCOME_REJECTED_BY_RISK and _orders(conn) == []
+    assert stored["controls_hash"] == outcome.strategy_controls_hash == controls["alpha"].controls_hash
+
+
+def test_identical_signals_under_different_controls_leave_distinguishable_records(tmp_path):
+    """Same signal, same paper_books config, only `strategies.yaml` controls differ: the records must differ."""
+    results = {}
+    for name, budget in (("small", D("2000")), ("large", D("8000"))):
+        db = connect(tmp_path / f"{name}.sqlite3")
+        _store(db, "alpha", "AAA", MON)
+        (outcome,) = _enter(db, _rows(db), controls=_controls(alpha={"capital_budget_usd": budget}))
+        _, stored = _decision_controls(db, outcome)
+        (order,) = _orders(db)
+        results[name] = (D(order["quantity"]), outcome.risk_decision_id, stored["controls_hash"])
+    assert results["small"][0] == D("20") and results["large"][0] == D("80")  # the budget changed the outcome...
+    assert results["small"][1] == results["large"][1]  # ...under the same decision id...
+    assert results["small"][2] != results["large"][2]  # ...so the stored controls hash is what tells them apart
+
+
+def test_recorded_controls_are_append_only(conn):
+    _store(conn, "alpha", "AAA", MON)
+    (outcome,) = _enter(conn, _rows(conn))
+    assert outcome.risk_decision_id is not None
+    with pytest.raises(sqlite3.DatabaseError, match="append-only"):
+        conn.execute("UPDATE paper_book_decision_strategy_controls SET controls_hash = 'x'")
+    with pytest.raises(sqlite3.DatabaseError, match="append-only"):
+        conn.execute("DELETE FROM paper_book_decision_strategy_controls")
+    assert get_decision_controls(conn, outcome.risk_decision_id) is not None
+
+
+def test_recording_a_decision_under_different_controls_is_refused(conn):
+    _store(conn, "alpha", "AAA", MON)
+    (outcome,) = _enter(conn, _rows(conn))
+    assert outcome.risk_decision_id is not None
+    other = StrategyControls(strategy_id="alpha", mode="paper", activation_stage=STAGE_5, capital_budget_usd=D("1"))
+    with pytest.raises(ValueError, match="different strategy controls"):
+        save_decision_controls(
+            conn, risk_decision_id=outcome.risk_decision_id, book_id=BOOK, controls=other, created_at="2024-03-04T21:00:00+00:00",
+        )
+
+
+# -- review finding: a stop at or above the limit price must reject, not abort the batch ------------------
+
+
+@pytest.mark.parametrize("stop", ["90", "95"], ids=["stop-equals-limit", "stop-above-limit"])
+def test_a_stop_at_or_above_the_limit_is_rejected_without_aborting_the_batch(conn, stop):
+    # entry 100 passes the contract (stop < entry) but the order's limit is 90, the price risk is sized from.
+    _store(conn, "alpha", "AAA", MON, strength=0.9, entry="100", limit="90", stop=stop)
+    _store(conn, "beta", "BBB", MON, strength=0.1)
+    outcomes = _enter(conn, _rows(conn))
+    by_symbol = {o.symbol: o for o in outcomes}
+    assert len(outcomes) == 2
+    bad, good = by_symbol["AAA"], by_symbol["BBB"]
+    assert bad.outcome == OUTCOME_REJECTED_BY_RISK and bad.paper_order_intent_id is None
+    assert good.outcome == OUTCOME_INTENT_CREATED_PENDING_FILL
+    assert [o["symbol"] for o in _orders(conn)] == ["BBB"]
+    decision, stored = _decision_controls(conn, bad)
+    assert decision["decision"].startswith("REJECTED") and stored["controls_hash"] == bad.strategy_controls_hash
+
+
+def test_every_persisted_risk_decision_has_exactly_one_controls_record(conn):
+    _store(conn, "alpha", "AAA", MON, strength=0.9)  # approved in full
+    _store(conn, "beta", "BBB", MON, strength=0.5)  # shrunk by the strategy's capital budget
+    _store(conn, "gamma", "CCC", MON, strength=0.1, entry="100", limit="90", stop="90")  # rejected
+    outcomes = _enter(conn, _rows(conn), controls=_controls(beta={"capital_budget_usd": D("5000")}))
+    decisions = {o.symbol: pb_repo.load_risk_decision(conn, o.risk_decision_id)["decision"] for o in outcomes}
+    assert decisions["AAA"] == "APPROVED" and decisions["BBB"] == "APPROVED_REDUCED"
+    assert decisions["CCC"].startswith("REJECTED")
+    risk_ids = {row[0] for row in conn.execute("SELECT risk_decision_id FROM paper_book_risk_decisions")}
+    controls_ids = [row[0] for row in conn.execute("SELECT risk_decision_id FROM paper_book_decision_strategy_controls")]
+    assert risk_ids == {o.risk_decision_id for o in outcomes}
+    assert sorted(controls_ids) == sorted(risk_ids)
+
+
+def test_a_retried_cycle_keeps_exactly_one_controls_record_per_decision(conn):
+    _store(conn, "alpha", "AAA", MON)
+    (first,) = _enter(conn, _rows(conn))
+    (retry,) = _enter(conn, _rows(conn))
+    assert first.outcome == OUTCOME_INTENT_CREATED_PENDING_FILL and retry.outcome == OUTCOME_SKIPPED_ALREADY_PROCESSED
+    rows = conn.execute("SELECT risk_decision_id, controls_hash FROM paper_book_decision_strategy_controls").fetchall()
+    assert [tuple(r) for r in rows] == [(first.risk_decision_id, first.strategy_controls_hash)]
+    assert len(_orders(conn)) == 1
+
+
+def test_no_controls_record_survives_a_failed_intent_registration(conn, monkeypatch):
+    from trading_research.paper_books import strategy_bridge
+
+    def fail(*args, **kwargs):
+        raise RuntimeError("registration failed")
+
+    _store(conn, "alpha", "AAA", MON)
+    monkeypatch.setattr(strategy_bridge, "insert_strategy_link", fail)
+    with pytest.raises(RuntimeError, match="registration failed"):
+        _enter(conn, _rows(conn))
+    for table in ("paper_book_risk_decisions", "paper_book_decision_strategy_controls"):
+        assert conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] == 0
+    assert _orders(conn) == []
