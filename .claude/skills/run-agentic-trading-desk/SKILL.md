@@ -74,6 +74,39 @@ python3 scripts/macro_pillar.py macro_input.json --json
 python3 scripts/score.py ticker_input.json --json
 ```
 
+## Fetching prices for `score.py` (`--alpaca`)
+
+```bash
+.venv/bin/python scripts/score.py --alpaca AAPL MSFT --macro-score 1 --not-holding --json
+```
+
+- Needs the project `.venv` and `ALPACA_MARKET_DATA_API_KEY` /
+  `ALPACA_MARKET_DATA_API_SECRET`. This is a credentialed network call: do not
+  run it unless the operator asks. The driver and the unit tests
+  (`tests/unit/test_score_alpaca.py`) never touch the network.
+- Flags: `--adjustment {split,all}` (default `split`), `--feed {iex,sip}`
+  (default `iex`), `--macro-score N`, `--holding|--not-holding`,
+  `--as-of YYYY-MM-DD`, `--min-sessions N` (default 220), `--save-input DIR`.
+- Exit `0` all scored, `2` some symbols failed (see `errors`), `1` all failed
+  or configuration error.
+- Pass the real `macro_pillar.py` `pillar_score` as `--macro-score`; never
+  estimate it. `--macro-score auto` computes it for you from the same data
+  source (all eight cross-asset ETFs are fetched; `--yield-spread PCT` is the
+  only input you must supply, otherwise the header says it was redistributed).
+- `--fallback-previous-session` is opt-in: if the latest session's daily bar is
+  not published yet (Robinhood publishes it late), it scores the previous
+  session for everything at once and prints a `NOTE:` line. When you report
+  such results, state the session actually used.
+- `--check-holding` reads the operator's positions from every active Robinhood
+  account (read-only) to set holding. It touches private account data, so
+  only run it when the operator asks, and never print or store account
+  numbers or share counts; the card shows only holding / not holding.
+- `--robinhood SYMBOL ...` is the same fetch through the Robinhood MCP
+  (read-only `get_equity_historicals` only). It needs a one-time interactive
+  OAuth login by the operator (`python3 scripts/mcp_login.py login robinhood`); never run the login yourself
+  and never run `--robinhood` unless the operator asks. Its cards carry
+  `adjustment_verified: false`: say so when reporting results.
+
 ## Gotchas
 
 - `indicators.py` needs ~220+ bars for EMA200/RSI/MACD/TRIX to be non-null;
@@ -91,6 +124,7 @@ python3 scripts/score.py ticker_input.json --json
 ## Troubleshooting
 
 No failures were hit while verifying this skill (stdlib-only, no
-environment setup needed). If `driver.py` fails, the `[FAIL]` line names
+environment setup needed; the offline modes of `score.py` and the driver
+never import the repo package). If `driver.py` fails, the `[FAIL]` line names
 the exact check and the script's stderr — start there rather than
 re-running individual scripts blind.

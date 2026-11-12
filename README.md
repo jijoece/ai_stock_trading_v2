@@ -479,7 +479,8 @@ diagnostics, not current workflows.
 
 ## Deterministic computation
 
-The standalone scripts use Python's standard library and never fetch data:
+The standalone scripts compute from JSON you supply. Only `score.py --alpaca`
+fetches data (see below):
 
 | Script | Purpose | Key output |
 |---|---|---|
@@ -492,6 +493,120 @@ python3 scripts/indicators.py ticker.json
 python3 scripts/macro_pillar.py macro.json --json
 python3 scripts/score.py score-input.json --json
 ```
+
+### Scoring from Alpaca prices
+
+`score.py` can fetch the closes itself and score several symbols in one run:
+
+```bash
+.venv/bin/python scripts/score.py --alpaca AAPL MSFT NVDA --macro-score 1 --holding
+```
+
+- Needs the project environment (`.venv/bin/python`, with the `indicators`
+  extra) and `ALPACA_MARKET_DATA_API_KEY` / `ALPACA_MARKET_DATA_API_SECRET` in
+  the environment. It reuses the repo's rate-limited Alpaca client. The offline
+  modes above still import neither the repo package nor Alpaca code.
+- Data is split-adjusted (`--adjustment split`, or `all`; raw is not accepted),
+  IEX feed by default (`--feed sip`), completed sessions only, and at least 220
+  sessions (`--min-sessions`). `--as-of YYYY-MM-DD` scores an earlier completed
+  session.
+- `--macro-score N` (`-2..+2`) is injected as in file mode and left empty when
+  omitted. `--holding` / `--not-holding` set the position context; neither
+  means unknown.
+- `--save-input DIR` writes each symbol's fetched series as `DIR/SYMBOL.json`,
+  which `score.py DIR/SYMBOL.json` replays to the same card.
+- `--json` prints `{"as_of", "results", "errors"}`. Exit code `0` means every
+  symbol scored, `2` means some failed, `1` means all failed or the run could
+  not start (credentials, environment, calendar).
+- `--alpaca` cannot be combined with an input file.
+
+#### Robinhood MCP as the price source
+
+```bash
+python3 scripts/mcp_login.py login robinhood   # once, interactive
+python3 scripts/score.py --robinhood AAPL MSFT --macro-score 1
+```
+
+- `--robinhood SYMBOL ...` replaces `--alpaca` as the source (they are mutually
+  exclusive). Every other flag behaves the same, except that `--feed` does not
+  apply and `--adjustment` can only be `split` (Robinhood's `all` adjustment is
+  intraday-only).
+- The hosted server uses per-user OAuth, so a human logs in once in a browser.
+  The refresh token is stored in `~/.config/trading_research/robinhood_mcp_oauth.json`
+  (`ROBINHOOD_MCP_TOKEN_PATH` overrides; file mode `0600`, never inside the
+  repo). `python3 scripts/mcp_login.py status robinhood` and `... logout robinhood`
+  manage it.
+- Read-only by construction: the only tool this client enables is
+  `get_equity_historicals`; orders, accounts and positions are unreachable.
+- The OAuth, token and read-only-policy machinery is the generic
+  `trading_research.mcp.oauth_readonly_client`, so other read-only needs (for
+  example a quote for a stale-data check) reuse it instead of a second client:
+  add a `ServerSpec` for a new server, add its `allowlist` and
+  `denylist_patterns` to `config/tool_policy.yaml`, and build a
+  `ReadOnlyOAuthMcpClient` with the least set of `allowed_tools`. A tool must be
+  on the policy allowlist and match no denylist pattern, so order, transfer and
+  account-changing tools can never be enabled through it. Order placement
+  belongs in the separately gated execution runtime, not on this client. Login
+  helper: `python3 scripts/mcp_login.py login|status|logout robinhood`.
+- Robinhood's response does not say whether bars are adjusted. The request asks
+  for `split` and the result is trusted, so the card's `data` block carries
+  `"adjustment_verified": false` (Alpaca's is `true`) and the text card says
+  "adjustment requested, not verifiable".
+- Gap-filled (`interpolated`) bars, missing sessions, non-regular sessions and
+  any unexpected response shape fail that symbol rather than being scored.
+
+#### Position and macro, resolved for you
+
+```bash
+python3 scripts/score.py --robinhood NVDA --check-holding --macro-score auto
+```
+
+- `--check-holding` (instead of `--holding` / `--not-holding`) reads your long
+  equity positions across **every active Robinhood account** and sets the
+  position from them. It works with `--alpaca` or `--robinhood` prices, needs
+  the Robinhood login, and uses only the read-only `get_accounts` and
+  `get_equity_positions` tools. Quantities are totalled across accounts, and
+  the card records only the resulting boolean and how many accounts were
+  checked: never an account number or a share count, including in
+  `--save-input` files. If any account cannot be read the run stops (exit `1`)
+  instead of scoring with a guessed position. Only `long` positions are
+  understood: a short (or any other position type) in a symbol blocks the
+  position check for **that symbol only**, with a clear per-symbol error, and
+  does not affect the other symbols. A symbol that is long in one account and
+  short in another is not guessed either.
+- `--macro-score auto` fetches SPY, RSP, IWM, HYG, LQD, TLT, XLY and XLP from the
+  same source and session, runs `macro_pillar.py`, and injects its
+  `pillar_score`; the text output starts with a `MACRO` header and `--json`
+  gains a `macro` block. All eight ETFs are required, otherwise the run stops
+  rather than scoring with a degraded macro value. The 10Y-2Y spread cannot be
+  fetched: pass `--yield-spread PCT` (latest level) or that component's 20%
+  weight is redistributed, which the header says. A fixed integer
+  (`--macro-score 1`) still works.
+- Both are resolved once, before any symbol is scored, and `--save-input`
+  stores the resolved values so a saved file replays to the same card offline.
+
+#### When the latest daily bar is not published yet
+
+Robinhood publishes the latest session's *daily* bar late and unevenly: the
+session has traded, but its daily bar can still be a synthetic placeholder
+(volume 0, flagged `interpolated`). The run refuses to score a placeholder and
+says so ("the daily bar for ... is a gap-filled (interpolated) placeholder").
+Retry later, score an earlier session with `--as-of YYYY-MM-DD`, or opt in to
+`--fallback-previous-session`:
+
+```bash
+python3 scripts/score.py --robinhood NVDA --check-holding --macro-score auto --fallback-previous-session
+```
+
+- It steps back **one** session, for the macro inputs and every symbol at once
+  so they share a session, and says so: a `NOTE:` line in the text output and a
+  `fallback` block (`requested_session`, `used_session`, `reason`) in `--json`.
+  The same applies when an Alpaca history simply ends a session early.
+- It only triggers on "the final bar is not available yet". Bad data
+  (insufficient history, unadjusted bars, wrong symbol, a gap in the middle of
+  the history) is never worked around, and it never walks back more than one
+  session. It cannot be combined with `--as-of`.
+- `--save-input` files are written only for the session actually scored.
 
 These interactive three-pillar scripts are distinct from the production
 composite scorer under `src/trading_research/analysis/`, which combines

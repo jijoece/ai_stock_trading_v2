@@ -15,15 +15,58 @@ Agentic account decision logic:
 All recommendations are framed within this exhaustion/rebound logic.
 Imports indicators.py. The Macro-Sentiment score is injected (comes from
 macro_pillar.py, shared by all names in the session).
-stdlib only.
+
+Run it with any `python3`: indicators.py needs numpy and TA-Lib, so when they are
+missing (or, for the fetch modes, the trading_research package) and this file is
+run directly, it re-launches itself under the repository's `.venv` (see
+_project_env.py). Importing the module never re-launches anything.
+
+Two input modes:
+  score.py [input.json]       offline: a JSON file or the synthetic self-test.
+                              Never imports the repo's trading_research package.
+  score.py --alpaca SYM ...   fetch split-adjusted daily closes from Alpaca
+                              (completed sessions only), then score. Needs the
+                              project .venv and ALPACA_MARKET_DATA_API_KEY /
+                              _SECRET in the environment. The repo's Alpaca
+                              client is imported only in this mode.
+  score.py --robinhood SYM... same, through the hosted Robinhood MCP (read-only
+                              get_equity_historicals only, split-adjusted day
+                              bars). Needs a one-time OAuth login:
+                              python3 scripts/mcp_login.py login robinhood
+                              Robinhood does not label bars as adjusted, so the
+                              card marks the adjustment as requested, not verified.
+
+Both fetch modes also accept:
+  --macro-score auto          fetch the eight cross-asset ETFs and run macro_pillar.py
+  --check-holding             set holding from your Robinhood positions (read-only,
+                              every active account; needs the Robinhood login)
 """
 from __future__ import annotations
 import argparse
 import json
+import re
 import sys
+from datetime import date, datetime, timezone
+from pathlib import Path
 from typing import Optional
 
-import indicators as I
+import _project_env
+
+try:
+    import indicators as I
+except ImportError as _exc:
+    # `python3 scripts/score.py ...` under a Python without numpy/TA-Lib: re-launch under the repo's .venv.
+    if __name__ == "__main__":
+        _project_env.reexec_in_project_venv(__file__)  # does not return on success
+        raise SystemExit(f"error: {_project_env.missing_environment_message('numpy/TA-Lib')}\n({_exc})")
+    raise
+
+import macro_pillar  # stdlib only; used by --macro-score auto
+
+DEFAULT_MIN_SESSIONS = 220
+# Extra sessions fetched beyond --min-sessions so the EMA200 slope has room.
+_HISTORY_PADDING_SESSIONS = 40
+_SYMBOL_RE = re.compile(r"^[A-Z0-9][A-Z0-9.\-]{0,9}$")
 
 
 # --------------------------------------------------------------------------
@@ -285,14 +328,474 @@ def render(card: dict) -> str:
         L.append("    structure: active death-cross (EMA50<EMA200, price<EMA50)")
     if card["warning"]:
         L.append(f"    ⚠ {card['warning']}")
+    data = card.get("data")
+    if data:
+        label = " ".join(str(x) for x in (data["provider"], data["feed"], data["adjustment"]) if x)
+        trust = "" if data.get("adjustment_verified", True) else " [adjustment requested, not verifiable]"
+        L.append(f"    data: {label}, "
+                 f"{data['first_session']}..{data['last_session']} ({data['bars']} bars){trust}")
+        if data.get("holding_source"):
+            state = "HOLDING" if data["holding"] else "not holding"
+            L.append(f"    position: {state} (read-only check of {data['accounts_checked']} active "
+                     f"Robinhood account(s))")
     return "\n".join(L)
 
 
-def main() -> int:
+# --------------------------------------------------------------------------
+# Alpaca fetch path (--alpaca only). The repo's client is imported lazily so the
+# offline modes keep using only the standard library.
+# --------------------------------------------------------------------------
+
+class ScoreError(Exception):
+    """A per-symbol failure (fetch or data validation); the run continues."""
+
+
+class SessionNotPublished(ScoreError):
+    """The as-of session's final bar is not available yet (a retryable condition, unlike bad data)."""
+
+
+class ScoreConfigError(Exception):
+    """A run-level failure (credentials, environment, calendar); the run stops."""
+
+
+class SessionNotPublishedError(ScoreConfigError):
+    """Run-level form of SessionNotPublished: every macro input failed only because the session is unpublished."""
+
+
+def _utc_now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _alpaca_client(feed: str):
+    """Build the repo's rate-limited Alpaca market-data client (credentials read there only)."""
+    try:
+        from trading_research.backtesting.alpaca_history import (
+            API_KEY_ENV, API_SECRET_ENV, alpaca_client_from_environment)
+        from trading_research.backtesting.models import BacktestError
+    except ImportError:
+        if __name__ == "__main__":
+            _project_env.reexec_in_project_venv(__file__)  # does not return on success
+        raise ScoreConfigError(
+            "--alpaca needs the project environment (trading_research is not importable); "
+            "run with .venv/bin/python scripts/score.py --alpaca ..."
+        ) from None
+    try:
+        return alpaca_client_from_environment(feed=feed)
+    except BacktestError:
+        raise ScoreConfigError(
+            f"--alpaca requires {API_KEY_ENV} and {API_SECRET_ENV} to be set in the environment"
+        ) from None
+
+
+def _robinhood_client():
+    """Build the read-only Robinhood MCP history client (needs a prior one-time OAuth login)."""
+    try:
+        from trading_research.mcp.oauth_readonly_client import McpError
+        from trading_research.mcp.robinhood_history import robinhood_client_from_environment
+    except ImportError:
+        if __name__ == "__main__":
+            _project_env.reexec_in_project_venv(__file__)  # does not return on success
+        raise ScoreConfigError(
+            "--robinhood needs the project environment (trading_research is not importable); "
+            "run with .venv/bin/python scripts/score.py --robinhood ..."
+        ) from None
+    try:
+        return robinhood_client_from_environment()
+    except McpError as exc:  # our own messages: login hint or token-file permissions
+        raise ScoreConfigError(str(exc)) from None
+
+
+def _last_completed_session(now: datetime) -> date:
+    """Latest XNYS session whose regular close (early closes included) is at or before `now`."""
+    from datetime import timedelta
+    from zoneinfo import ZoneInfo
+    try:
+        from trading_research.evaluation.market_calendar import (
+            MarketCalendarError, is_trading_day, regular_session_close)
+    except ImportError:
+        raise ScoreConfigError("trading_research market calendar is not importable") from None
+    if now.tzinfo is None:
+        raise ScoreConfigError("'now' must be timezone-aware")
+    day = now.astimezone(ZoneInfo("America/New_York")).date()
+    try:
+        for _ in range(14):
+            if is_trading_day(day) and regular_session_close(day) <= now:
+                return day
+            day -= timedelta(days=1)
+    except MarketCalendarError as exc:
+        raise ScoreConfigError(f"market calendar unavailable: {exc}") from None
+    raise ScoreConfigError("no completed trading session found in the last 14 days")
+
+
+def _previous_session(day: date) -> date:
+    """The trading session before `day`."""
+    from datetime import timedelta
+    try:
+        from trading_research.evaluation.market_calendar import MarketCalendarError, is_trading_day
+    except ImportError:
+        raise ScoreConfigError("trading_research market calendar is not importable") from None
+    try:
+        prior = day - timedelta(days=1)
+        for _ in range(14):
+            if is_trading_day(prior):
+                return prior
+            prior -= timedelta(days=1)
+    except MarketCalendarError as exc:
+        raise ScoreConfigError(f"market calendar unavailable: {exc}") from None
+    raise ScoreConfigError(f"no trading session found in the 14 days before {day}")
+
+
+def _check_as_of_session(day: date, last_completed: date) -> None:
+    from trading_research.evaluation.market_calendar import MarketCalendarError, is_trading_day
+    try:
+        trading = is_trading_day(day)
+    except MarketCalendarError as exc:
+        raise ScoreConfigError(f"market calendar unavailable: {exc}") from None
+    if not trading:
+        raise ScoreConfigError(f"--as-of {day} is not a trading session")
+    if day > last_completed:
+        raise ScoreConfigError(
+            f"--as-of {day} has not completed yet (last completed session: {last_completed})")
+
+
+def _fetch_error_message(exc: Exception) -> str:
+    """Our own `trading_research.mcp` errors carry fixed, token-free text (validation messages, login hints), so
+    they are shown. Anything else is reduced to its type name: provider text may echo credentials."""
+    if type(exc).__module__.startswith("trading_research.mcp."):
+        return f"market data fetch failed: {exc}"
+    return f"market data fetch failed ({type(exc).__name__})"
+
+
+def fetch_closes(client, symbol: str, *, as_of_session: date, adjustment: str,
+                 min_sessions: int, provider: Optional[str] = None) -> dict:
+    """Fetch daily closes up to and including `as_of_session`; fails closed on any doubt.
+
+    `provider` is the label every bar must carry (default: the Alpaca snapshot label).
+    """
+    from trading_research.backtesting.alpaca_history import SNAPSHOT_PROVIDER, warmup_start
+    expected_provider = provider or SNAPSHOT_PROVIDER
+    from trading_research.evaluation.market_calendar import MarketCalendarError, regular_session_close
+    try:
+        as_of = regular_session_close(as_of_session)
+        start = warmup_start(as_of_session, sessions=min_sessions + _HISTORY_PADDING_SESSIONS)
+        raw = client.get_price_history(
+            symbol, start=start, end=as_of_session, as_of=as_of, adjustment=adjustment)
+    except MarketCalendarError as exc:
+        raise ScoreConfigError(f"market calendar unavailable: {exc}") from None
+    except Exception as exc:
+        if getattr(exc, "session_not_published", False):  # set by the repo's own provider errors
+            raise SessionNotPublished(_fetch_error_message(exc)) from None
+        raise ScoreError(_fetch_error_message(exc)) from None
+    bars = [b for b in raw if b.session_date <= as_of_session]  # safeguard; client already drops later bars
+    if any(b.symbol != symbol for b in bars):
+        raise ScoreError("provider returned bars for a different symbol")
+    if any(b.provider != expected_provider for b in bars):
+        raise ScoreError(f"provider returned bars not labelled {expected_provider!r}")
+    if any(not b.adjusted for b in bars):  # split/all are both adjusted; raw is never accepted
+        raise ScoreError(f"bars are not adjusted, contradicting requested adjustment {adjustment!r}")
+    dates = [b.session_date for b in bars]
+    if dates != sorted(set(dates)):
+        raise ScoreError("bars are not strictly ordered by session date")
+    if len(bars) < min_sessions:
+        raise ScoreError(f"insufficient history: {len(bars)} sessions, need at least {min_sessions}")
+    if dates[-1] != as_of_session:
+        raise SessionNotPublished(
+            f"history ends {dates[-1]}, not on the as-of session {as_of_session}; "
+            "the final session's bar is missing")
+    return {
+        "closes": [float(b.close) for b in bars],
+        "first_session": dates[0].isoformat(),
+        "last_session": dates[-1].isoformat(),
+        "bars": len(bars),
+        "provider": expected_provider,
+    }
+
+
+def _normalize_symbols(tokens: list[str]) -> list[str]:
+    out: list[str] = []
+    for tok in tokens:
+        low = tok.lower()
+        if low.endswith(".json") or "/" in tok or "\\" in tok:
+            raise ValueError(f"{tok!r} looks like a file; --alpaca cannot be combined with an input file")
+        sym = tok.strip().upper()
+        if not _SYMBOL_RE.match(sym):
+            raise ValueError(f"invalid symbol {tok!r}")
+        if sym not in out:
+            out.append(sym)
+    return out
+
+
+MACRO_SYMBOLS = ("SPY", "RSP", "IWM", "HYG", "LQD", "TLT", "XLY", "XLP")
+
+
+def _robinhood_holdings():
+    """Totals of long equity positions across every active Robinhood account (read-only)."""
+    try:
+        from trading_research.mcp.oauth_readonly_client import McpError
+        from trading_research.mcp.robinhood_holdings import robinhood_holdings_client_from_environment
+    except ImportError:
+        if __name__ == "__main__":
+            _project_env.reexec_in_project_venv(__file__)  # does not return on success
+        raise ScoreConfigError(
+            "--check-holding needs the project environment (trading_research is not importable); "
+            "run with .venv/bin/python scripts/score.py ..."
+        ) from None
+    try:
+        return robinhood_holdings_client_from_environment().snapshot()
+    except McpError as exc:  # our own messages; never contains an account number or a position
+        raise ScoreConfigError(f"--check-holding could not read Robinhood positions: {exc}") from None
+
+
+def _compute_macro(client, as_of_session: date, args, provider: Optional[str]) -> dict:
+    """Run macro_pillar.py on the eight cross-asset ETFs fetched from the same source and session."""
+    series: dict[str, list[float]] = {}
+    failed: dict[str, list[str]] = {}  # message -> symbols, so one shared cause is printed once
+    only_unpublished = True
+    for etf in MACRO_SYMBOLS:
+        try:
+            series[etf] = fetch_closes(client, etf, as_of_session=as_of_session, adjustment=args.adjustment,
+                                       min_sessions=args.min_sessions, provider=provider)["closes"]
+        except ScoreError as exc:
+            failed.setdefault(str(exc), []).append(etf)
+            only_unpublished = only_unpublished and isinstance(exc, SessionNotPublished)
+    if failed:  # a silently degraded macro score would be worse than none
+        causes = "; ".join(f"{', '.join(syms)}: {msg}" for msg, syms in failed.items())
+        error_type = SessionNotPublishedError if only_unpublished else ScoreConfigError
+        raise error_type("--macro-score auto needs all of " + ", ".join(MACRO_SYMBOLS)
+                         + "; failed: " + causes)
+    data: dict = {"series": series, "as_of": as_of_session.isoformat()}
+    if args.yield_spread is not None:
+        data["yield_spread"] = args.yield_spread
+    try:
+        res = macro_pillar.score_macro(data)
+    except (macro_pillar.MarketDataShapeError, ValueError) as exc:
+        raise ScoreConfigError(f"--macro-score auto failed in macro_pillar.py: {exc}") from None
+    return {
+        "score": res.pillar_score, "label": res.pillar_label, "regime": res.regime,
+        "composite": res.composite, "notes": list(res.notes), "symbols": list(MACRO_SYMBOLS),
+        "yield_spread": ("included (level only)" if args.yield_spread is not None
+                         else "not provided; its 20% weight is redistributed"),
+    }
+
+
+def _position_error_message(exc: Exception) -> str:
+    if type(exc).__module__.startswith("trading_research.mcp."):  # our own fixed, account-free text
+        return f"position check failed: {exc}"
+    return f"position check failed ({type(exc).__name__})"
+
+
+def _attempt(client, provider, feed, adjustment_verified, args, symbols, as_of_session, now, holdings):
+    """One full pass at one session: macro first, then every symbol. Writes nothing to disk.
+
+    Returns (results, errors, context, unpublished, saved) where `unpublished` says some symbol failed only
+    because the session's final bar is not available yet, and `saved` holds the --save-input payloads.
+    Raises ScoreConfigError for run-level failures (SessionNotPublishedError when macro hit only that).
+    """
+    context: dict = {}
+    macro_score = args.macro_score
+    if args.macro_score == "auto":
+        context["macro"] = _compute_macro(client, as_of_session, args, provider)
+        macro_score = context["macro"]["score"]
+
+    results: list[dict] = []
+    errors: list[dict] = []
+    saved: list[tuple[str, dict]] = []
+    unpublished = False
+    for sym in symbols:
+        try:
+            got = fetch_closes(client, sym, as_of_session=as_of_session,
+                               adjustment=args.adjustment, min_sessions=args.min_sessions,
+                               provider=provider)
+            try:
+                holding = holdings.holds(sym) if holdings is not None else args.holding
+            except Exception as exc:  # e.g. a short position: blocks this symbol only
+                raise ScoreError(_position_error_message(exc)) from None
+            card = score_symbol(got["closes"], macro_score=macro_score, symbol=sym, holding=holding)
+            card["data"] = {
+                "provider": got["provider"], "feed": feed, "adjustment": args.adjustment,
+                # Alpaca bars carry an `adjusted` flag that is checked; Robinhood's response has none,
+                # so the adjustment is requested and trusted, not verified.
+                "adjustment_verified": adjustment_verified,
+                "first_session": got["first_session"], "last_session": got["last_session"],
+                "bars": got["bars"], "fetched_at": now.isoformat(),
+            }
+            if holdings is not None:  # counts only: no account number or quantity is ever recorded
+                card["data"]["holding_source"] = "robinhood-mcp"
+                card["data"]["holding"] = holding
+                card["data"]["accounts_checked"] = holdings.accounts_checked
+            if "macro" in context:
+                card["data"]["macro_source"] = "macro_pillar.py (auto)"
+            saved.append((sym, {"symbol": sym, "close": got["closes"], "macro_score": macro_score,
+                                "holding": holding, "data": card["data"]}))
+            results.append(card)
+        except SessionNotPublished as exc:
+            unpublished = True
+            errors.append({"symbol": sym, "error": str(exc)})
+        except ScoreError as exc:
+            errors.append({"symbol": sym, "error": str(exc)})
+    return results, errors, context, unpublished, saved
+
+
+def _score_remote(args, symbols: list[str], source: str) -> tuple[date, list[dict], list[dict], dict]:
+    now = _utc_now()
+    as_of_session = _last_completed_session(now)
+    if args.as_of:
+        requested = date.fromisoformat(args.as_of)
+        _check_as_of_session(requested, as_of_session)
+        as_of_session = requested
+    if source == "robinhood":
+        client, provider, feed, adjustment_verified = _robinhood_client(), "robinhood-mcp", None, False
+    else:
+        client, provider, feed, adjustment_verified = _alpaca_client(args.feed), None, args.feed, True
+
+    # Resolved once, before any price is fetched: a failure stops the run rather than scoring with a
+    # position that was asked for but not obtained. (It does not depend on the session.)
+    holdings = _robinhood_holdings() if args.check_holding else None
+
+    fallback: Optional[dict] = None
+    try:
+        results, errors, context, unpublished, saved = _attempt(
+            client, provider, feed, adjustment_verified, args, symbols, as_of_session, now, holdings)
+    except SessionNotPublishedError:
+        if not args.fallback_previous_session:
+            raise
+        results, errors, context, unpublished, saved = [], [], {}, True, []
+    if unpublished and args.fallback_previous_session:
+        # One explicit step back, for everything at once so macro and every symbol share a session.
+        prior = _previous_session(as_of_session)
+        fallback = {"requested_session": as_of_session.isoformat(), "used_session": prior.isoformat(),
+                    "reason": "the requested session's final daily bar is not published yet"}
+        as_of_session = prior
+        results, errors, context, _, saved = _attempt(
+            client, provider, feed, adjustment_verified, args, symbols, as_of_session, now, holdings)
+        context["fallback"] = fallback
+
+    if args.save_input:  # only the pass that is actually used is written
+        save_dir = Path(args.save_input)
+        save_dir.mkdir(parents=True, exist_ok=True)
+        for sym, payload in saved:
+            (save_dir / f"{sym}.json").write_text(json.dumps(payload, indent=2) + "\n")
+    return as_of_session, results, errors, context
+
+
+def _macro_arg(text: str):
+    if text == "auto":
+        return "auto"
+    try:
+        value = int(text)
+    except ValueError:
+        value = None
+    if value is None or not -2 <= value <= 2:
+        raise argparse.ArgumentTypeError(f"{text!r}: must be an integer from -2 to +2, or 'auto'")
+    return value
+
+
+def _build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(description="Three pillars scoring + exit/re-entry decision.")
     ap.add_argument("input", nargs="?", help="JSON: {symbol, close:[...], macro_score?, holding?}. Without file: self-test.")
     ap.add_argument("--json", action="store_true")
-    args = ap.parse_args()
+    src = ap.add_mutually_exclusive_group()
+    src.add_argument("--alpaca", nargs="+", metavar="SYMBOL",
+                     help="fetch daily closes from Alpaca for these symbols, then score (needs the project .venv)")
+    src.add_argument("--robinhood", nargs="+", metavar="SYMBOL",
+                     help="fetch daily closes from the Robinhood MCP (read-only, split-adjusted; needs the "
+                          "project .venv and a prior `python3 scripts/mcp_login.py login robinhood`)")
+    ap.add_argument("--adjustment", choices=("split", "all"), default=None, help="default split; raw is not accepted")
+    ap.add_argument("--feed", choices=("iex", "sip"), default=None, help="default iex")
+    ap.add_argument("--macro-score", type=_macro_arg, metavar="N|auto", default=None,
+                    help="macro pillar: an integer -2..+2, or 'auto' to fetch SPY/RSP/IWM/HYG/LQD/TLT/XLY/XLP "
+                         "from the same source and run macro_pillar.py (empty if not given)")
+    ap.add_argument("--yield-spread", type=float, metavar="PCT", default=None,
+                    help="latest 10Y-2Y spread in percentage points, used only with --macro-score auto "
+                         "(it cannot be fetched; without it that component's weight is redistributed)")
+    hold = ap.add_mutually_exclusive_group()
+    hold.add_argument("--holding", dest="holding", action="store_const", const=True, default=None)
+    hold.add_argument("--not-holding", dest="holding", action="store_const", const=False)
+    hold.add_argument("--check-holding", dest="check_holding", action="store_const", const=True, default=None,
+                      help="read your long positions across all active Robinhood accounts (read-only, needs the "
+                           "Robinhood login) and set holding from them; works with --alpaca or --robinhood")
+    ap.add_argument("--as-of", metavar="YYYY-MM-DD", default=None, help="default: last completed session")
+    ap.add_argument("--fallback-previous-session", dest="fallback_previous_session", action="store_const",
+                    const=True, default=None,
+                    help="if the latest session's final daily bar is not published yet (Robinhood publishes it "
+                         "late), score the previous session instead, for every symbol at once, and say so; "
+                         "one step back only, and not with --as-of")
+    ap.add_argument("--min-sessions", type=int, default=None, help=f"default {DEFAULT_MIN_SESSIONS}")
+    ap.add_argument("--save-input", metavar="DIR", default=None,
+                    help="write each symbol's fetched JSON (replayable as file input)")
+    return ap
+
+
+_ALPACA_ONLY = ("adjustment", "feed", "macro_score", "yield_spread", "holding", "check_holding", "as_of",
+                "fallback_previous_session", "min_sessions", "save_input")
+
+
+def _render_fallback(fallback: dict) -> str:
+    return (f"NOTE: scored the previous session {fallback['used_session']}, not {fallback['requested_session']}: "
+            f"{fallback['reason']}.")
+
+
+def _render_macro(macro: dict) -> str:
+    lines = [f"MACRO (auto, macro_pillar.py): {macro['score']:+d} {macro['label']} — regime {macro['regime']}, "
+             f"composite {macro['composite']:+.3f}",
+             f"  yield curve 10Y-2Y: {macro['yield_spread']}"]
+    lines += [f"  note: {n}" for n in macro["notes"]]
+    return "\n".join(lines)
+
+
+def main(argv: Optional[list[str]] = None) -> int:
+    ap = _build_parser()
+    args = ap.parse_args(argv)
+
+    if args.alpaca or args.robinhood:
+        source = "robinhood" if args.robinhood else "alpaca"
+        if args.input:
+            ap.error(f"--{source} cannot be combined with an input file")
+        if source == "robinhood":
+            if args.feed is not None:
+                ap.error("--feed does not apply to --robinhood")
+            if args.adjustment not in (None, "split"):
+                ap.error("--robinhood supports only --adjustment split for daily bars")
+        try:
+            symbols = _normalize_symbols(args.alpaca or args.robinhood)
+            if args.as_of:
+                date.fromisoformat(args.as_of)
+        except ValueError as exc:
+            ap.error(str(exc))
+        args.adjustment = args.adjustment or "split"
+        args.feed = None if source == "robinhood" else (args.feed or "iex")
+        if args.min_sessions is None:
+            args.min_sessions = DEFAULT_MIN_SESSIONS
+        if args.min_sessions < 1:
+            ap.error("--min-sessions must be at least 1")
+        if args.yield_spread is not None and args.macro_score != "auto":
+            ap.error("--yield-spread only applies with --macro-score auto")
+        if args.fallback_previous_session and args.as_of:
+            ap.error("--fallback-previous-session cannot be combined with --as-of")
+        try:
+            as_of_session, results, errors, context = _score_remote(args, symbols, source)
+        except ScoreConfigError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
+        if args.json:
+            print(json.dumps({"as_of": as_of_session.isoformat(), **context, "results": results,
+                              "errors": errors}, indent=2, ensure_ascii=False))
+        else:
+            blocks = [render(card) for card in results]
+            if "macro" in context:
+                blocks.insert(0, _render_macro(context["macro"]))
+            if "fallback" in context:
+                blocks.insert(0, _render_fallback(context["fallback"]))
+            if errors:
+                blocks.append("FAILED:\n" + "\n".join(f"  {e['symbol']}: {e['error']}" for e in errors))
+            print("\n\n".join(blocks))
+        if not errors:
+            return 0
+        return 2 if results else 1
+
+    given = [f"--{n.replace('_', '-')}" for n in _ALPACA_ONLY if getattr(args, n) is not None]
+    if given:
+        ap.error(f"{', '.join(given)} only apply with --alpaca or --robinhood")
 
     if args.input:
         with open(args.input) as f:
