@@ -288,13 +288,81 @@ def test_save_input_replays_to_the_same_card(score, patch_env, capsys, tmp_path)
 # -- configuration and argument errors ----------------------------------------------
 
 
-def test_missing_credentials_give_a_clear_error(score, monkeypatch, capsys):
+@pytest.fixture
+def no_alpaca_keys(score, monkeypatch, tmp_path):
+    """No keys in the environment and no usable .env: tests must never pick up this machine's real keys."""
     monkeypatch.delenv("ALPACA_MARKET_DATA_API_KEY", raising=False)
     monkeypatch.delenv("ALPACA_MARKET_DATA_API_SECRET", raising=False)
+    monkeypatch.setattr(score, "_ENV_FILE", tmp_path / "absent.env")
+
+
+@pytest.mark.usefixtures("no_alpaca_keys")
+def test_missing_credentials_give_a_clear_error(score, monkeypatch, capsys):
     monkeypatch.setattr(score, "_utc_now", lambda: AFTER_CLOSE)
     assert score.main(["--alpaca", "AAPL"]) == 1
     err = capsys.readouterr().err
     assert "ALPACA_MARKET_DATA_API_KEY" in err and "ALPACA_MARKET_DATA_API_SECRET" in err
+    assert ".env" in err  # tells you where the keys can live
+
+
+@pytest.fixture
+def captured_alpaca_env(monkeypatch):
+    """Replace the repo's client factory: records the env it is given instead of building a real client."""
+    from trading_research.backtesting import alpaca_history
+    seen: dict = {}
+
+    def fake_factory(env=None, *, feed="iex"):
+        seen["env"] = dict(env) if env is not None else None
+        seen["feed"] = feed
+        return object()
+    monkeypatch.setattr(alpaca_history, "alpaca_client_from_environment", fake_factory)
+    return seen
+
+
+@pytest.mark.usefixtures("no_alpaca_keys")
+def test_alpaca_keys_come_from_the_env_file(score, monkeypatch, tmp_path, captured_alpaca_env):
+    env_file = tmp_path / ".env"
+    env_file.write_text('ALPACA_MARKET_DATA_API_KEY=file-key\nALPACA_MARKET_DATA_API_SECRET="file-secret"\n')
+    monkeypatch.setattr(score, "_ENV_FILE", env_file)
+    score._alpaca_client("sip")
+    assert captured_alpaca_env["env"]["ALPACA_MARKET_DATA_API_KEY"] == "file-key"
+    assert captured_alpaca_env["env"]["ALPACA_MARKET_DATA_API_SECRET"] == "file-secret"
+    assert captured_alpaca_env["feed"] == "sip"
+    assert "ALPACA_MARKET_DATA_API_KEY" not in os.environ  # nothing is exported into the process
+
+
+def test_the_env_file_wins_over_the_process_environment(score, monkeypatch, tmp_path, captured_alpaca_env):
+    env_file = tmp_path / ".env"
+    env_file.write_text("ALPACA_MARKET_DATA_API_KEY=file-key\nALPACA_MARKET_DATA_API_SECRET=file-secret\n")
+    monkeypatch.setattr(score, "_ENV_FILE", env_file)
+    monkeypatch.setenv("ALPACA_MARKET_DATA_API_KEY", "shell-key")
+    monkeypatch.setenv("ALPACA_MARKET_DATA_API_SECRET", "shell-secret")
+    score._alpaca_client("iex")
+    assert captured_alpaca_env["env"]["ALPACA_MARKET_DATA_API_KEY"] == "file-key"
+
+
+@pytest.mark.parametrize("content", [None, "SOMETHING_ELSE=1\n", "ALPACA_MARKET_DATA_API_KEY=\n"])
+def test_the_process_environment_is_the_fallback(score, monkeypatch, tmp_path, captured_alpaca_env, content):
+    env_file = tmp_path / ".env"
+    if content is not None:
+        env_file.write_text(content)
+    monkeypatch.setattr(score, "_ENV_FILE", env_file)
+    monkeypatch.setenv("ALPACA_MARKET_DATA_API_KEY", "shell-key")
+    monkeypatch.setenv("ALPACA_MARKET_DATA_API_SECRET", "shell-secret")
+    score._alpaca_client("iex")
+    assert captured_alpaca_env["env"]["ALPACA_MARKET_DATA_API_KEY"] == "shell-key"
+    assert captured_alpaca_env["env"]["ALPACA_MARKET_DATA_API_SECRET"] == "shell-secret"
+
+
+@pytest.mark.usefixtures("no_alpaca_keys")
+def test_other_env_file_entries_are_not_forwarded(score, monkeypatch, tmp_path, captured_alpaca_env):
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    env_file = tmp_path / ".env"
+    env_file.write_text("ANTHROPIC_API_KEY=should-not-leak\nALPACA_MARKET_DATA_API_KEY=k\n"
+                        "ALPACA_MARKET_DATA_API_SECRET=s\n")
+    monkeypatch.setattr(score, "_ENV_FILE", env_file)
+    score._alpaca_client("iex")
+    assert "ANTHROPIC_API_KEY" not in captured_alpaca_env["env"]  # only the two Alpaca keys are taken
 
 
 def test_unimportable_repo_package_gives_venv_hint(score, monkeypatch):
@@ -318,6 +386,10 @@ def test_alpaca_with_input_file_rejected(score, capsys, argv):
     (["--alpaca", "AAPL", "--macro-score", "3"], "integer from -2 to +2"),
     (["--alpaca", "AAPL", "--macro-score", "high"], "integer from -2 to +2"),
     (["--alpaca", "AAPL", "--yield-spread", "0.3"], "only applies with --macro-score auto"),
+    (["--alpaca", "AAPL", "--yield-spread", "fred"], "only applies with --macro-score auto"),
+    (["--alpaca", "AAPL", "--macro-score", "auto", "--yield-spread", "abc"], "must be 'fred' or a number"),
+    (["--alpaca", "AAPL", "--macro-score", "auto", "--yield-spread", "99"], "must be 'fred' or a number"),
+    (["--alpaca", "AAPL", "--macro-score", "auto", "--yield-spread", "nan"], "must be 'fred' or a number"),
     (["--alpaca", "AAPL", "--check-holding", "--holding"], "not allowed with"),
     (["--check-holding"], "only apply with --alpaca"),
     (["--macro-score", "auto"], "only apply with --alpaca"),
@@ -662,6 +734,63 @@ def test_macro_auto_passes_the_yield_spread_through(score, patch_env, capsys):
                                           "--yield-spread", "0.45", "--json"])
     assert code == 0 and out["macro"]["yield_spread"] == "included (level only)"
     assert out["macro"]["composite"] == _expected_macro(score, bars, yield_spread=0.45).composite
+
+
+def _fake_fred(score, calls, n=30):
+    def fake(last_session, **_kw):
+        calls.append(last_session)
+        values = [round(0.10 + 0.01 * i, 2) for i in range(n)]
+        return score.yield_spread.YieldSpread(values=values, first_date=last_session - timedelta(days=n),
+                                              last_date=last_session)
+    return fake
+
+
+def test_yield_spread_fred_feeds_the_series_into_macro_pillar(score, patch_env, monkeypatch, capsys):
+    bars = _with_etfs()
+    patch_env(FakeClient(bars))
+    calls: list = []
+    monkeypatch.setattr(score.yield_spread, "fetch_fred_yield_spread", _fake_fred(score, calls))
+    values = [round(0.10 + 0.01 * i, 2) for i in range(30)]
+    code, out = _run_json(score, capsys, ["--alpaca", "AAPL", "--macro-score", "auto",
+                                          "--yield-spread", "fred", "--json"])
+    assert code == 0 and calls == [AS_OF_SESSION]  # one download, for the session being scored
+    macro = out["macro"]
+    assert macro["composite"] == _expected_macro(score, bars, yield_spread=values).composite
+    assert macro["yield_spread"].startswith("FRED T10Y2Y, 30 observations through 2025-11-26") \
+        and macro["yield_spread"].endswith("(level and slope)")
+    assert macro["yield_spread_source"] == {
+        "series": "T10Y2Y", "observations": 30, "first_observation": "2025-10-27",
+        "last_observation": "2025-11-26", "latest": 0.39}
+
+
+def test_a_fred_series_changes_the_macro_result_versus_none(score, patch_env, monkeypatch, capsys):
+    patch_env(FakeClient(_with_etfs()))
+    monkeypatch.setattr(score.yield_spread, "fetch_fred_yield_spread", _fake_fred(score, []))
+    _, with_fred = _run_json(score, capsys, ["--alpaca", "AAPL", "--macro-score", "auto",
+                                             "--yield-spread", "fred", "--json"])
+    _, without = _run_json(score, capsys, ["--alpaca", "AAPL", "--macro-score", "auto", "--json"])
+    assert with_fred["macro"]["composite"] != without["macro"]["composite"]
+    assert "yield_spread_source" not in without["macro"]
+
+
+def test_a_fred_failure_stops_the_run_instead_of_degrading_the_macro_score(score, patch_env, monkeypatch, capsys):
+    patch_env(FakeClient(_with_etfs()))
+
+    def boom(last_session, **_kw):
+        raise score.yield_spread.YieldSpreadError("FRED request failed (HTTP 503)")
+    monkeypatch.setattr(score.yield_spread, "fetch_fred_yield_spread", boom)
+    assert score.main(["--alpaca", "AAPL", "--macro-score", "auto", "--yield-spread", "fred"]) == 1
+    assert "--yield-spread fred failed: FRED request failed (HTTP 503)" in capsys.readouterr().err
+
+
+def test_fred_is_queried_for_the_fallback_session(score, patch_env, monkeypatch, capsys):
+    patch_env(LaggingClient({s: _bars(s, last=PREV_SESSION) for s in (*score.MACRO_SYMBOLS, "AAPL")}))
+    calls: list = []
+    monkeypatch.setattr(score.yield_spread, "fetch_fred_yield_spread", _fake_fred(score, calls))
+    code, out = _run_json(score, capsys, ["--alpaca", "AAPL", "--macro-score", "auto", "--yield-spread", "FRED",
+                                          "--fallback-previous-session", "--json"])
+    assert code == 0 and out["fallback"]["used_session"] == "2025-11-25"
+    assert calls == [PREV_SESSION]  # never the unpublished session; also accepts "FRED" in any case
 
 
 def test_macro_auto_needs_every_etf(score, patch_env, capsys):

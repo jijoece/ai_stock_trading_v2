@@ -26,8 +26,9 @@ Two input modes:
                               Never imports the repo's trading_research package.
   score.py --alpaca SYM ...   fetch split-adjusted daily closes from Alpaca
                               (completed sessions only), then score. Needs the
-                              project .venv and ALPACA_MARKET_DATA_API_KEY /
-                              _SECRET in the environment. The repo's Alpaca
+                              project .venv. ALPACA_MARKET_DATA_API_KEY / _SECRET
+                              are read from the repo's .env file (which wins),
+                              else from the environment. The repo's Alpaca
                               client is imported only in this mode.
   score.py --robinhood SYM... same, through the hosted Robinhood MCP (read-only
                               get_equity_historicals only, split-adjusted day
@@ -38,12 +39,15 @@ Two input modes:
 
 Both fetch modes also accept:
   --macro-score auto          fetch the eight cross-asset ETFs and run macro_pillar.py
+  --yield-spread fred         with auto: add the 10Y-2Y spread from FRED (T10Y2Y, public CSV,
+                              no key); or --yield-spread 0.45 for a level-only number
   --check-holding             set holding from your Robinhood positions (read-only,
                               every active account; needs the Robinhood login)
 """
 from __future__ import annotations
 import argparse
 import json
+import os
 import re
 import sys
 from datetime import date, datetime, timezone
@@ -62,6 +66,7 @@ except ImportError as _exc:
     raise
 
 import macro_pillar  # stdlib only; used by --macro-score auto
+import yield_spread  # stdlib only; used by --yield-spread fred
 
 DEFAULT_MIN_SESSIONS = 220
 # Extra sessions fetched beyond --min-sessions so the EMA200 slope has room.
@@ -366,6 +371,29 @@ def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
 
+_ENV_FILE = Path(__file__).resolve().parent.parent / ".env"  # the repo's git-ignored env file
+
+
+def _alpaca_env(key_names: tuple[str, ...]) -> dict[str, str]:
+    """The process environment, with `key_names` taken from the repo's `.env` file when it defines them.
+
+    The file wins for these keys (you asked for the keys to always come from it); the process environment is
+    the fallback. The file is parsed in place and nothing is exported into this process or printed.
+    """
+    env = dict(os.environ)
+    try:
+        from dotenv import dotenv_values
+        if _ENV_FILE.is_file():
+            values = dotenv_values(_ENV_FILE)
+            for name in key_names:
+                value = values.get(name)
+                if value:
+                    env[name] = value
+    except (ImportError, OSError):
+        pass  # no python-dotenv or an unreadable file: fall back to the process environment
+    return env
+
+
 def _alpaca_client(feed: str):
     """Build the repo's rate-limited Alpaca market-data client (credentials read there only)."""
     try:
@@ -380,10 +408,11 @@ def _alpaca_client(feed: str):
             "run with .venv/bin/python scripts/score.py --alpaca ..."
         ) from None
     try:
-        return alpaca_client_from_environment(feed=feed)
+        return alpaca_client_from_environment(_alpaca_env((API_KEY_ENV, API_SECRET_ENV)), feed=feed)
     except BacktestError:
         raise ScoreConfigError(
-            f"--alpaca requires {API_KEY_ENV} and {API_SECRET_ENV} to be set in the environment"
+            f"--alpaca requires {API_KEY_ENV} and {API_SECRET_ENV}: set them in {_ENV_FILE} "
+            "or in the environment"
         ) from None
 
 
@@ -564,18 +593,33 @@ def _compute_macro(client, as_of_session: date, args, provider: Optional[str]) -
         raise error_type("--macro-score auto needs all of " + ", ".join(MACRO_SYMBOLS)
                          + "; failed: " + causes)
     data: dict = {"series": series, "as_of": as_of_session.isoformat()}
-    if args.yield_spread is not None:
+    yield_note = "not provided; its 20% weight is redistributed"
+    yield_info: Optional[dict] = None
+    if args.yield_spread == "fred":
+        try:  # the session actually being scored, so a fallback session gets its own data
+            fred = yield_spread.fetch_fred_yield_spread(as_of_session)
+        except yield_spread.YieldSpreadError as exc:
+            raise ScoreConfigError(f"--yield-spread fred failed: {exc}") from None
+        data["yield_spread"] = fred.values
+        yield_note = f"{fred.summary()} (level and slope)"
+        yield_info = {"series": fred.series_id, "observations": len(fred.values),
+                      "first_observation": fred.first_date.isoformat(),
+                      "last_observation": fred.last_date.isoformat(), "latest": fred.values[-1]}
+    elif args.yield_spread is not None:
         data["yield_spread"] = args.yield_spread
+        yield_note = "included (level only)"
     try:
         res = macro_pillar.score_macro(data)
     except (macro_pillar.MarketDataShapeError, ValueError) as exc:
         raise ScoreConfigError(f"--macro-score auto failed in macro_pillar.py: {exc}") from None
-    return {
+    macro = {
         "score": res.pillar_score, "label": res.pillar_label, "regime": res.regime,
         "composite": res.composite, "notes": list(res.notes), "symbols": list(MACRO_SYMBOLS),
-        "yield_spread": ("included (level only)" if args.yield_spread is not None
-                         else "not provided; its 20% weight is redistributed"),
+        "yield_spread": yield_note,
     }
+    if yield_info is not None:
+        macro["yield_spread_source"] = yield_info
+    return macro
 
 
 def _position_error_message(exc: Exception) -> str:
@@ -690,6 +734,18 @@ def _macro_arg(text: str):
     return value
 
 
+def _yield_arg(text: str):
+    if text.lower() == "fred":
+        return "fred"
+    try:
+        value = float(text)
+    except ValueError:
+        value = None
+    if value is None or value != value or abs(value) > 10:  # NaN or implausible (percentage points)
+        raise argparse.ArgumentTypeError(f"{text!r}: must be 'fred' or a number of percentage points (|x| <= 10)")
+    return value
+
+
 def _build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(description="Three pillars scoring + exit/re-entry decision.")
     ap.add_argument("input", nargs="?", help="JSON: {symbol, close:[...], macro_score?, holding?}. Without file: self-test.")
@@ -705,9 +761,11 @@ def _build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--macro-score", type=_macro_arg, metavar="N|auto", default=None,
                     help="macro pillar: an integer -2..+2, or 'auto' to fetch SPY/RSP/IWM/HYG/LQD/TLT/XLY/XLP "
                          "from the same source and run macro_pillar.py (empty if not given)")
-    ap.add_argument("--yield-spread", type=float, metavar="PCT", default=None,
-                    help="latest 10Y-2Y spread in percentage points, used only with --macro-score auto "
-                         "(it cannot be fetched; without it that component's weight is redistributed)")
+    ap.add_argument("--yield-spread", type=_yield_arg, metavar="PCT|fred", default=None,
+                    help="10Y-2Y spread for --macro-score auto: 'fred' downloads the last 60 observations of "
+                         "FRED series T10Y2Y (public, no key; level and slope), or a number gives the latest "
+                         "level in percentage points (level only). Without it that component's 20%% weight "
+                         "is redistributed")
     hold = ap.add_mutually_exclusive_group()
     hold.add_argument("--holding", dest="holding", action="store_const", const=True, default=None)
     hold.add_argument("--not-holding", dest="holding", action="store_const", const=False)

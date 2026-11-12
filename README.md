@@ -503,9 +503,12 @@ python3 scripts/score.py score-input.json --json
 ```
 
 - Needs the project environment (`.venv/bin/python`, with the `indicators`
-  extra) and `ALPACA_MARKET_DATA_API_KEY` / `ALPACA_MARKET_DATA_API_SECRET` in
-  the environment. It reuses the repo's rate-limited Alpaca client. The offline
-  modes above still import neither the repo package nor Alpaca code.
+  extra) and `ALPACA_MARKET_DATA_API_KEY` / `ALPACA_MARKET_DATA_API_SECRET`.
+  These are read from the repo's git-ignored `.env` file, which **wins**; only
+  if it does not define them does the process environment get used. Just those
+  two keys are taken from the file, it is parsed in place, and nothing is
+  exported or printed. It reuses the repo's rate-limited Alpaca client. The
+  offline modes above still import neither the repo package nor Alpaca code.
 - Data is split-adjusted (`--adjustment split`, or `all`; raw is not accepted),
   IEX feed by default (`--feed sip`), completed sessions only, and at least 220
   sessions (`--min-sessions`). `--as-of YYYY-MM-DD` scores an earlier completed
@@ -578,10 +581,23 @@ python3 scripts/score.py --robinhood NVDA --check-holding --macro-score auto
   same source and session, runs `macro_pillar.py`, and injects its
   `pillar_score`; the text output starts with a `MACRO` header and `--json`
   gains a `macro` block. All eight ETFs are required, otherwise the run stops
-  rather than scoring with a degraded macro value. The 10Y-2Y spread cannot be
-  fetched: pass `--yield-spread PCT` (latest level) or that component's 20%
-  weight is redistributed, which the header says. A fixed integer
+  rather than scoring with a degraded macro value. A fixed integer
   (`--macro-score 1`) still works.
+- **10Y-2Y spread.** Alpaca and Robinhood carry no Treasury yields, so it comes
+  from elsewhere, and the header always says which:
+  - `--yield-spread fred` downloads the last 60 observations of FRED series
+    `T10Y2Y` (a single public HTTPS GET of the CSV; no key, no account, generic
+    User-Agent). That gives `macro_pillar.py` both the level and the slope
+    (steepening or flattening). Only observations dated on or before the scored
+    session are used, so a `--as-of` or fallback session gets its own data.
+    It fails closed: a response that isn't the `T10Y2Y` CSV, a non-numeric or
+    implausible value, fewer than 21 observations, or a latest observation more
+    than 7 days old stops the run with a clear message rather than quietly
+    dropping the component. `--json` adds `macro.yield_spread_source` (series,
+    observation count, first/last date, latest value) for the audit trail.
+  - `--yield-spread 0.45` gives a latest level in percentage points, **level
+    only** (no slope).
+  - Omitted: that component's 20% weight is redistributed, which the header says.
 - Both are resolved once, before any symbol is scored, and `--save-input`
   stores the resolved values so a saved file replays to the same card offline.
 
@@ -595,7 +611,7 @@ Retry later, score an earlier session with `--as-of YYYY-MM-DD`, or opt in to
 `--fallback-previous-session`:
 
 ```bash
-python3 scripts/score.py --robinhood NVDA --check-holding --macro-score auto --fallback-previous-session
+python3 scripts/score.py --robinhood NVDA --check-holding --macro-score auto --yield-spread fred --fallback-previous-session
 ```
 
 - It steps back **one** session, for the macro inputs and every symbol at once

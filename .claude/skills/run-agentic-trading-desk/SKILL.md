@@ -81,7 +81,8 @@ python3 scripts/score.py ticker_input.json --json
 ```
 
 - Needs the project `.venv` and `ALPACA_MARKET_DATA_API_KEY` /
-  `ALPACA_MARKET_DATA_API_SECRET`. This is a credentialed network call: do not
+  `ALPACA_MARKET_DATA_API_SECRET`, read from the repo's `.env` (which wins) or
+  else the environment; never read or print the file. This is a credentialed network call: do not
   run it unless the operator asks. The driver and the unit tests
   (`tests/unit/test_score_alpaca.py`) never touch the network.
 - Flags: `--adjustment {split,all}` (default `split`), `--feed {iex,sip}`
@@ -91,8 +92,11 @@ python3 scripts/score.py ticker_input.json --json
   or configuration error.
 - Pass the real `macro_pillar.py` `pillar_score` as `--macro-score`; never
   estimate it. `--macro-score auto` computes it for you from the same data
-  source (all eight cross-asset ETFs are fetched; `--yield-spread PCT` is the
-  only input you must supply, otherwise the header says it was redistributed).
+  source (all eight cross-asset ETFs are fetched). Add `--yield-spread fred`
+  for the 10Y-2Y spread (public FRED `T10Y2Y` CSV: level and slope; it is a
+  network call, so only when the operator asks) or `--yield-spread 0.45` for a
+  level-only number; with neither, the header says that component's weight was
+  redistributed.
 - `--fallback-previous-session` is opt-in: if the latest session's daily bar is
   not published yet (Robinhood publishes it late), it scores the previous
   session for everything at once and prints a `NOTE:` line. When you report
