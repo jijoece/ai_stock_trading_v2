@@ -21,6 +21,23 @@ else
   PYTHON="$(command -v python3)"
 fi
 
+# Load only the variables the dashboard needs from .env (never `source` it, and
+# never export unrelated secrets such as ANTHROPIC_API_KEY). Real environment
+# variables take precedence over .env.
+ENV_FILE="$REPO_ROOT/.env"
+if [ -f "$ENV_FILE" ]; then
+  for name in AI_STOCK_TRADING_DB_PATH AI_STOCK_TRADING_ENABLE_SCORING \
+              AI_STOCK_TRADING_ENABLE_ROBINHOOD_PORTFOLIO ROBINHOOD_MCP_TOKEN_PATH \
+              ALPACA_MARKET_DATA_API_KEY ALPACA_MARKET_DATA_API_SECRET \
+              ALPACA_MARKET_DATA_BASE_URL ROBINHOOD_MCP_URL; do
+    if [ -z "${!name:-}" ]; then
+      value="$(grep -E "^${name}=" "$ENV_FILE" | tail -n 1 | cut -d= -f2-)"
+      value="${value%\"}"; value="${value#\"}"; value="${value%\'}"; value="${value#\'}"
+      if [ -n "$value" ]; then export "$name=$value"; fi
+    fi
+  done
+fi
+
 if [ -z "${AI_STOCK_TRADING_DB_PATH:-}" ]; then
   echo "AI_STOCK_TRADING_DB_PATH is not set. Set it to the research database path." >&2
   exit 1

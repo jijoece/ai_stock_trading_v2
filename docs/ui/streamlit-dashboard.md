@@ -28,7 +28,7 @@ Existing SQLite research database (read-only, mode=ro, query_only)
 ```
 
 Pages: Overview, Decisions, Research Cycles, Portfolio, System Health, and the
-opt-in Score a Ticker page (see "On-demand ticker scoring" below).
+opt-in Score a Ticker and Robinhood Portfolio pages (see below).
 Services use short-lived, read-only SQLite connections with parameterized,
 bounded queries; no query ever commits, migrates, or creates tables.
 
@@ -102,12 +102,19 @@ The Score a Ticker page lets you score up to five symbols from your phone. It
 is **off by default**: without `AI_STOCK_TRADING_ENABLE_SCORING=1` the page only
 shows a notice.
 
+Put these in the git-ignored `.env` (or export them in the shell):
+
 ```bash
-export AI_STOCK_TRADING_ENABLE_SCORING=1
-export ALPACA_MARKET_DATA_API_KEY=...      # Alpaca source
-export ALPACA_MARKET_DATA_API_SECRET=...
-scripts/run_dashboard.sh                   # restart to pick up the variables
+AI_STOCK_TRADING_DB_PATH=/path/to/research.sqlite3
+AI_STOCK_TRADING_ENABLE_SCORING=1
+ALPACA_MARKET_DATA_API_KEY=...             # Alpaca source
+ALPACA_MARKET_DATA_API_SECRET=...
 ```
+
+`scripts/run_dashboard.sh` reads only these variables (plus
+`ALPACA_MARKET_DATA_BASE_URL` and `ROBINHOOD_MCP_URL`) from `.env`; it does not
+`source` the file and never exports other secrets. Exported shell variables
+take precedence. Restart the dashboard to pick up changes.
 
 * It runs `scripts/score.py --alpaca|--robinhood SYMBOLS --json` as a child
   process with a fixed argument list (no shell, 180 s timeout) and displays the
@@ -121,6 +128,27 @@ scripts/run_dashboard.sh                   # restart to pick up the variables
 * No order, approval, or broker-write path exists on this page.
 * Credentials come from the environment of the dashboard process and are never
   displayed.
+
+## Robinhood portfolio (opt-in)
+
+The Robinhood Portfolio page shows your current long equity positions: quantity,
+average cost, last close, value, unrealized P/L, and portfolio weight, plus
+totals. It is **off by default**; set `AI_STOCK_TRADING_ENABLE_ROBINHOOD_PORTFOLIO=1`
+in `.env` and restart the dashboard.
+
+* Needs the one-time `python3 scripts/mcp_login.py login robinhood` on this Mac.
+* Read-only: it enables only `get_accounts`, `get_equity_positions`, and
+  `get_equity_historicals` on the Robinhood MCP. No order or account-write tool
+  is reachable.
+* Positions are summed across every active account. Account numbers are never
+  displayed. Average cost is quantity-weighted across accounts.
+* Values use the **last completed close**, not live quotes, so they lag the market
+  intraday. Cash, buying power, options, and crypto are not included.
+* It fails closed: a short or unknown position type, an unreadable account, or a
+  missing price shows an error instead of a partial total.
+* Results are cached for five minutes; use Refresh to reload.
+* This page shows real account data to any device on your tailnet; the dashboard
+  has no password of its own.
 
 ## Status checks
 
@@ -164,11 +192,12 @@ intend to remove every Serve route on this device.
   sanitized.
 * No trading, order-placement, approval, pause/resume, or scheduler control
   exists anywhere in the dashboard.
-* The only exception is the opt-in Score a Ticker page (disabled unless
-  `AI_STOCK_TRADING_ENABLE_SCORING=1`), which makes read-only market-data
-  calls; see below. Apart from it, no real provider, broker, or external
-  network call is made by the
-  dashboard or its tests.
+* The only exceptions are the opt-in Score a Ticker page (disabled unless
+  `AI_STOCK_TRADING_ENABLE_SCORING=1`) and Robinhood Portfolio page (disabled
+  unless `AI_STOCK_TRADING_ENABLE_ROBINHOOD_PORTFOLIO=1`), which make read-only
+  market-data and position calls; see below. Apart from them, no real provider,
+  broker, or external network call is made by the dashboard, and none is made by
+  its tests.
 
 ## Known limitations
 
