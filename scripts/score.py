@@ -717,6 +717,14 @@ def _score_remote(args, symbols: list[str], source: str) -> tuple[date, list[dic
     if unpublished and args.fallback_previous_session:
         # One explicit step back, for everything at once so macro and every symbol share a session.
         prior = _previous_session(as_of_session)
+        if args.yield_spread == "fred":
+            # Same point-in-time rule as --as-of: the prior session predates the latest completed one, and
+            # FRED's public CSV is the current vintage, so it may carry revisions published after that close.
+            raise ScoreConfigError(
+                f"--fallback-previous-session would score {prior}, but --yield-spread fred cannot score a "
+                "historical session: FRED's public CSV is the current vintage, not a point-in-time snapshot, "
+                f"so it may include revisions published after that close. Retry once {as_of_session} is "
+                "published, or pass --yield-spread <PCT> from a value you verified was known then, or omit it")
         fallback = {"requested_session": as_of_session.isoformat(), "used_session": prior.isoformat(),
                     "reason": "the requested session's final daily bar is not published yet"}
         as_of_session = prior
@@ -788,7 +796,8 @@ def _build_parser() -> argparse.ArgumentParser:
                     const=True, default=None,
                     help="if the latest session's final daily bar is not published yet (Robinhood publishes it "
                          "late), score the previous session instead, for every symbol at once, and say so; "
-                         "one step back only, and not with --as-of")
+                         "one step back only, and not with --as-of; refused with --yield-spread fred, which is "
+                         "only point-in-time safe for the latest completed session")
     ap.add_argument("--min-sessions", type=int, default=None, help=f"default {DEFAULT_MIN_SESSIONS}")
     ap.add_argument("--save-input", metavar="DIR", default=None,
                     help="write each symbol's fetched JSON (replayable as file input)")

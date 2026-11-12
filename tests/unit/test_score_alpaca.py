@@ -816,14 +816,34 @@ def test_a_fred_failure_stops_the_run_instead_of_degrading_the_macro_score(score
     assert "--yield-spread fred failed: FRED request failed (HTTP 503)" in capsys.readouterr().err
 
 
-def test_fred_is_queried_for_the_fallback_session(score, patch_env, monkeypatch, capsys):
+def test_current_vintage_fred_is_never_applied_to_the_fallback_session(score, patch_env, monkeypatch, capsys):
     patch_env(LaggingClient({s: _bars(s, last=PREV_SESSION) for s in (*score.MACRO_SYMBOLS, "AAPL")}))
     calls: list = []
     monkeypatch.setattr(score.yield_spread, "fetch_fred_yield_spread", _fake_fred(score, calls))
-    code, out = _run_json(score, capsys, ["--alpaca", "AAPL", "--macro-score", "auto", "--yield-spread", "FRED",
+    code = score.main(["--alpaca", "AAPL", "--macro-score", "auto", "--yield-spread", "FRED",
+                       "--fallback-previous-session", "--json"])
+    captured = capsys.readouterr()
+    assert code == 1 and captured.out == ""  # no card is produced for the historical session
+    assert PREV_SESSION not in calls  # the current-vintage CSV is never fetched for the older session
+    assert "would score 2025-11-25" in captured.err and "current vintage" in captured.err
+
+
+def test_the_fallback_session_can_still_use_a_fixed_yield_level(score, patch_env, capsys):
+    patch_env(LaggingClient({s: _bars(s, last=PREV_SESSION) for s in (*score.MACRO_SYMBOLS, "AAPL")}))
+    code, out = _run_json(score, capsys, ["--alpaca", "AAPL", "--macro-score", "auto", "--yield-spread", "0.45",
                                           "--fallback-previous-session", "--json"])
     assert code == 0 and out["fallback"]["used_session"] == "2025-11-25"
-    assert calls == [PREV_SESSION]  # never the unpublished session; also accepts "FRED" in any case
+    assert out["macro"]["yield_spread"] == "included (level only)"
+
+
+def test_fred_with_fallback_is_unaffected_when_the_latest_session_is_published(score, patch_env, monkeypatch,
+                                                                                capsys):
+    patch_env(FakeClient(_with_etfs()))
+    calls: list = []
+    monkeypatch.setattr(score.yield_spread, "fetch_fred_yield_spread", _fake_fred(score, calls))
+    code, out = _run_json(score, capsys, ["--alpaca", "AAPL", "--macro-score", "auto", "--yield-spread", "fred",
+                                          "--fallback-previous-session", "--json"])
+    assert code == 0 and "fallback" not in out and calls == [AS_OF_SESSION]
 
 
 def test_macro_auto_needs_every_etf(score, patch_env, capsys):

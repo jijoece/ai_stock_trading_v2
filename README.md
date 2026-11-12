@@ -615,7 +615,7 @@ Retry later, score an earlier session with `--as-of YYYY-MM-DD`, or opt in to
 `--fallback-previous-session`:
 
 ```bash
-python3 scripts/score.py --robinhood NVDA --check-holding --macro-score auto --yield-spread fred --fallback-previous-session
+python3 scripts/score.py --robinhood NVDA --check-holding --macro-score auto --fallback-previous-session
 ```
 
 - It steps back **one** session, for the macro inputs and every symbol at once
@@ -626,6 +626,11 @@ python3 scripts/score.py --robinhood NVDA --check-holding --macro-score auto --y
   (insufficient history, unadjusted bars, wrong symbol, a gap in the middle of
   the history) is never worked around, and it never walks back more than one
   session. It cannot be combined with `--as-of`.
+- If it would step back while `--yield-spread fred` is set, the run stops
+  instead: FRED's public CSV is the current vintage, which is only treated as
+  point-in-time safe for the latest completed session (the same rule as
+  `--as-of`). Use `--yield-spread <PCT>` from a value you verified was known at
+  that close, or omit it.
 - `--save-input` files are written only for the session actually scored.
 
 These interactive three-pillar scripts are distinct from the production
