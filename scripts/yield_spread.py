@@ -6,7 +6,14 @@ Standard library only. The public CSV download needs no API key and no account:
 
 Rules, because this feeds a score:
 
-* No look-ahead: only observations dated on or before the session being scored are used.
+* No look-ahead: only observations dated strictly before the session being scored are used. A session's
+  own T10Y2Y value is not available at that session's close: Treasury's daily par yield curve is built from
+  ~3:30 PM ET quotes and published after the close, and FRED posts it the next business day. The prior
+  session's value was published the evening before, so it is the latest one known at the scored close.
+* Vintage: the public CSV always returns the *current* vintage, which can include revisions published
+  after a past session's close. It is therefore point-in-time only for the latest completed session;
+  `score.py` refuses `--yield-spread fred` for an older `--as-of` session. Each download records its
+  `retrieved_at` time and `vintage="current"` so the audit trail says which data was used.
 * Fail closed: a response that is not the T10Y2Y CSV, a non-numeric or implausible value, too few
   observations for macro_pillar.py's slope (it needs 21), or a last observation more than a week
   older than the session raises `YieldSpreadError`; nothing is guessed or padded.
@@ -23,8 +30,8 @@ import ssl
 import urllib.error
 import urllib.parse
 import urllib.request
-from dataclasses import dataclass
-from datetime import date, timedelta
+from dataclasses import dataclass, replace
+from datetime import date, datetime, timedelta, timezone
 from typing import Any, Callable, Optional
 
 SERIES_ID = "T10Y2Y"
@@ -47,6 +54,8 @@ class YieldSpread:
     first_date: date
     last_date: date
     series_id: str = SERIES_ID
+    vintage: str = "current"  # the public CSV serves the latest revision, never a past snapshot
+    retrieved_at: Optional[datetime] = None  # UTC; set by fetch_fred_yield_spread
 
     def summary(self) -> str:
         return (f"FRED {self.series_id}, {len(self.values)} observations through {self.last_date}, "
@@ -54,7 +63,10 @@ class YieldSpread:
 
 
 def parse_fred_csv(text: str, *, last_session: date, observations: int = DEFAULT_OBSERVATIONS) -> YieldSpread:
-    """Validate a FRED CSV and return the last `observations` values dated on or before `last_session`."""
+    """Validate a FRED CSV and return the last `observations` values dated strictly before `last_session`.
+
+    `last_session`'s own observation is dropped: it is published only after that session's close.
+    """
     rows = list(csv.reader(text.lstrip("﻿").splitlines()))
     if len(rows) < 2 or len(rows[0]) != 2 or rows[0][1].strip() != SERIES_ID:
         raise YieldSpreadError(f"the response is not the {SERIES_ID} CSV (unexpected header)")
@@ -67,8 +79,8 @@ def parse_fred_csv(text: str, *, last_session: date, observations: int = DEFAULT
             day = date.fromisoformat(raw_day)
         except ValueError:
             raise YieldSpreadError("a row has a date that is not YYYY-MM-DD") from None
-        if day > last_session:
-            continue  # never look ahead of the session being scored
+        if day >= last_session:
+            continue  # not yet published at the scored close (same day) or later: never look ahead
         if raw_value in ("", "."):  # FRED's marker for a non-trading day
             continue
         try:
@@ -84,7 +96,7 @@ def parse_fred_csv(text: str, *, last_session: date, observations: int = DEFAULT
     days = sorted(points)[-observations:]
     if len(days) < MIN_OBSERVATIONS:
         raise YieldSpreadError(
-            f"only {len(days)} observations on or before {last_session}; need at least {MIN_OBSERVATIONS}")
+            f"only {len(days)} observations before {last_session}; need at least {MIN_OBSERVATIONS}")
     if (last_session - days[-1]).days > MAX_STALENESS_DAYS:
         raise YieldSpreadError(
             f"latest observation is {days[-1]}, more than {MAX_STALENESS_DAYS} days before {last_session}")
@@ -120,6 +132,7 @@ def fetch_fred_yield_spread(last_session: date, *, observations: int = DEFAULT_O
                             urlopen: Optional[Callable[..., Any]] = None, timeout: float = 15.0) -> YieldSpread:
     """Download and validate T10Y2Y up to `last_session` (a single public GET, no credentials)."""
     opener = urlopen or urllib.request.urlopen
+    retrieved_at = datetime.now(timezone.utc)
     start = last_session - timedelta(days=int(observations * 1.8) + 10)
     query = urllib.parse.urlencode({"id": SERIES_ID, "cosd": start.isoformat(), "coed": last_session.isoformat()})
     request = urllib.request.Request(f"{FRED_CSV_URL}?{query}", headers={"User-Agent": USER_AGENT})
@@ -138,4 +151,5 @@ def fetch_fred_yield_spread(last_session: date, *, observations: int = DEFAULT_O
         text = raw.decode("utf-8")
     except UnicodeDecodeError:
         raise YieldSpreadError("the FRED response is not UTF-8 text") from None
-    return parse_fred_csv(text, last_session=last_session, observations=observations)
+    spread = parse_fred_csv(text, last_session=last_session, observations=observations)
+    return replace(spread, retrieved_at=retrieved_at)

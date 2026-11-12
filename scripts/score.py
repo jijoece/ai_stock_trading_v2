@@ -604,7 +604,11 @@ def _compute_macro(client, as_of_session: date, args, provider: Optional[str]) -
         yield_note = f"{fred.summary()} (level and slope)"
         yield_info = {"series": fred.series_id, "observations": len(fred.values),
                       "first_observation": fred.first_date.isoformat(),
-                      "last_observation": fred.last_date.isoformat(), "latest": fred.values[-1]}
+                      "last_observation": fred.last_date.isoformat(), "latest": fred.values[-1],
+                      "vintage": fred.vintage,
+                      "retrieved_at": fred.retrieved_at.isoformat() if fred.retrieved_at else None,
+                      "availability": "observations dated before the scored session only; a session's own "
+                                      "value is published after its close"}
     elif args.yield_spread is not None:
         data["yield_spread"] = args.yield_spread
         yield_note = "included (level only)"
@@ -686,6 +690,12 @@ def _score_remote(args, symbols: list[str], source: str) -> tuple[date, list[dic
     if args.as_of:
         requested = date.fromisoformat(args.as_of)
         _check_as_of_session(requested, as_of_session)
+        if args.yield_spread == "fred" and requested < as_of_session:
+            raise ScoreConfigError(
+                f"--yield-spread fred cannot score the historical session {requested}: FRED's public CSV is "
+                "the current vintage, not a point-in-time snapshot, so it may include revisions published "
+                f"after that close. Use it only for the latest completed session ({as_of_session}), or pass "
+                "--yield-spread <PCT> from a value you verified was known then, or omit it")
         as_of_session = requested
     if source == "robinhood":
         client, provider, feed, adjustment_verified = _robinhood_client(), "robinhood-mcp", None, False
@@ -763,7 +773,8 @@ def _build_parser() -> argparse.ArgumentParser:
                          "from the same source and run macro_pillar.py (empty if not given)")
     ap.add_argument("--yield-spread", type=_yield_arg, metavar="PCT|fred", default=None,
                     help="10Y-2Y spread for --macro-score auto: 'fred' downloads the last 60 observations of "
-                         "FRED series T10Y2Y (public, no key; level and slope), or a number gives the latest "
+                         "FRED series T10Y2Y (public, no key; level and slope; observations before the scored "
+                         "session only, and only for the latest completed session), or a number gives the latest "
                          "level in percentage points (level only). Without it that component's 20%% weight "
                          "is redistributed")
     hold = ap.add_mutually_exclusive_group()

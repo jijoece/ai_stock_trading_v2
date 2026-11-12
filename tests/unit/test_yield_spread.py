@@ -16,7 +16,8 @@ from urllib.parse import parse_qs, urlparse
 import pytest
 
 _PATH = Path(__file__).resolve().parent.parent.parent / "scripts" / "yield_spread.py"
-LAST = date(2025, 11, 26)  # a Wednesday
+LAST = date(2025, 11, 26)  # a Wednesday: the session being scored
+PRIOR = date(2025, 11, 25)  # the session before it: the latest observation published by LAST's close
 
 
 @pytest.fixture(scope="module")
@@ -53,29 +54,43 @@ def _csv(days, *, header="observation_date,T10Y2Y", missing=(), value=lambda i: 
 
 
 def test_parses_values_oldest_first_and_keeps_the_last_n(ys):
-    days = _weekdays_ending(LAST, 90)
+    days = _weekdays_ending(PRIOR, 90)
     out = ys.parse_fred_csv(_csv(days), last_session=LAST, observations=60)
-    assert len(out.values) == 60 and out.last_date == LAST and out.first_date == days[-60]
+    assert len(out.values) == 60 and out.last_date == PRIOR and out.first_date == days[-60]
     assert out.values == sorted(out.values)  # the synthetic series rises, so oldest-first means ascending
 
 
 @pytest.mark.parametrize("header", ["observation_date,T10Y2Y", "DATE,T10Y2Y", "﻿DATE,T10Y2Y"])
 def test_both_known_header_styles_are_accepted(ys, header):
-    assert ys.parse_fred_csv(_csv(_weekdays_ending(LAST, 40), header=header), last_session=LAST).last_date == LAST
+    assert ys.parse_fred_csv(_csv(_weekdays_ending(PRIOR, 40), header=header), last_session=LAST).last_date == PRIOR
 
 
 def test_missing_markers_are_skipped_not_filled(ys):
-    days = _weekdays_ending(LAST, 40)
+    days = _weekdays_ending(PRIOR, 40)
     holiday = days[-5]
     out = ys.parse_fred_csv(_csv(days, missing={holiday}), last_session=LAST)
     assert len(out.values) == 39  # the "." day is simply absent
 
 
-def test_nothing_after_the_scored_session_is_used(ys):
+def test_nothing_on_or_after_the_scored_session_is_used(ys):
     days = _weekdays_ending(date(2025, 12, 5), 60)  # data runs past LAST
     out = ys.parse_fred_csv(_csv(days, value=lambda i: 0.2 + 0.01 * i), last_session=LAST)
-    assert out.last_date == LAST and max(d for d in days if d <= LAST) == LAST
-    assert len(out.values) <= len([d for d in days if d <= LAST])
+    assert out.last_date == PRIOR and LAST in days
+    assert len(out.values) == len([d for d in days if d < LAST])
+
+
+def test_the_scored_sessions_own_value_is_not_used_because_it_is_published_after_the_close(ys):
+    # Regression: a same-date observation used to be accepted although Treasury/FRED publish it only
+    # after that session's 16:00 ET close. A wildly different same-day value must leave the result unchanged.
+    history = _csv(_weekdays_ending(PRIOR, 40))
+    without = ys.parse_fred_csv(history, last_session=LAST)
+    with_same_day = ys.parse_fred_csv(history + f"{LAST.isoformat()},-3.00\n", last_session=LAST)
+    assert with_same_day == without and with_same_day.last_date == PRIOR and -3.0 not in with_same_day.values
+
+
+def test_a_parsed_series_is_labelled_as_the_current_vintage(ys):
+    out = ys.parse_fred_csv(_csv(_weekdays_ending(PRIOR, 40)), last_session=LAST)
+    assert out.vintage == "current" and out.retrieved_at is None  # only a download knows when it was retrieved
 
 
 @pytest.mark.parametrize("text, fragment", [
@@ -90,21 +105,21 @@ def test_wrong_responses_fail_closed(ys, text, fragment):
 
 
 @pytest.mark.parametrize("bad_row, fragment", [
-    ("2025-11-26,abc", "not a number"),
-    ("2025-11-26,nan", "plausible range"),
-    ("2025-11-26,inf", "plausible range"),
-    ("2025-11-26,45.0", "plausible range"),
+    ("2025-11-25,abc", "not a number"),
+    ("2025-11-25,nan", "plausible range"),
+    ("2025-11-25,inf", "plausible range"),
+    ("2025-11-25,45.0", "plausible range"),
     ("26/11/2025,0.3", "not YYYY-MM-DD"),
-    ("2025-11-26,0.3,9", "exactly two columns"),
+    ("2025-11-25,0.3,9", "exactly two columns"),
 ])
 def test_bad_rows_are_rejected(ys, bad_row, fragment):
-    text = _csv(_weekdays_ending(date(2025, 11, 25), 40)) + bad_row + "\n"
+    text = _csv(_weekdays_ending(date(2025, 11, 24), 40)) + bad_row + "\n"
     with pytest.raises(ys.YieldSpreadError, match=fragment):
         ys.parse_fred_csv(text, last_session=LAST)
 
 
 def test_a_duplicate_date_is_rejected(ys):
-    days = _weekdays_ending(LAST, 40)
+    days = _weekdays_ending(PRIOR, 40)
     text = _csv(days) + f"{days[-1].isoformat()},0.5\n"
     with pytest.raises(ys.YieldSpreadError, match="duplicate"):
         ys.parse_fred_csv(text, last_session=LAST)
@@ -112,8 +127,10 @@ def test_a_duplicate_date_is_rejected(ys):
 
 def test_too_few_observations_for_the_slope_are_rejected(ys):
     with pytest.raises(ys.YieldSpreadError, match="only 20 observations.*need at least 21"):
-        ys.parse_fred_csv(_csv(_weekdays_ending(LAST, 20)), last_session=LAST)
-    assert len(ys.parse_fred_csv(_csv(_weekdays_ending(LAST, 21)), last_session=LAST).values) == 21
+        ys.parse_fred_csv(_csv(_weekdays_ending(PRIOR, 20)), last_session=LAST)
+    assert len(ys.parse_fred_csv(_csv(_weekdays_ending(PRIOR, 21)), last_session=LAST).values) == 21
+    with pytest.raises(ys.YieldSpreadError, match="only 20 observations"):  # the same-day row does not count
+        ys.parse_fred_csv(_csv(_weekdays_ending(LAST, 21)), last_session=LAST)
 
 
 def test_a_stale_series_is_rejected(ys):
@@ -169,7 +186,16 @@ def test_fetch_makes_one_public_https_get_with_a_generic_user_agent(ys):
 
 def test_summary_describes_the_data_used(ys):
     out = ys.fetch_fred_yield_spread(LAST, urlopen=_opener(_csv(_weekdays_ending(LAST, 80)).encode(), []))
-    assert out.summary().startswith("FRED T10Y2Y, 60 observations through 2025-11-26, latest +")
+    assert out.summary().startswith("FRED T10Y2Y, 60 observations through 2025-11-25, latest +")
+
+
+def test_a_download_records_its_vintage_and_retrieval_time(ys):
+    from datetime import datetime, timezone
+    before = datetime.now(timezone.utc)
+    out = ys.fetch_fred_yield_spread(LAST, urlopen=_opener(_csv(_weekdays_ending(LAST, 80)).encode(), []))
+    assert out.vintage == "current"
+    assert out.retrieved_at is not None and out.retrieved_at.tzinfo is not None
+    assert before <= out.retrieved_at <= datetime.now(timezone.utc)
 
 
 @pytest.mark.parametrize("raised, fragment", [

@@ -741,7 +741,8 @@ def _fake_fred(score, calls, n=30):
         calls.append(last_session)
         values = [round(0.10 + 0.01 * i, 2) for i in range(n)]
         return score.yield_spread.YieldSpread(values=values, first_date=last_session - timedelta(days=n),
-                                              last_date=last_session)
+                                              last_date=last_session - timedelta(days=1),
+                                              retrieved_at=datetime(2025, 11, 26, 22, 0, tzinfo=timezone.utc))
     return fake
 
 
@@ -756,11 +757,43 @@ def test_yield_spread_fred_feeds_the_series_into_macro_pillar(score, patch_env, 
     assert code == 0 and calls == [AS_OF_SESSION]  # one download, for the session being scored
     macro = out["macro"]
     assert macro["composite"] == _expected_macro(score, bars, yield_spread=values).composite
-    assert macro["yield_spread"].startswith("FRED T10Y2Y, 30 observations through 2025-11-26") \
+    assert macro["yield_spread"].startswith("FRED T10Y2Y, 30 observations through 2025-11-25") \
         and macro["yield_spread"].endswith("(level and slope)")
     assert macro["yield_spread_source"] == {
         "series": "T10Y2Y", "observations": 30, "first_observation": "2025-10-27",
-        "last_observation": "2025-11-26", "latest": 0.39}
+        "last_observation": "2025-11-25", "latest": 0.39,
+        "vintage": "current", "retrieved_at": "2025-11-26T22:00:00+00:00",
+        "availability": "observations dated before the scored session only; a session's own "
+                        "value is published after its close"}
+
+
+def test_yield_spread_fred_is_refused_for_a_historical_as_of_session(score, patch_env, monkeypatch, capsys):
+    # Regression: FRED's public CSV is the current vintage, so a past session could see later revisions.
+    client = patch_env(FakeClient(_with_etfs()))
+    calls: list = []
+    monkeypatch.setattr(score.yield_spread, "fetch_fred_yield_spread", _fake_fred(score, calls))
+    assert score.main(["--alpaca", "AAPL", "--as-of", "2025-11-25", "--macro-score", "auto",
+                       "--yield-spread", "fred"]) == 1
+    err = capsys.readouterr().err
+    assert "cannot score the historical session 2025-11-25" in err and "current vintage" in err
+    assert calls == [] and client.calls == []  # refused before any download or price fetch
+
+
+def test_yield_spread_fred_is_allowed_when_as_of_is_the_latest_completed_session(score, patch_env, monkeypatch,
+                                                                                   capsys):
+    patch_env(FakeClient(_with_etfs()))
+    calls: list = []
+    monkeypatch.setattr(score.yield_spread, "fetch_fred_yield_spread", _fake_fred(score, calls))
+    code, out = _run_json(score, capsys, ["--alpaca", "AAPL", "--as-of", AS_OF_SESSION.isoformat(),
+                                          "--macro-score", "auto", "--yield-spread", "fred", "--json"])
+    assert code == 0 and calls == [AS_OF_SESSION] and out["macro"]["yield_spread_source"]["vintage"] == "current"
+
+
+def test_a_historical_as_of_session_can_still_use_a_fixed_yield_level(score, patch_env, capsys):
+    patch_env(FakeClient({s: _bars(s, last=PREV_SESSION) for s in (*score.MACRO_SYMBOLS, "AAPL")}))
+    code, out = _run_json(score, capsys, ["--alpaca", "AAPL", "--as-of", PREV_SESSION.isoformat(),
+                                          "--macro-score", "auto", "--yield-spread", "0.45", "--json"])
+    assert code == 0 and out["macro"]["yield_spread"] == "included (level only)"
 
 
 def test_a_fred_series_changes_the_macro_result_versus_none(score, patch_env, monkeypatch, capsys):

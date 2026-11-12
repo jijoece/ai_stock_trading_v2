@@ -588,13 +588,17 @@ python3 scripts/score.py --robinhood NVDA --check-holding --macro-score auto
   - `--yield-spread fred` downloads the last 60 observations of FRED series
     `T10Y2Y` (a single public HTTPS GET of the CSV; no key, no account, generic
     User-Agent). That gives `macro_pillar.py` both the level and the slope
-    (steepening or flattening). Only observations dated on or before the scored
-    session are used, so a `--as-of` or fallback session gets its own data.
+    (steepening or flattening). Only observations dated strictly before the
+    scored session are used, because a session's own value is published after
+    its close; a fallback session gets its own data. The CSV is FRED's
+    current vintage, not a point-in-time snapshot, so `--yield-spread fred`
+    is refused for an `--as-of` session older than the latest completed one.
     It fails closed: a response that isn't the `T10Y2Y` CSV, a non-numeric or
     implausible value, fewer than 21 observations, or a latest observation more
     than 7 days old stops the run with a clear message rather than quietly
     dropping the component. `--json` adds `macro.yield_spread_source` (series,
-    observation count, first/last date, latest value) for the audit trail.
+    observation count, first/last date, latest value, vintage, retrieval time)
+    for the audit trail.
   - `--yield-spread 0.45` gives a latest level in percentage points, **level
     only** (no slope).
   - Omitted: that component's 20% weight is redistributed, which the header says.

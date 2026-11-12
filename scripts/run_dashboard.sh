@@ -31,7 +31,17 @@ if [ -f "$ENV_FILE" ]; then
               ALPACA_MARKET_DATA_API_KEY ALPACA_MARKET_DATA_API_SECRET \
               ALPACA_MARKET_DATA_BASE_URL ROBINHOOD_MCP_URL; do
     if [ -z "${!name:-}" ]; then
-      value="$(grep -E "^${name}=" "$ENV_FILE" | tail -n 1 | cut -d= -f2-)"
+      # grep exits 1 when an optional key is absent: that is expected, not an
+      # error (under `set -e` it would otherwise abort the script). Any other
+      # non-zero status, such as an unreadable .env, still fails closed.
+      status=0
+      lines="$(grep -E "^${name}=" "$ENV_FILE")" || status=$?
+      if [ "$status" -eq 1 ]; then continue; fi
+      if [ "$status" -ne 0 ]; then
+        echo "Could not read $ENV_FILE." >&2
+        exit 1
+      fi
+      value="$(printf '%s\n' "$lines" | tail -n 1 | cut -d= -f2-)"
       value="${value%\"}"; value="${value#\"}"; value="${value%\'}"; value="${value#\'}"
       if [ -n "$value" ]; then export "$name=$value"; fi
     fi
