@@ -721,6 +721,75 @@ def test_an_entry_is_skipped_when_the_book_keeps_changing_under_it(tmp_path, sto
     assert not conn_a.in_transaction
 
 
+def _book_full_after_first_entry(tmp_path, conn_a, day):
+    """`first` holds the book's only slot via a committed pending intent; returns (first, second, cfg, conn_b)."""
+    first, second = _two_eligible(conn_a)
+    cfg = _paper_config(max_open_positions=1)
+    conn_b = connect(tmp_path / "db.sqlite3")
+    assert [o.outcome for o in _entry(conn_b, [first], day, cfg=cfg)] == [OUTCOME_INTENT_CREATED_PENDING_FILL]
+    return first, second, cfg, conn_b
+
+
+def _cancel_pending_orders(conn, day):
+    """Another writer cancels every pending intent and releases its cash, as the real cancel path does."""
+    for order in _orders(conn):
+        conn.execute("UPDATE paper_book_orders SET status = 'CANCELLED' WHERE paper_order_intent_id = ?",
+                     (order["paper_order_intent_id"],))
+        cash_ledger.release_reservation(
+            conn, BOOK, order["paper_order_intent_id"], Decimal(order["notional_usd"]), regular_session_close(day),
+        )
+
+
+def test_a_rejection_is_not_persisted_from_state_that_changed_before_the_write(tmp_path, stored, monkeypatch):
+    """Review fix: a stored rejection is final, so it must be guarded by the same fingerprint check as an approval."""
+    conn_a, day = stored
+    first, second, cfg, conn_b = _book_full_after_first_entry(tmp_path, conn_a, day)
+    real_evaluate = risk_module.evaluate_paper_risk
+    decisions = []
+
+    def evaluate_then_free_the_slot(**kwargs):
+        decision = real_evaluate(**kwargs)
+        decisions.append(decision.decision)
+        if len(decisions) == 1:
+            _cancel_pending_orders(conn_b, day)  # the competing exposure closes after A decided to reject
+        return decision
+
+    monkeypatch.setattr(risk_module, "evaluate_paper_risk", evaluate_then_free_the_slot)
+    (result,) = _entry(conn_a, [second], day, cfg=cfg)
+
+    assert decisions[0] == "REJECTED_MAX_OPEN_POSITIONS"  # the stale evaluation really was a rejection
+    assert len(decisions) == 2 and decisions[1] not in ("REJECTED_MAX_OPEN_POSITIONS",)  # and was recomputed
+    assert result.outcome == OUTCOME_INTENT_CREATED_PENDING_FILL
+    stored_for_second = conn_a.execute(
+        "SELECT decision FROM paper_book_risk_decisions WHERE book_id = ? AND symbol = ?", (BOOK, second["symbol"]),
+    ).fetchall()
+    assert [row["decision"] for row in stored_for_second] == [decisions[1]]  # the stale rejection never landed
+    assert not conn_a.in_transaction and not conn_b.in_transaction
+
+
+def test_a_rejection_is_skipped_not_stored_when_the_book_keeps_changing(tmp_path, stored, monkeypatch):
+    conn_a, day = stored
+    first, second, cfg, conn_b = _book_full_after_first_entry(tmp_path, conn_a, day)
+    decisions_before = conn_a.execute("SELECT COUNT(*) FROM paper_book_risk_decisions").fetchone()[0]
+    real_evaluate = risk_module.evaluate_paper_risk
+    writes = []
+
+    def evaluate_then_move_cash(**kwargs):
+        decision = real_evaluate(**kwargs)
+        assert decision.decision == "REJECTED_MAX_OPEN_POSITIONS"
+        writes.append(cash_ledger.reserve_for_order(
+            conn_b, BOOK, f"other-writer-{len(writes)}", Decimal("1"), regular_session_close(day),
+        ))
+        return decision
+
+    monkeypatch.setattr(risk_module, "evaluate_paper_risk", evaluate_then_move_cash)
+    (result,) = _entry(conn_a, [second], day, cfg=cfg)
+
+    assert result.outcome == OUTCOME_SKIPPED_STALE_RISK_STATE and result.paper_order_intent_id is None
+    assert conn_a.execute("SELECT COUNT(*) FROM paper_book_risk_decisions").fetchone()[0] == decisions_before
+    assert not conn_a.in_transaction
+
+
 def test_pending_entries_count_toward_the_open_position_limit(stored):
     """Review follow-up on PR 38: approved intents stay pending until a later lifecycle run, and that fill path
     does not re-check `max_open_positions`, so pending entries must already occupy a slot at approval time."""

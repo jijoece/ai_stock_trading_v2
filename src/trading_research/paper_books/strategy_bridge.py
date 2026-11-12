@@ -408,9 +408,16 @@ def create_strategy_entry_intents(
             # is persisted in the same transaction as its intent below, so an
             # interruption can never leave an approved decision without an intent
             # (the retry check above would otherwise skip the signal forever).
+            # Because a stored rejection is never recomputed, it gets the same guard as an approval: under
+            # the write lock it is stored only if the committed state it was decided from is unchanged,
+            # otherwise a rejection on exposure that has since closed would suppress a valid signal forever.
             persisted_risk_id = risk_decision_id
             if not approved:
                 with transaction(conn):
+                    if already_processed():
+                        return outcome(OUTCOME_SKIPPED_ALREADY_PROCESSED, "this signal was already evaluated for the book")
+                    if _risk_state_fingerprint(conn, book_id) != observed_state:
+                        raise _StaleRiskState
                     order_intent.persist_risk_decision(
                         conn, book_id, cycle_id, recommendation_id, signal.symbol, decision, snap.snapshot_id, clock,
                         commit=False,
