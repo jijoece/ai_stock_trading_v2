@@ -1,8 +1,9 @@
 """THROWAWAY Phase 1 broker capability spike (docs/automated-live-trading-implementation-plan.md).
 
 Records how the Alpaca PAPER account treats attached orders, with captured request/response fixtures.
-It is not part of the application: nothing imports it, it is outside pytest and pyright, and it touches
-neither `paper_runtime` nor the main process.
+It is not part of the application: nothing imports it, it is outside pyright, and it touches neither
+`paper_runtime` nor the main process. Only its exit-safety logic has a credential-free fake-broker test
+(tests/tools/test_alpaca_capability_spike.py).
 
 Safety, enforced in code:
 * paper only. The client is built with paper=True and the env file must say ALPACA_IS_PAPER=true and the
@@ -11,6 +12,10 @@ Safety, enforced in code:
   allowlisted ALPACA_* keys, so the repository's main `.env` (other services' secrets) is rejected;
 * one share of SPY at most, every order carries the client-order-id prefix `p1spike-`, and everything
   still open under that prefix is cancelled on exit;
+* exit is reconciled to flat, not just cancelled: once `fill` has verified the account held no SPY and no
+  SPY orders, cleanup cancels the open orders, waits until none remain, reads the real position and
+  flattens exactly that signed quantity. A flatten is never sent on the strength of an assumed fill. If
+  exposure or open orders still remain, the run prints them and exits non-zero;
 * the default mode makes no network call. `read-only` reads. `rest` places orders far from the market
   that cannot fill. `fill` places marketable one-share orders and is refused outside regular hours or if
   the account already holds or has orders in the symbol.
@@ -29,6 +34,7 @@ import json
 import sys
 import time
 import uuid
+from decimal import Decimal
 from pathlib import Path
 
 PAPER_URL = "https://paper-api.alpaca.markets"
@@ -105,6 +111,9 @@ def _redact_account(data):
 class Recorder:
     def __init__(self, stage: str):
         self.stage, self.steps = stage, []
+        # Set only after `fill` has verified the account held no SPY position and no SPY order, so a SPY
+        # position found later is this run's and may be flattened. Never true for a refused or other run.
+        self.owns_symbol = False
         FIXTURE_DIR.mkdir(parents=True, exist_ok=True)
 
     def run(self, name: str, request, call, *, account: bool = False):
@@ -266,13 +275,98 @@ def stage_rest(trading, data, rec: Recorder) -> None:
     rec.run("short_sell_without_position", short.model_dump(mode="json"), lambda: trading.submit_order(short))
 
 
+TERMINAL_STATUSES = frozenset({"filled", "canceled", "expired", "rejected", "replaced", "done_for_day"})
+SETTLE_SECONDS = 45
+
+
+class ExposureRemaining(RuntimeError):
+    """Cleanup could not prove the account is flat of this run's SPY exposure and orders."""
+
+
 def _wait(trading, order_id, wanted: set[str], seconds: int = 45):
+    """Poll until the order reaches a wanted status, any other terminal one, or the deadline."""
     deadline = time.time() + seconds
     order = fetch(trading, order_id)
-    while str(order.status.value) not in wanted and time.time() < deadline:
+    while str(order.status.value) not in wanted | TERMINAL_STATUSES and time.time() < deadline:
         time.sleep(1.5)
         order = fetch(trading, order_id)
     return order
+
+
+def _open_orders(trading, *, owns_symbol: bool) -> list:
+    """Open SPY orders (legs listed flat) that this run is responsible for."""
+    from alpaca.trading.enums import QueryOrderStatus
+    from alpaca.trading.requests import GetOrdersRequest
+
+    orders = trading.get_orders(GetOrdersRequest(status=QueryOrderStatus.OPEN, symbols=[SYMBOL]))
+    # After the fill preflight there were no SPY orders at all, so every open one is this run's (including
+    # legs, whose client order ids carry no prefix). Otherwise only the prefix and replaced ids are ours.
+    return [o for o in orders
+            if owns_symbol or (o.client_order_id or "").startswith(PREFIX) or str(o.id) in CREATED_IDS]
+
+
+def _position_qty(trading) -> Decimal:
+    return sum((Decimal(str(p.qty)) for p in trading.get_all_positions() if p.symbol == SYMBOL), Decimal(0))
+
+
+def settle_to_flat(trading, rec: Recorder, seconds: int = SETTLE_SECONDS) -> list[str]:
+    """Cancel this run's open orders, then flatten the SPY position the broker reports; return what remains.
+
+    The flatten side and quantity come from the confirmed position, never from an assumed fill: an entry
+    that did not fill produces no sell, and one that filled late (even during the cancel) is flattened.
+    A position is only flattened when `rec.owns_symbol` says the run began with none. The result is empty
+    only when no matching open order and no SPY position (when owned) remain. Never raises.
+    """
+    from alpaca.trading.enums import OrderSide, TimeInForce
+    from alpaca.trading.requests import MarketOrderRequest
+
+    owns = rec.owns_symbol
+    problems: list[str] = []
+
+    def remaining_orders() -> list:
+        deadline = time.time() + seconds
+        while True:
+            mine = _open_orders(trading, owns_symbol=owns)
+            if not mine or time.time() >= deadline:
+                return mine
+            for order in mine:
+                try:
+                    trading.cancel_order_by_id(order.id)
+                    print(f"  cleanup: cancelled {order.client_order_id}")
+                except Exception as exc:
+                    print(f"  cleanup: could not cancel {order.client_order_id}: {exc}")
+            time.sleep(1.5)
+
+    try:
+        stuck = remaining_orders()  # cancelling first frees shares held by a resting stop or target
+        if stuck:
+            problems.append(f"{len(stuck)} open {SYMBOL} order(s) could not be cancelled: "
+                            + ", ".join(str(o.client_order_id or o.id) for o in stuck))
+        if owns:
+            qty = _position_qty(trading)
+            if qty != 0:
+                side = OrderSide.SELL if qty > 0 else OrderSide.BUY
+                flat = MarketOrderRequest(symbol=SYMBOL, qty=float(abs(qty)), side=side, time_in_force=TimeInForce.DAY,
+                                          client_order_id=cid("cleanup_flatten"))
+                order = rec.run("cleanup_flatten", flat.model_dump(mode="json"), lambda: trading.submit_order(flat))
+                if order is not None:
+                    _wait(trading, order.id, {"filled"}, seconds)
+                stuck = remaining_orders()  # a flatten that did not fill is cancelled, never left to fill later
+                if stuck:
+                    problems.append(f"{len(stuck)} open {SYMBOL} order(s) remain after the flatten: "
+                                    + ", ".join(str(o.client_order_id or o.id) for o in stuck))
+                qty = _position_qty(trading)  # re-read last: a cancel can race a fill
+            if qty != 0:
+                problems.append(f"{SYMBOL} position of {qty} share(s) is still open")
+    except Exception as exc:  # cleanup must report, not mask the failure it is cleaning up after
+        problems.append(f"cleanup failed ({type(exc).__name__}: {exc}); check {SYMBOL} exposure manually")
+    return problems
+
+
+def require_flat(trading, rec: Recorder) -> None:
+    problems = settle_to_flat(trading, rec)
+    if problems:
+        raise ExposureRemaining("; ".join(problems))
 
 
 def stage_fill(trading, data, rec: Recorder) -> None:
@@ -294,8 +388,9 @@ def stage_fill(trading, data, rec: Recorder) -> None:
     marketable = round(ask + 0.50, 2)
     stop = round(bid * 0.97, 2)
     print(f"  bid {bid} ask {ask}; marketable limit {marketable}; stop {stop}")
+    rec.owns_symbol = True  # the account was verified free of SPY: from here any SPY position is this run's
 
-    req = LimitOrderRequest(symbol=SYMBOL, qty=1, side=OrderSide.BUY, limit_price=marketable, time_in_force=TimeInForce.GTC,
+    req =LimitOrderRequest(symbol=SYMBOL, qty=1, side=OrderSide.BUY, limit_price=marketable, time_in_force=TimeInForce.GTC,
                             order_class=OrderClass.OTO, stop_loss=StopLossRequest(stop_price=stop), client_order_id=cid("fill_oto"))
     parent = rec.run("fill_submit_oto", req.model_dump(mode="json"), lambda: trading.submit_order(req))
     if parent is None:
@@ -333,9 +428,14 @@ def stage_fill(trading, data, rec: Recorder) -> None:
     time.sleep(2)
     exit_req = MarketOrderRequest(symbol=SYMBOL, qty=1, side=OrderSide.SELL, time_in_force=TimeInForce.DAY,
                                   client_order_id=cid("fill_exit"))
-    exit_order = rec.run("fill_exit_sell", exit_req.model_dump(mode="json"), lambda: trading.submit_order(exit_req))
+    exit_order = None
+    if _position_qty(trading) > 0:  # the competing sell above may already have taken the share; never sell short
+        exit_order = rec.run("fill_exit_sell", exit_req.model_dump(mode="json"), lambda: trading.submit_order(exit_req))
+    else:
+        print("  no long SPY position left to exit; skipping the exit sell")
     if exit_order is not None:
         rec.run("fill_exit_confirmed", {"id": str(exit_order.id)}, lambda: _wait(trading, exit_order.id, {"filled"}))
+    require_flat(trading, rec)  # the bracket test starts only from a confirmed-flat account
 
     # Bracket: marketable entry, then the stop and target legs.
     bracket = LimitOrderRequest(
@@ -344,17 +444,16 @@ def stage_fill(trading, data, rec: Recorder) -> None:
         take_profit=TakeProfitRequest(limit_price=round(ask * 1.05, 2)), client_order_id=cid("fill_bracket"))
     bparent = rec.run("fill_submit_bracket", bracket.model_dump(mode="json"), lambda: trading.submit_order(bracket))
     if bparent is not None:
-        _wait(trading, bparent.id, {"filled"})
+        entry = _wait(trading, bparent.id, {"filled"})
+        if str(entry.status.value) != "filled":
+            print("  bracket entry did not fill in time; cancelling it and flattening only what the broker reports")
         time.sleep(2)
         rec.run("fill_bracket_after_fill", {"id": str(bparent.id)}, lambda: fetch(trading, bparent.id))
-        cancel_prefixed(trading)
-        time.sleep(2)
+        # Cancel the legs and entry, then flatten the position the broker reports (none if the entry never
+        # filled, so no sell can open a short).
+        require_flat(trading, rec)
         rec.run("fill_bracket_after_cancel_legs", {"id": str(bparent.id)}, lambda: fetch(trading, bparent.id))
-        flat = MarketOrderRequest(symbol=SYMBOL, qty=1, side=OrderSide.SELL, time_in_force=TimeInForce.DAY,
-                                  client_order_id=cid("fill_flatten"))
-        flatten = rec.run("fill_flatten", flat.model_dump(mode="json"), lambda: trading.submit_order(flat))
-        if flatten is not None:
-            _wait(trading, flatten.id, {"filled"})
+    require_flat(trading, rec)
     rec.run("final_positions", {}, trading.get_all_positions)
 
 
@@ -379,14 +478,19 @@ def main(argv: list[str] | None = None) -> int:
     trading, data = build_clients(load_env_file(args.env_file))
     rec = Recorder(args.mode.replace("-", "_"))
     stage = {"read-only": stage_read_only, "rest": stage_rest, "fill": stage_fill}[args.mode]
+    problems: list[str] = []
     try:
         stage(trading, data, rec)
     finally:
         if args.mode in ("rest", "fill"):
-            cancel_prefixed(trading)
+            problems = settle_to_flat(trading, rec)
+            if problems:
+                print("!! EXPOSURE REMAINS - reconcile the paper account manually:")
+                for problem in problems:
+                    print(f"!!   {problem}")
         rec.save()
         print(f"fixtures written to {FIXTURE_DIR}")
-    return 0
+    return 1 if problems else 0
 
 
 if __name__ == "__main__":
