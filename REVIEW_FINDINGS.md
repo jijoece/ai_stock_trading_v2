@@ -4,55 +4,37 @@
 
 - Repository: `/Users/jijopaul/workspace/ai_stock_trading_v2`
 - Branch: `feat/score-alpaca-data`
-- Reviewed HEAD: `13e180af320aecccd60d99d781fa84345abb22da`
-- Subject: Update score.py, add yield_spread helper, refresh docs
-- Claude commits reviewed: cbbcb4d8265a0e18f18e9b31c481dfa7d99ca299,13e180af320aecccd60d99d781fa84345abb22da
+- Reviewed HEAD: `910aff771cf0bc3d9636ba7c5674410474b04675`
+- Subject: Record review fixes applied for PR 41 findings (pending re-review)
+- Claude commits reviewed: cbbcb4d8265a0e18f18e9b31c481dfa7d99ca299,13e180af320aecccd60d99d781fa84345abb22da,45977a4d052dc9b15c64f984f03c0351b2c66556,910aff771cf0bc3d9636ba7c5674410474b04675
 - Review scope: INCREMENTAL
-- Fix round: 0
+- Fix round: 1
 - Trigger: local Git `post-commit`
 - Review status: FIXES_APPLIED_PENDING_REVIEW
-- Highest priority: P1
+- Highest priority: P2
 - Finding count: 0
-- Fix commit: 45977a4d052dc9b15c64f984f03c0351b2c66556
+- Fix commit: 60ec95b5c88e34ad95a2e28a0a30f17300392eed
 
 ## Findings
 
-### [P1] Investigate: Optional `.env` keys can prevent the dashboard from starting
+### [P2] Investigate: FRED fallback scoring bypasses the historical-vintage guard
 
-Commit: cbbcb4d8265a0e18f18e9b31c481dfa7d99ca299
+Commit: `13e180af320aecccd60d99d781fa84345abb22da`
 
-Location: scripts/run_dashboard.sh:28-36
+Location: `/Users/jijopaul/workspace/ai_stock_trading_v2/scripts/score.py:717-724`
 
-Concern: Investigate whether a `.env` file that omits any allowlisted optional variable causes `run_dashboard.sh` to exit before starting Streamlit.
+Concern: Investigate whether `--yield-spread fred --fallback-previous-session` introduces point-in-time bias by downloading current-vintage FRED data for the historical fallback session.
 
-Evidence: The script enables both `set -e` and `pipefail`. For each unset variable, line 34 runs `grep` inside an assignment. When the key is absent, `grep` returns 1; because of `pipefail`, the pipeline and assignment return 1, triggering `set -e`. A read-only reproduction using `/dev/null` exited with status 1 before reaching the following command. The documented `.env` example does not include every variable iterated by this loop, and no shell regression test covers partial `.env` files.
+Evidence: The explicit `--as-of` path rejects FRED when the requested session predates the latest completed session. The fallback path instead changes `as_of_session` to the prior session and reruns `_attempt`, which calls `fetch_fred_yield_spread(as_of_session)` without applying that guard. The repository explicitly acknowledges that this endpoint may contain revisions published after a historical close. The regression test at `tests/unit/test_score_alpaca.py:819-826` currently requires the downloader to be called for that prior session, and the README recommends this exact option combination.
 
-Potential impact if confirmed: Normal documented dashboard configurations can fail to start merely because an optional scoring, Robinhood, or endpoint variable is omitted.
+Potential impact if confirmed: The 20%-weighted yield-spread component may use information unavailable at the fallback close, changing the macro pillar and resulting score or trading action while appearing point-in-time safe.
 
-Investigation and conditional remediation: Verify the concern against the current script first using a disposable partial `.env` containing only `AI_STOCK_TRADING_DB_PATH`. If confirmed, make absence of each optional key an expected branch—while preserving the key allowlist and environment-precedence behavior—and add regression coverage for minimal, partial, and complete `.env` files. If disproved or already fixed, document the shell behavior demonstrating that and leave the code unchanged.
+Investigation and conditional remediation: Verify the fallback output against a vintage snapshot available at the fallback close. If confirmed, reject current-vintage FRED whenever fallback selects an older session, or obtain vintage-aware data; allow a verified fixed yield value or omission as already supported. Replace the existing fallback test with coverage proving that current-vintage FRED cannot be applied to the historical session. If the endpoint can be shown to preserve the relevant historical vintage, record that evidence and leave the code unchanged.
 
-Validation: Run `scripts/run_dashboard.sh` under a stubbed Python/Streamlit environment with a minimal `.env`; verify it reaches the startup command, while malformed or missing required database configuration still fails closed.
-
-### [P2] Investigate: Historical FRED scoring may use data unavailable at the scored close
-
-Commit: 13e180af320aecccd60d99d781fa84345abb22da
-
-Location: scripts/yield_spread.py:56-91; scripts/score.py:598-607
-
-Concern: Investigate whether `--as-of ... --macro-score auto --yield-spread fred` introduces point-in-time bias by treating an observation’s date as proof that its current value was available at that session’s close.
-
-Evidence: The parser excludes only rows whose observation date is after `last_session`. It records no retrieval vintage, release timestamp, or `available_at`, and the ordinary FRED graph CSV request retrieves current series contents. Consequently, a historical run can consume later revisions, and a same-date observation can be accepted without establishing that it had been published by the scored close. The resulting series supplies a 20%-weighted macro component. Existing tests verify observation-date filtering but not vintage or publication-time availability.
-
-Potential impact if confirmed: Historical or fallback scorecards can incorporate information unavailable at decision time, changing the macro pillar and potentially the resulting trading action while being reported as look-ahead-safe.
-
-Investigation and conditional remediation: Verify the concern against current FRED publication timing and revision behavior first, including a historical session and a run immediately after market close. If confirmed, use a point-in-time/vintage-aware source or constrain observations using verified availability timestamps, persist the vintage/retrieval provenance, and add regression coverage for revised and same-day-not-yet-available observations. If disproved or already fixed, document evidence that the endpoint’s returned values and publication timing are point-in-time-safe and leave the code unchanged.
-
-Validation: Compare the scorer’s historical input with a vintage snapshot known to have existed at that session’s close, and verify that observations published or revised later are rejected.
-
-Tests or diagnostics run: `bash -n scripts/run_dashboard.sh` passed. A minimal `set -euo pipefail` reproduction of the `.env` lookup exited 1 when the optional key was absent. `git diff --check 4be8c139498dc6b88eddab98d4cf5024fc062ed3..13e180af320aecccd60d99d781fa84345abb22da` passed. `nox -s tests -- tests/unit/test_robinhood_portfolio.py tests/unit/test_score_alpaca.py tests/unit/test_yield_spread.py tests/dashboard/test_robinhood_portfolio_page.py` was attempted, but no tests executed because Nox could not find a usable writable temporary directory. Static full-diff inspection, current-HEAD tracing, targeted test/configuration/runbook review, and blame attribution were completed.
+Validation performed: Inspected all four specified commits chronologically and traced current HEAD code, tests, documentation, and attribution. `git diff --check` and `bash -n` passed. No tests were run because the workspace is read-only.
 
 ## Fix Notes
 
-- [P1] Confirmed: a disposable repo copy with a `.env` containing only `AI_STOCK_TRADING_DB_PATH` exited 1 with no message before the startup command. Fixed in `scripts/run_dashboard.sh`: grep status 1 (key absent) is an expected `continue`; any other non-zero status (for example an unreadable `.env`) fails closed. Allowlist and environment precedence are unchanged. Regression: `tests/unit/test_run_dashboard_env.py` (minimal, partial, complete `.env`; precedence; unrelated secrets never exported; missing DB path, missing DB file and unreadable `.env` fail closed). It fails 6 of 7 against the reviewed script and passes 7 of 7 against the fix.
-- [P2] Confirmed: the session's own T10Y2Y value is published after its close (Treasury publishes the par yield curve after the close; FRED posts it the next business day), and the public CSV is always the current vintage. Fixed: `parse_fred_csv` uses only observations dated strictly before the scored session. `score.py` refuses `--yield-spread fred` for an `--as-of` session older than the latest completed session. `macro.yield_spread_source` now records `vintage`, `retrieved_at` and the availability rule. Regression tests are in `tests/unit/test_yield_spread.py` and `tests/unit/test_score_alpaca.py`.
-- Validation: the focused tests passed (140 passed, 1 skipped). Under `nox -s ci`, `safety_typecheck` and `migration_smoke` passed. `tests` had 9 SQLite `disk I/O error` failures and `paper_tests` failed during install, both because the disk was full (`[Errno 28] No space left on device`, about 470 MiB free). The 9 `tests/unit/test_transaction_discipline.py` tests pass on their own in the nox venv. `paper_tests` did not run.
+- [P2] Confirmed against the code: `_score_remote` refuses `--yield-spread fred` for an `--as-of` session older than the latest completed session, but the fallback branch set `as_of_session` to the prior session and reran `_attempt`, which called `fetch_fred_yield_spread(prior)` with no check. The repository's own rule (FRED's public CSV is the current vintage, which is only treated as safe for the latest completed session) therefore applies to the fallback session too. No vintage-aware source is available to show the endpoint keeps the historical vintage. Fixed in `scripts/score.py`: when the fallback would step back and `--yield-spread fred` is set, the run stops with a `ScoreConfigError` before any FRED request for the older session. A fixed `--yield-spread <PCT>` or omitting it still works. The `--fallback-previous-session` help text and the README example and notes are updated.
+- Regression (`tests/unit/test_score_alpaca.py`): `test_fred_is_queried_for_the_fallback_session` is replaced by `test_current_vintage_fred_is_never_applied_to_the_fallback_session` (exit 1, no card, FRED never fetched for the prior session). Also added: `test_the_fallback_session_can_still_use_a_fixed_yield_level` and `test_fred_with_fallback_is_unaffected_when_the_latest_session_is_published`. The first test fails against the reviewed `score.py` and passes with the fix.
+- Validation: the focused tests passed in the project `.venv` (`tests/unit/test_score_alpaca.py`: 100 passed, 1 skipped). The nox `tests` venv has no TA-Lib, so this module skips there. `nox -s ci` succeeded: `tests` 3971 passed and 208 skipped, `paper_tests` 160 passed, `safety_typecheck` reported 0 errors, and `migration_smoke` passed.
