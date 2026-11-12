@@ -14,7 +14,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from decimal import Decimal
 
-from .allocation import UNATTRIBUTED_OWNER, AllocationInputs, AllocationLimits, normalize_stop, planned_risk
+from .allocation import UNATTRIBUTED_OWNER, AllocationInputs, AllocationLimits, planned_risk
 
 ZERO = Decimal("0")
 
@@ -52,18 +52,22 @@ class BookExposure:
         )
 
 
-def _risked_stop(allocation_stop: str | None, strategy_stop: str, tick_size: Decimal) -> Decimal:
-    """The stop an exposure was approved at. Rows from before `allocation_stop` was recorded fall back to
-    rounding the raw stop to the current tick."""
-    if allocation_stop is not None:
-        return Decimal(allocation_stop)
-    return normalize_stop(Decimal(strategy_stop), tick_size)
+def _planned_risk(
+    allocation_stop: str | None, quantity: Decimal, entry: Decimal, notional: Decimal,
+) -> Decimal:
+    """Planned risk at the stop frozen when the exposure was approved. Rows from before `allocation_stop`
+    was recorded have no approval-time tick on record (nothing persists it), so any tick we chose now could
+    later be shrunk to understate the risk. They are counted as fully at risk, like a lot with no stop on
+    record, until they close."""
+    if allocation_stop is None:
+        return notional
+    return planned_risk(quantity, entry, Decimal(allocation_stop))
 
 
-def read_book_exposure(conn, book_id: str, *, tick_size: Decimal) -> BookExposure:
+def read_book_exposure(conn, book_id: str) -> BookExposure:
     """Existing exposure is risked at the stop frozen when it was approved (`allocation_stop`), so changing
-    `allocation.tick_size` later cannot shrink it. `tick_size` (the allocation tick) is only the fallback for
-    rows that predate that column."""
+    `allocation.tick_size` later cannot shrink it. Exposure without one (links from before that column
+    existed) counts its whole notional as at risk, independent of any current setting."""
     exposure = BookExposure()
 
     lots = conn.execute(
@@ -87,9 +91,7 @@ def read_book_exposure(conn, book_id: str, *, tick_size: Decimal) -> BookExposur
         else:
             exposure._add(
                 owner=lot["strategy_id"], symbol=lot["symbol"], notional=notional,
-                risk=planned_risk(
-                    remaining, unit_cost, _risked_stop(lot["allocation_stop"], lot["strategy_stop"], tick_size),
-                ),
+                risk=_planned_risk(lot["allocation_stop"], remaining, unit_cost, notional),
             )
 
     pending = conn.execute(
@@ -108,9 +110,8 @@ def read_book_exposure(conn, book_id: str, *, tick_size: Decimal) -> BookExposur
         else:
             exposure._add(
                 owner=order["strategy_id"], symbol=order["symbol"], notional=notional,
-                risk=planned_risk(
-                    Decimal(order["quantity"]), Decimal(order["limit_price"]),
-                    _risked_stop(order["allocation_stop"], order["strategy_stop"], tick_size),
+                risk=_planned_risk(
+                    order["allocation_stop"], Decimal(order["quantity"]), Decimal(order["limit_price"]), notional,
                 ),
             )
     return exposure

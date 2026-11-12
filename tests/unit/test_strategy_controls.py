@@ -447,7 +447,7 @@ def test_unattributed_exposure_blocks_every_strategy_and_counts_as_fully_at_risk
     )
     conn.commit()
 
-    exposure = read_book_exposure(conn, BOOK, tick_size=D("0.01"))
+    exposure = read_book_exposure(conn, BOOK)
     assert exposure.owner_of("AAA") == "alpha" and exposure.owner_of("ZZZ") == "<unattributed>"
     # Alpha's own pending entry risks 8 a share; the unlinked one has no stop on record, so all of it is at risk.
     assert exposure.book_planned_open_risk_usd == D(linked["quantity"]) * D("8") + D(linked["notional_usd"])
@@ -465,7 +465,7 @@ def test_existing_exposure_uses_the_same_tick_rounded_stop_as_new_approvals(conn
     cfg = _cfg(allocation=AllocationLimits(min_stop_distance_fraction=D("0.000001")))
     _enter(conn, _rows(conn), cfg=cfg)
     (order,) = _orders(conn)
-    exposure = read_book_exposure(conn, BOOK, tick_size=cfg.risk.allocation.tick_size)
+    exposure = read_book_exposure(conn, BOOK)
     # Entry 100, stop rounded down to 99.99: 0.01 a share, not the 0.001 the raw stop would give.
     assert exposure.strategy_planned_open_risk_usd["alpha"] == D(order["quantity"]) * D("0.01")
 
@@ -479,31 +479,59 @@ def test_existing_exposure_keeps_its_approved_stop_when_the_tick_size_shrinks(co
     _enter(conn, _rows(conn), cfg=cfg)
     (order,) = _orders(conn)
     quantity = D(order["quantity"])
-    approved = read_book_exposure(conn, BOOK, tick_size=D("0.01"))
+    approved = read_book_exposure(conn, BOOK)
     assert approved.strategy_planned_open_risk_usd["alpha"] == quantity * D("0.01")
 
-    drifted = read_book_exposure(conn, BOOK, tick_size=D("0.001"))
-    assert drifted.strategy_planned_open_risk_usd["alpha"] == approved.strategy_planned_open_risk_usd["alpha"]
-    assert drifted.book_planned_open_risk_usd == approved.book_planned_open_risk_usd
+    # `read_book_exposure` takes no tick size, so a later allocation.tick_size cannot change what it reads.
+    assert read_book_exposure(conn, BOOK).book_planned_open_risk_usd == approved.book_planned_open_risk_usd
     # The raw stop is untouched: exits still use what the strategy asked for.
     assert conn.execute("SELECT strategy_stop, allocation_stop FROM paper_book_strategy_links").fetchone()[:] == (
         "99.999", "99.99",
     )
 
 
-def test_exposure_without_a_recorded_approval_stop_falls_back_to_the_current_tick(conn):
-    """Links written before `allocation_stop` existed have NULL there; they are rounded at the current tick."""
+def test_legacy_exposure_without_an_approval_stop_is_counted_as_fully_at_risk(conn):
+    """Review finding: links from before `allocation_stop` existed have no approval-time tick on record. Rounding
+    them at the current tick let a later, smaller tick shrink their risk ($10 -> $1 for 1,000 shares at 100 with
+    stop 99.999), so they are risked at their whole notional, whatever the configured tick."""
     from trading_research.paper_books.strategy_exposure import read_book_exposure
+    from trading_research.storage.strategy_bridge_schema import apply_strategy_bridge_schema
 
-    _store(conn, "alpha", "AAA", MON, stop="99.999")
-    cfg = _cfg(allocation=AllocationLimits(min_stop_distance_fraction=D("0.000001")))
-    _enter(conn, _rows(conn), cfg=cfg)
-    (order,) = _orders(conn)
-    conn.execute("DROP TRIGGER trg_paper_book_strategy_links_no_update")
-    conn.execute("UPDATE paper_book_strategy_links SET allocation_stop = NULL")
-    conn.commit()
-    exposure = read_book_exposure(conn, BOOK, tick_size=D("0.01"))
-    assert exposure.strategy_planned_open_risk_usd["alpha"] == D(order["quantity"]) * D("0.01")
+    _store(conn, "alpha", "AAA", MON, stop="99.999")  # becomes the filled lot
+    _store(conn, "alpha", "BBB", TUE, stop="99.999")  # stays a pending entry (the next day: the daily notional cap)
+    cfg = _cfg(allocation=AllocationLimits(min_stop_distance_fraction=D("0.000001"), tick_size=D("0.01")))
+    _enter(conn, _rows(conn, session=MON), cfg=cfg)
+    _enter(conn, _rows(conn, session=TUE), session=TUE, as_of_session=TUE, cfg=cfg)
+    orders = {o["symbol"]: o for o in _orders(conn)}
+    filled, pending = orders["AAA"], orders["BBB"]
+    pb_repo.save_fill(conn, {
+        "book_id": BOOK, "fill_id": "fill-aaa", "paper_order_intent_id": filled["paper_order_intent_id"],
+        "symbol": "AAA", "side": "BUY", "simulated_market_price": "100", "limit_price": filled["limit_price"],
+        "fill_quantity": filled["quantity"], "fill_price": "100", "fill_timestamp": regular_session_close(MON),
+        "simulation_rule_version": "v1",
+    })
+    pb_repo.save_lot(conn, {
+        "book_id": BOOK, "lot_id": "lot-aaa", "symbol": "AAA", "opened_at": regular_session_close(MON),
+        "quantity": filled["quantity"], "remaining_quantity": filled["quantity"],
+        "cost_basis_usd": D(filled["quantity"]) * D("100"), "opening_fill_id": "fill-aaa",
+    })
+    pb_repo.update_order_status(conn, BOOK, filled["paper_order_intent_id"], "FILLED")
+    approved = read_book_exposure(conn, BOOK)
+    approved_risk = (D(filled["quantity"]) + D(pending["quantity"])) * D("0.01")
+    assert approved.book_planned_open_risk_usd == approved_risk
+
+    # Upgrade path: take the column away as an older database lacks it, then let the schema migration add it back.
+    conn.execute("ALTER TABLE paper_book_strategy_links DROP COLUMN allocation_stop")
+    apply_strategy_bridge_schema(conn)
+    assert conn.execute("SELECT COUNT(*) FROM paper_book_strategy_links WHERE allocation_stop IS NOT NULL").fetchone()[0] == 0
+
+    legacy = read_book_exposure(conn, BOOK)
+    notional = D(filled["quantity"]) * D("100") + D(pending["notional_usd"])
+    assert legacy.book_planned_open_risk_usd == notional >= approved_risk
+    assert legacy.strategy_planned_open_risk_usd["alpha"] == notional
+    assert legacy.strategy_committed_notional_usd["alpha"] == notional
+    # Still owned by the strategy that opened it: only the risk is conservative.
+    assert legacy.owner_of("AAA") == legacy.owner_of("BBB") == "alpha"
 
 
 def test_the_strategy_bridge_schema_adds_allocation_stop_to_an_older_table():

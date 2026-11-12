@@ -397,7 +397,7 @@ def create_strategy_entry_intents(
                 economic_blackout_decision=blackout_decision, enforce_authoritative_state=authoritative_enabled,
                 # Symbol ownership, stop validity and the risk and capital budgets. Read from the same
                 # committed state the fingerprint above guards, so a change underneath forces a recompute.
-                allocation=read_book_exposure(conn, book_id, tick_size=cfg.risk.allocation.tick_size).inputs_for(
+                allocation=read_book_exposure(conn, book_id).inputs_for(
                     strategy_id=signal.strategy_id, symbol=signal.symbol, stop=context.strategy_stop,
                     limits=cfg.risk.allocation, capital_budget_usd=strategy_controls.capital_budget_usd,
                     risk_budget_fraction=strategy_controls.risk_budget_fraction,
