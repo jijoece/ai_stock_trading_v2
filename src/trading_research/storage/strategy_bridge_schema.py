@@ -20,6 +20,9 @@ CREATE TABLE IF NOT EXISTS paper_book_strategy_links (
     entry_condition TEXT NOT NULL,
     invalidation_condition TEXT NOT NULL,
     strategy_stop TEXT NOT NULL,
+    -- The tick-normalized stop the intent was risked at when approved. Later exposure reads use this, so a
+    -- change to allocation.tick_size cannot re-risk outstanding exposure. NULL only on rows from before it existed.
+    allocation_stop TEXT,
     strategy_target TEXT,
     expected_holding_period INTEGER NOT NULL CHECK (expected_holding_period > 0),
     created_at TEXT NOT NULL,
@@ -67,3 +70,6 @@ BEGIN SELECT RAISE(ABORT, 'paper_book_decision_strategy_controls is append-only'
 
 def apply_strategy_bridge_schema(conn) -> None:
     conn.executescript(STRATEGY_BRIDGE_DDL)
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(paper_book_strategy_links)").fetchall()}
+    if "allocation_stop" not in columns:  # a database created before the column was added
+        conn.execute("ALTER TABLE paper_book_strategy_links ADD COLUMN allocation_stop TEXT")

@@ -470,6 +470,60 @@ def test_existing_exposure_uses_the_same_tick_rounded_stop_as_new_approvals(conn
     assert exposure.strategy_planned_open_risk_usd["alpha"] == D(order["quantity"]) * D("0.01")
 
 
+def test_existing_exposure_keeps_its_approved_stop_when_the_tick_size_shrinks(conn):
+    """Review finding: exposure approved at tick 0.01 must not be re-risked at a smaller tick later."""
+    from trading_research.paper_books.strategy_exposure import read_book_exposure
+
+    _store(conn, "alpha", "AAA", MON, stop="99.999")
+    cfg = _cfg(allocation=AllocationLimits(min_stop_distance_fraction=D("0.000001"), tick_size=D("0.01")))
+    _enter(conn, _rows(conn), cfg=cfg)
+    (order,) = _orders(conn)
+    quantity = D(order["quantity"])
+    approved = read_book_exposure(conn, BOOK, tick_size=D("0.01"))
+    assert approved.strategy_planned_open_risk_usd["alpha"] == quantity * D("0.01")
+
+    drifted = read_book_exposure(conn, BOOK, tick_size=D("0.001"))
+    assert drifted.strategy_planned_open_risk_usd["alpha"] == approved.strategy_planned_open_risk_usd["alpha"]
+    assert drifted.book_planned_open_risk_usd == approved.book_planned_open_risk_usd
+    # The raw stop is untouched: exits still use what the strategy asked for.
+    assert conn.execute("SELECT strategy_stop, allocation_stop FROM paper_book_strategy_links").fetchone()[:] == (
+        "99.999", "99.99",
+    )
+
+
+def test_exposure_without_a_recorded_approval_stop_falls_back_to_the_current_tick(conn):
+    """Links written before `allocation_stop` existed have NULL there; they are rounded at the current tick."""
+    from trading_research.paper_books.strategy_exposure import read_book_exposure
+
+    _store(conn, "alpha", "AAA", MON, stop="99.999")
+    cfg = _cfg(allocation=AllocationLimits(min_stop_distance_fraction=D("0.000001")))
+    _enter(conn, _rows(conn), cfg=cfg)
+    (order,) = _orders(conn)
+    conn.execute("DROP TRIGGER trg_paper_book_strategy_links_no_update")
+    conn.execute("UPDATE paper_book_strategy_links SET allocation_stop = NULL")
+    conn.commit()
+    exposure = read_book_exposure(conn, BOOK, tick_size=D("0.01"))
+    assert exposure.strategy_planned_open_risk_usd["alpha"] == D(order["quantity"]) * D("0.01")
+
+
+def test_the_strategy_bridge_schema_adds_allocation_stop_to_an_older_table():
+    import sqlite3
+
+    from trading_research.storage.strategy_bridge_schema import STRATEGY_BRIDGE_DDL, apply_strategy_bridge_schema
+
+    old = sqlite3.connect(":memory:")
+    old.executescript(
+        "CREATE TABLE strategy_signals (strategy_evaluation_id TEXT PRIMARY KEY);"
+        "CREATE TABLE paper_book_orders (book_id TEXT, paper_order_intent_id TEXT, PRIMARY KEY (book_id, paper_order_intent_id));"
+        "CREATE TABLE paper_book_risk_decisions (risk_decision_id TEXT PRIMARY KEY);"
+        + STRATEGY_BRIDGE_DDL.replace("    allocation_stop TEXT,\n", "")
+    )
+    assert "allocation_stop" not in {r[1] for r in old.execute("PRAGMA table_info(paper_book_strategy_links)")}
+    apply_strategy_bridge_schema(old)
+    apply_strategy_bridge_schema(old)  # idempotent
+    assert "allocation_stop" in {r[1] for r in old.execute("PRAGMA table_info(paper_book_strategy_links)")}
+
+
 def test_a_stale_reference_price_is_still_rejected(conn):
     """The stale-quote policy for the price an order is sized on: `reject_stale_market_price_seconds`."""
     _store(conn, "alpha", "AAA", MON)

@@ -50,6 +50,7 @@ from ..strategies.execution_boundary import StrategyExecutionBoundaryError, buil
 from . import cash_ledger, order_intent, reconciliation, safety_pause, valuation
 from . import daily_risk as daily_risk_module
 from . import risk as risk_module
+from .allocation import normalize_stop
 from .config import PaperBooksConfiguration
 from .strategy_exposure import read_book_exposure
 from .models import (
@@ -445,6 +446,8 @@ def create_strategy_entry_intents(
                 invalidation_condition=context.invalidation_condition, strategy_stop=str(context.strategy_stop),
                 strategy_target=None if signal.target_reference is None else str(signal.target_reference),
                 expected_holding_period=context.expected_holding_period,
+                # Freeze the stop the decision was risked at, so a later tick_size change cannot re-risk it.
+                allocation_stop=str(normalize_stop(context.strategy_stop, cfg.risk.allocation.tick_size)),
             )
             # The same atomic registration `execution.submit_and_simulate` performs for a
             # new intent (local namespace claim, intent row, cash reservation), plus the

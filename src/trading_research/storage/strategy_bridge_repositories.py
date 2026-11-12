@@ -22,6 +22,7 @@ class StrategyLink:
     strategy_stop: str
     strategy_target: str | None
     expected_holding_period: int
+    allocation_stop: str | None = None
 
 
 _COLUMNS = tuple(f.name for f in fields(StrategyLink)) + ("created_at",)

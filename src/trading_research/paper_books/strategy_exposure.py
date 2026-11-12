@@ -52,12 +52,23 @@ class BookExposure:
         )
 
 
+def _risked_stop(allocation_stop: str | None, strategy_stop: str, tick_size: Decimal) -> Decimal:
+    """The stop an exposure was approved at. Rows from before `allocation_stop` was recorded fall back to
+    rounding the raw stop to the current tick."""
+    if allocation_stop is not None:
+        return Decimal(allocation_stop)
+    return normalize_stop(Decimal(strategy_stop), tick_size)
+
+
 def read_book_exposure(conn, book_id: str, *, tick_size: Decimal) -> BookExposure:
-    """`tick_size` must be the allocation tick: stops are risked rounded down to it, exactly as new approvals are."""
+    """Existing exposure is risked at the stop frozen when it was approved (`allocation_stop`), so changing
+    `allocation.tick_size` later cannot shrink it. `tick_size` (the allocation tick) is only the fallback for
+    rows that predate that column."""
     exposure = BookExposure()
 
     lots = conn.execute(
-        "SELECT l.symbol, l.quantity, l.remaining_quantity, l.cost_basis_usd, k.strategy_id, k.strategy_stop "
+        "SELECT l.symbol, l.quantity, l.remaining_quantity, l.cost_basis_usd, k.strategy_id, k.strategy_stop, "
+        "k.allocation_stop "
         "FROM paper_book_position_lots l "
         "JOIN paper_book_fills f ON f.book_id = l.book_id AND f.fill_id = l.opening_fill_id "
         "LEFT JOIN paper_book_strategy_links k "
@@ -76,11 +87,14 @@ def read_book_exposure(conn, book_id: str, *, tick_size: Decimal) -> BookExposur
         else:
             exposure._add(
                 owner=lot["strategy_id"], symbol=lot["symbol"], notional=notional,
-                risk=planned_risk(remaining, unit_cost, normalize_stop(Decimal(lot["strategy_stop"]), tick_size)),
+                risk=planned_risk(
+                    remaining, unit_cost, _risked_stop(lot["allocation_stop"], lot["strategy_stop"], tick_size),
+                ),
             )
 
     pending = conn.execute(
-        "SELECT o.symbol, o.quantity, o.limit_price, o.notional_usd, k.strategy_id, k.strategy_stop "
+        "SELECT o.symbol, o.quantity, o.limit_price, o.notional_usd, k.strategy_id, k.strategy_stop, "
+        "k.allocation_stop "
         "FROM paper_book_orders o "
         "LEFT JOIN paper_book_strategy_links k "
         "  ON k.book_id = o.book_id AND k.paper_order_intent_id = o.paper_order_intent_id "
@@ -96,7 +110,7 @@ def read_book_exposure(conn, book_id: str, *, tick_size: Decimal) -> BookExposur
                 owner=order["strategy_id"], symbol=order["symbol"], notional=notional,
                 risk=planned_risk(
                     Decimal(order["quantity"]), Decimal(order["limit_price"]),
-                    normalize_stop(Decimal(order["strategy_stop"]), tick_size),
+                    _risked_stop(order["allocation_stop"], order["strategy_stop"], tick_size),
                 ),
             )
     return exposure
