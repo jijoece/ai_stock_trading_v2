@@ -344,7 +344,9 @@ def settle_to_flat(trading, rec: Recorder, seconds: int = SETTLE_SECONDS) -> lis
                             + ", ".join(str(o.client_order_id or o.id) for o in stuck))
         if owns:
             qty = _position_qty(trading)
-            if qty != 0:
+            # A leg that would not cancel still holds the shares, so a flatten would be rejected (or, for a stale
+            # sell, could open a short); report the position instead of submitting it.
+            if qty != 0 and not stuck:
                 side = OrderSide.SELL if qty > 0 else OrderSide.BUY
                 flat = MarketOrderRequest(symbol=SYMBOL, qty=float(abs(qty)), side=side, time_in_force=TimeInForce.DAY,
                                           client_order_id=cid("cleanup_flatten"))
@@ -390,7 +392,7 @@ def stage_fill(trading, data, rec: Recorder) -> None:
     print(f"  bid {bid} ask {ask}; marketable limit {marketable}; stop {stop}")
     rec.owns_symbol = True  # the account was verified free of SPY: from here any SPY position is this run's
 
-    req =LimitOrderRequest(symbol=SYMBOL, qty=1, side=OrderSide.BUY, limit_price=marketable, time_in_force=TimeInForce.GTC,
+    req = LimitOrderRequest(symbol=SYMBOL, qty=1, side=OrderSide.BUY, limit_price=marketable, time_in_force=TimeInForce.GTC,
                             order_class=OrderClass.OTO, stop_loss=StopLossRequest(stop_price=stop), client_order_id=cid("fill_oto"))
     parent = rec.run("fill_submit_oto", req.model_dump(mode="json"), lambda: trading.submit_order(req))
     if parent is None:
