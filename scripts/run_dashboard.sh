@@ -36,7 +36,7 @@ if ! "$PYTHON" -c "import streamlit" >/dev/null 2>&1; then
   exit 1
 fi
 
-nohup "$PYTHON" -m streamlit run dashboard/streamlit_app.py \
+nohup "$PYTHON" -m streamlit run src/dashboard/streamlit_app.py \
   --server.address 127.0.0.1 \
   --server.port 8501 \
   >"$LOG_FILE" 2>&1 &

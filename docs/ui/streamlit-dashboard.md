@@ -18,7 +18,7 @@ Tailscale Serve HTTPS
 127.0.0.1:8501
         |
         v
-Streamlit dashboard (dashboard/streamlit_app.py)
+Streamlit dashboard (src/dashboard/streamlit_app.py)
         |
         v
 Read-only query services (dashboard/services/*.py)
@@ -27,7 +27,8 @@ Read-only query services (dashboard/services/*.py)
 Existing SQLite research database (read-only, mode=ro, query_only)
 ```
 
-Pages: Overview, Decisions, Research Cycles, Portfolio, System Health.
+Pages: Overview, Decisions, Research Cycles, Portfolio, System Health, and the
+opt-in Score a Ticker page (see "On-demand ticker scoring" below).
 Services use short-lived, read-only SQLite connections with parameterized,
 bounded queries; no query ever commits, migrates, or creates tables.
 
@@ -95,6 +96,32 @@ internet — only to your tailnet.
 4. Access is gated by tailnet device authorization — no separate dashboard
    password is configured in this milestone.
 
+## On-demand ticker scoring (opt-in)
+
+The Score a Ticker page lets you score up to five symbols from your phone. It
+is **off by default**: without `AI_STOCK_TRADING_ENABLE_SCORING=1` the page only
+shows a notice.
+
+```bash
+export AI_STOCK_TRADING_ENABLE_SCORING=1
+export ALPACA_MARKET_DATA_API_KEY=...      # Alpaca source
+export ALPACA_MARKET_DATA_API_SECRET=...
+scripts/run_dashboard.sh                   # restart to pick up the variables
+```
+
+* It runs `scripts/score.py --alpaca|--robinhood SYMBOLS --json` as a child
+  process with a fixed argument list (no shell, 180 s timeout) and displays the
+  JSON card. All indicator math stays in Python.
+* The Robinhood source needs a prior `python3 scripts/mcp_login.py login robinhood`
+  on this Mac and uses only the read-only `get_equity_historicals` call.
+* `--check-holding` (account positions) is not offered; you pick
+  Unknown/Holding/Not holding yourself.
+* Only the script's own `error: ...` line is shown on failure; raw output and
+  tracebacks are never displayed.
+* No order, approval, or broker-write path exists on this page.
+* Credentials come from the environment of the dashboard process and are never
+  displayed.
+
 ## Status checks
 
 ```bash
@@ -137,7 +164,10 @@ intend to remove every Serve route on this device.
   sanitized.
 * No trading, order-placement, approval, pause/resume, or scheduler control
   exists anywhere in the dashboard.
-* No real provider, broker, or external network call is made by the
+* The only exception is the opt-in Score a Ticker page (disabled unless
+  `AI_STOCK_TRADING_ENABLE_SCORING=1`), which makes read-only market-data
+  calls; see below. Apart from it, no real provider, broker, or external
+  network call is made by the
   dashboard or its tests.
 
 ## Known limitations

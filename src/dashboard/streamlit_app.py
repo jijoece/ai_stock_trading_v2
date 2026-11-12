@@ -7,6 +7,7 @@ from dashboard.pages.decisions import render as render_decisions
 from dashboard.pages.overview import render as render_overview
 from dashboard.pages.portfolio import render as render_portfolio
 from dashboard.pages.research_cycles import render as render_research_cycles
+from dashboard.pages.score_ticker import render as render_score_ticker
 from dashboard.pages.system_health import render as render_system_health
 
 
@@ -17,6 +18,7 @@ navigation = st.navigation([
     st.Page(render_decisions, title="Decisions", icon="🔎", url_path="decisions"),
     st.Page(render_research_cycles, title="Research Cycles", icon="🧪", url_path="research-cycles"),
     st.Page(render_portfolio, title="Portfolio", icon="💼", url_path="portfolio"),
+    st.Page(render_score_ticker, title="Score a Ticker", icon="🎯", url_path="score-ticker"),
     st.Page(render_system_health, title="System Health", icon="🩺", url_path="system-health"),
 ])
 navigation.run()
