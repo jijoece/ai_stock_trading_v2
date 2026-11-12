@@ -447,7 +447,7 @@ def test_unattributed_exposure_blocks_every_strategy_and_counts_as_fully_at_risk
     )
     conn.commit()
 
-    exposure = read_book_exposure(conn, BOOK)
+    exposure = read_book_exposure(conn, BOOK, tick_size=D("0.01"))
     assert exposure.owner_of("AAA") == "alpha" and exposure.owner_of("ZZZ") == "<unattributed>"
     # Alpha's own pending entry risks 8 a share; the unlinked one has no stop on record, so all of it is at risk.
     assert exposure.book_planned_open_risk_usd == D(linked["quantity"]) * D("8") + D(linked["notional_usd"])
@@ -455,6 +455,19 @@ def test_unattributed_exposure_blocks_every_strategy_and_counts_as_fully_at_risk
     _store(conn, "alpha", "ZZZ", TUE)
     outcome = _enter(conn, _rows(conn, session=TUE), as_of_session=TUE)[0]
     assert outcome.reasons[0] == "REJECTED_SYMBOL_OWNED_BY_OTHER_STRATEGY"
+
+
+def test_existing_exposure_uses_the_same_tick_rounded_stop_as_new_approvals(conn):
+    """Review finding: a stop of 99.999 is risked at 99.99 when approved, so pending risk must count it the same way."""
+    from trading_research.paper_books.strategy_exposure import read_book_exposure
+
+    _store(conn, "alpha", "AAA", MON, stop="99.999")
+    cfg = _cfg(allocation=AllocationLimits(min_stop_distance_fraction=D("0.000001")))
+    _enter(conn, _rows(conn), cfg=cfg)
+    (order,) = _orders(conn)
+    exposure = read_book_exposure(conn, BOOK, tick_size=cfg.risk.allocation.tick_size)
+    # Entry 100, stop rounded down to 99.99: 0.01 a share, not the 0.001 the raw stop would give.
+    assert exposure.strategy_planned_open_risk_usd["alpha"] == D(order["quantity"]) * D("0.01")
 
 
 def test_a_stale_reference_price_is_still_rejected(conn):

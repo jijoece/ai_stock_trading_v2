@@ -14,7 +14,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from decimal import Decimal
 
-from .allocation import UNATTRIBUTED_OWNER, AllocationInputs, AllocationLimits, planned_risk
+from .allocation import UNATTRIBUTED_OWNER, AllocationInputs, AllocationLimits, normalize_stop, planned_risk
 
 ZERO = Decimal("0")
 
@@ -52,7 +52,8 @@ class BookExposure:
         )
 
 
-def read_book_exposure(conn, book_id: str) -> BookExposure:
+def read_book_exposure(conn, book_id: str, *, tick_size: Decimal) -> BookExposure:
+    """`tick_size` must be the allocation tick: stops are risked rounded down to it, exactly as new approvals are."""
     exposure = BookExposure()
 
     lots = conn.execute(
@@ -75,7 +76,7 @@ def read_book_exposure(conn, book_id: str) -> BookExposure:
         else:
             exposure._add(
                 owner=lot["strategy_id"], symbol=lot["symbol"], notional=notional,
-                risk=planned_risk(remaining, unit_cost, Decimal(lot["strategy_stop"])),
+                risk=planned_risk(remaining, unit_cost, normalize_stop(Decimal(lot["strategy_stop"]), tick_size)),
             )
 
     pending = conn.execute(
@@ -93,6 +94,9 @@ def read_book_exposure(conn, book_id: str) -> BookExposure:
         else:
             exposure._add(
                 owner=order["strategy_id"], symbol=order["symbol"], notional=notional,
-                risk=planned_risk(Decimal(order["quantity"]), Decimal(order["limit_price"]), Decimal(order["strategy_stop"])),
+                risk=planned_risk(
+                    Decimal(order["quantity"]), Decimal(order["limit_price"]),
+                    normalize_stop(Decimal(order["strategy_stop"]), tick_size),
+                ),
             )
     return exposure
