@@ -1,0 +1,52 @@
+{
+  "request": {},
+  "response": [
+    {
+      "asset_class": "us_equity",
+      "asset_id": "b0b6dd9d-8b9b-48a9-ba46-b9d54906e415",
+      "asset_marginable": true,
+      "avg_entry_price": "333.16",
+      "avg_entry_swap_rate": null,
+      "change_today": "0.01889",
+      "cost_basis": "333.16",
+      "current_price": "355.095",
+      "exchange": "NASDAQ",
+      "lastday_price": "348.51",
+      "market_value": "355.095",
+      "qty": "1",
+      "qty_available": "1",
+      "side": "long",
+      "swap_rate": null,
+      "symbol": "AAPL",
+      "unrealized_intraday_pl": "6.585",
+      "unrealized_intraday_plpc": "0.01889",
+      "unrealized_pl": "21.935",
+      "unrealized_plpc": "0.06584",
+      "usd": null
+    },
+    {
+      "asset_class": "us_equity",
+      "asset_id": "b28f4066-5c6d-479b-a2af-85dc1a8f16fb",
+      "asset_marginable": true,
+      "avg_entry_price": "761.99",
+      "avg_entry_swap_rate": null,
+      "change_today": "0.0161",
+      "cost_basis": "761.99",
+      "current_price": "761.99",
+      "exchange": "ARCA",
+      "lastday_price": "749.92",
+      "market_value": "761.99",
+      "qty": "1",
+      "qty_available": "0",
+      "side": "long",
+      "swap_rate": null,
+      "symbol": "SPY",
+      "unrealized_intraday_pl": "0",
+      "unrealized_intraday_plpc": "0",
+      "unrealized_pl": "0",
+      "unrealized_plpc": "0",
+      "usd": null
+    }
+  ],
+  "step": "final_positions"
+}

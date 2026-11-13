@@ -30,6 +30,9 @@ read multiple milestone variants unless the task requires comparing them.
 | Deterministic strategy candidate selection (momentum/mean-reversion/catalyst) | [`strategy-candidate-selection.md`](strategy-candidate-selection.md) |
 | Historical strategy backtesting build plan (Steps 1-4 implemented; Step 5 operator-initiated) | [`historical-backtesting-plan.md`](historical-backtesting-plan.md) |
 | Strategy paper testing build plan, activation stages 3–7 (phases 1–3 implemented; Phase 0 gate and stages 6–7 are operator-initiated) | [`paper-testing-plan.md`](paper-testing-plan.md) |
+| Automated multi-strategy live trading, remaining work (**Proposed**; only the local paper-path parts of Phases 2–3 are built; the repository remains paper only) | [`automated-live-trading-implementation-plan.md`](automated-live-trading-implementation-plan.md) |
+| Automated live trading: requirements-to-tests matrix and doc-edit list (Phase 0) | [`automated-live-trading-requirements-matrix.md`](automated-live-trading-requirements-matrix.md) |
+| Alpaca paper capability matrix and captured fixtures (Phase 1 spike evidence) | [`alpaca-capability/README.md`](alpaca-capability/README.md) |
 | Latest model-provider safety closure | [`milestone12-1-2-model-provider-ownership.md`](milestone12-1-2-model-provider-ownership.md) |
 | Latest completed integrity implementation | [`milestone12-1-1-provider-health-closure.md`](milestone12-1-1-provider-health-closure.md) |
 | Prior completed integrity implementation | [`milestone12-1-provider-health-ci-integrity.md`](milestone12-1-provider-health-ci-integrity.md) |
@@ -57,6 +60,7 @@ ADRs are canonical for the boundary they cover:
 | External paper-account isolation | [`adr/0007-external-paper-account-isolation.md`](adr/0007-external-paper-account-isolation.md) |
 | Advanced risk and lifecycle state | [`adr/0008-advanced-risk-lifecycle-state.md`](adr/0008-advanced-risk-lifecycle-state.md) |
 | LumiBot backtest distribution boundary (**Accepted** 2026-08-01) | [`adr/0009-lumibot-backtest-distribution-boundary.md`](adr/0009-lumibot-backtest-distribution-boundary.md) |
+| Autonomous multi-strategy live trading with broker-held stops (**Proposed**, not accepted; changes nothing yet) | [`adr/0010-automated-live-trading.md`](adr/0010-automated-live-trading.md) |
 
 ## Operational runbooks
 

@@ -13,6 +13,7 @@ from datetime import datetime
 from decimal import ROUND_FLOOR, Decimal
 
 from ..storage import paper_books_repositories as repo
+from .allocation import AllocationInputs, apply_allocation
 from .config import RiskSection
 from .models import (
     POLICY_VERSION,
@@ -73,6 +74,7 @@ def evaluate_paper_risk(
     risk_config: RiskSection, policy_version: str = POLICY_VERSION,
     daily_risk_state=None, economic_blackout_decision=None,
     enforce_authoritative_state: bool = False,
+    allocation: AllocationInputs | None = None,
 ) -> PaperRiskDecision:
     def rejected(decision: str, *reasons: str) -> PaperRiskDecision:
         return PaperRiskDecision(
@@ -180,8 +182,19 @@ def evaluate_paper_risk(
         binding_reason_code = binding[1] or RISK_REJECTED_INSUFFICIENT_CASH
         return rejected(binding_reason_code, binding[2], "approved_quantity rounds down to zero whole shares")
 
+    # Cross-strategy checks run last, so they can only keep or shrink what the book-level caps allowed.
+    allocation_reasons: tuple[str, ...] = ()
+    if allocation is not None:
+        allocated = apply_allocation(
+            quantity=approved_quantity, entry=reference_price, equity=context.net_liquidation_value_usd,
+            inputs=allocation,
+        )
+        if allocated.reject_code is not None:
+            return rejected(allocated.reject_code, *allocated.reasons)
+        approved_quantity, allocation_reasons = allocated.quantity, allocated.reasons
+
     final_notional = approved_quantity * reference_price
-    binding_reasons = tuple(text for cap, _, text in caps if cap <= requested_notional)
+    binding_reasons = tuple(text for cap, _, text in caps if cap <= requested_notional) + allocation_reasons
     requested_quantity_floor = requested_quantity_hint.to_integral_value(rounding=ROUND_FLOOR)
     decision = RISK_APPROVED if approved_quantity == requested_quantity_floor else RISK_APPROVED_REDUCED
 

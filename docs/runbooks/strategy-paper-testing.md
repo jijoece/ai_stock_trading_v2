@@ -21,7 +21,13 @@ reviewed edit of `strategy_candidate_selection.activation_stage` in
 | `strategy-candidates` | `STAGE_3_DAILY_READ_ONLY_CANDIDATE_LIST` | `strategy_signals` |
 | `strategy-shadow-update` | `STAGE_4_SHADOW_RECOMMENDATION_TRACKING` | `strategy_shadow_outcomes` |
 | `strategy-shadow-report` | none (read-only) | nothing |
-| `paper-book-run-strategy-cycle` | `STAGE_5_LOCAL_PAPER_BOOK` | paper-book tables, `paper_book_strategy_links` |
+| `paper-book-run-strategy-cycle` | `STAGE_5_LOCAL_PAPER_BOOK` | paper-book tables, `paper_book_strategy_links`, `paper_book_decision_strategy_controls` |
+
+`paper_book_decision_strategy_controls` stores, per risk decision (approved, resized or
+rejected), the strategy controls it was evaluated under: mode, stage, allowlist, capital
+and risk budgets and signal validity, plus their `controls_hash`. Trace an order intent
+through its `risk_decision_id` to see which `strategies.yaml` settings authorised it.
+The cycle report shows the same `strategy_controls_hash` on each persisted outcome.
 
 All tables written by these commands are append-only (database triggers reject
 UPDATE and DELETE). Each command also refuses a session that has not closed yet.

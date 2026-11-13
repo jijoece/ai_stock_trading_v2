@@ -144,7 +144,7 @@ def run_strategy_paper_cycle(
     blocked_reasons = _entry_block_reasons(lifecycle_result, book_id)
     outcomes = [] if blocked_reasons else strategy_bridge.create_strategy_entry_intents(
         conn, strategy_rows=rows, as_of=close, cfg=cfg, price_provider=price_provider, clock=clock,
-        experiment_policy=experiment_policy,
+        experiment_policy=experiment_policy, controls=strategy_config.controls,
     )
     counts: dict[str, int] = {}
     for item in outcomes:
@@ -171,7 +171,8 @@ def run_strategy_paper_cycle(
             "outcomes": [
                 {"symbol": o.symbol, "strategy_id": o.strategy_id, "strategy_signal_id": o.strategy_signal_id,
                  "outcome": o.outcome, "reasons": list(o.reasons), "risk_decision_id": o.risk_decision_id,
-                 "paper_order_intent_id": o.paper_order_intent_id}
+                 "paper_order_intent_id": o.paper_order_intent_id,
+                 "strategy_controls_hash": o.strategy_controls_hash}
                 for o in outcomes
             ],
         },

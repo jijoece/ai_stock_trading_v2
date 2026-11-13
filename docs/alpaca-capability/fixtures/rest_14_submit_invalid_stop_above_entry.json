@@ -1,0 +1,28 @@
+{
+  "error": {
+    "code": 42210000,
+    "message": "{\"base_price\":\"609.1\",\"code\":42210000,\"message\":\"stop_loss.stop_price must be \\u003c= base_price - 0.01\"}",
+    "status_code": 422,
+    "type": "APIError"
+  },
+  "request": {
+    "client_order_id": "p1spike-invalid_stop_above_entry-804f933c",
+    "extended_hours": null,
+    "legs": null,
+    "limit_price": 609.1,
+    "notional": null,
+    "order_class": "oto",
+    "position_intent": null,
+    "qty": 1.0,
+    "side": "buy",
+    "stop_loss": {
+      "limit_price": null,
+      "stop_price": 610.1
+    },
+    "symbol": "SPY",
+    "take_profit": null,
+    "time_in_force": "gtc",
+    "type": "limit"
+  },
+  "step": "submit_invalid_stop_above_entry"
+}

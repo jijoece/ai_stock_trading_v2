@@ -1,0 +1,24 @@
+{
+  "error": {
+    "code": 40310000,
+    "message": "{\"available\":\"0\",\"code\":40310000,\"existing_qty\":\"1\",\"held_for_orders\":\"1\",\"message\":\"insufficient qty available for order (requested: 1, available: 0)\",\"related_orders\":[\"17108a15-530e-4f80-bfe8-4b2b76f4cc17\"],\"symbol\":\"SPY\"}",
+    "status_code": 403,
+    "type": "APIError"
+  },
+  "request": {
+    "client_order_id": "p1spike-fill_flatten-cf8b2259",
+    "extended_hours": null,
+    "legs": null,
+    "notional": null,
+    "order_class": null,
+    "position_intent": null,
+    "qty": 1.0,
+    "side": "sell",
+    "stop_loss": null,
+    "symbol": "SPY",
+    "take_profit": null,
+    "time_in_force": "day",
+    "type": "market"
+  },
+  "step": "fill_flatten"
+}

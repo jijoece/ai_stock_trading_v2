@@ -309,6 +309,25 @@ def _migration_15_strategy_bridge(conn: sqlite3.Connection) -> None:
         raise SchemaVersionError(f"paper_book_strategy_links schema objects missing: {sorted(wanted - present)}")
 
 
+def _migration_16_decision_strategy_controls(conn: sqlite3.Connection) -> None:
+    """docs/automated-live-trading-implementation-plan.md Phase 2: the append-only
+    `paper_book_decision_strategy_controls` table is created by `strategy_bridge_schema`
+    before migrations run. Fails closed if the table or its triggers are absent."""
+    wanted = {
+        "paper_book_decision_strategy_controls", "trg_paper_book_decision_strategy_controls_no_update",
+        "trg_paper_book_decision_strategy_controls_no_delete",
+    }
+    present = {
+        row[0] for row in conn.execute(
+            "SELECT name FROM sqlite_master WHERE name IN (?, ?, ?)", tuple(sorted(wanted)),
+        ).fetchall()
+    }
+    if wanted - present:
+        raise SchemaVersionError(
+            f"paper_book_decision_strategy_controls schema objects missing: {sorted(wanted - present)}"
+        )
+
+
 # Ordered, idempotent migrations. Each callable must be safe to invoke more
 # than once (defense in depth on top of the version gate, which normally
 # prevents re-invocation) and must not raise on a database that already has
@@ -370,6 +389,11 @@ _MIGRATIONS: dict[int, tuple[str, Callable[[sqlite3.Connection], None]]] = {
     15: (
         "add append-only paper_book_strategy_links table (docs/paper-testing-plan.md Phase 3)",
         _migration_15_strategy_bridge,
+    ),
+    16: (
+        "add append-only paper_book_decision_strategy_controls table "
+        "(docs/automated-live-trading-implementation-plan.md Phase 2)",
+        _migration_16_decision_strategy_controls,
     ),
 }
 

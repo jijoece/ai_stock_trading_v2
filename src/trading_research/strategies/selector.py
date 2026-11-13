@@ -46,6 +46,12 @@ def _sort_key(signal: StrategySignal) -> tuple[float, int, float]:
     return (-signal.signal_strength, quality_rank, freshness_rank)
 
 
+def signal_rank_key(signal: StrategySignal) -> tuple[float, int, float]:
+    """The one ordering rule for signals that compete for the same cash or symbol: strongest first, then
+    data quality, then the newer `data_as_of`. Callers add their own stable tie-break (strategy, symbol, id)."""
+    return _sort_key(signal)
+
+
 def _symbol_allocation_decision(
     symbol: str, portfolio: PortfolioState | None, config: ShortlistConfig,
 ) -> tuple[bool, str | None]:

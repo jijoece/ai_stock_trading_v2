@@ -1,0 +1,29 @@
+{
+  "request": {
+    "symbol": "SPY"
+  },
+  "response": {
+    "asset_class": "us_equity",
+    "attributes": [
+      "fractional_eh_enabled",
+      "has_options",
+      "options_late_close",
+      "overnight_tradable"
+    ],
+    "easy_to_borrow": true,
+    "exchange": "ARCA",
+    "fractionable": true,
+    "id": "b28f4066-5c6d-479b-a2af-85dc1a8f16fb",
+    "maintenance_margin_requirement": 30.0,
+    "marginable": true,
+    "min_order_size": null,
+    "min_trade_increment": null,
+    "name": "State Street SPDR S&P 500 ETF Trust",
+    "price_increment": null,
+    "shortable": true,
+    "status": "active",
+    "symbol": "SPY",
+    "tradable": true
+  },
+  "step": "asset"
+}

@@ -1,0 +1,140 @@
+[
+  {
+    "request": {},
+    "response": {
+      "account_blocked": false,
+      "account_number": "<redacted>",
+      "accrued_fees": "0",
+      "buying_power": "399660.93",
+      "cash": "99666.83",
+      "created_at": "2026-07-12T20:33:35.261565Z",
+      "crypto_status": "ACTIVE",
+      "currency": "USD",
+      "daytrade_count": null,
+      "daytrading_buying_power": null,
+      "equity": "100021.69",
+      "id": "<redacted>",
+      "initial_margin": "177.43",
+      "last_equity": "100015.34",
+      "last_maintenance_margin": "104.55",
+      "long_market_value": "354.86",
+      "maintenance_margin": "106.46",
+      "multiplier": "4",
+      "non_marginable_buying_power": "99844.26",
+      "options_approved_level": 3,
+      "options_buying_power": "99844.26",
+      "options_trading_level": 3,
+      "pattern_day_trader": null,
+      "pending_transfer_in": null,
+      "pending_transfer_out": null,
+      "portfolio_value": "100021.69",
+      "regt_buying_power": "199688.52",
+      "short_market_value": "0",
+      "shorting_enabled": true,
+      "sma": "100017.52",
+      "status": "ACTIVE",
+      "trade_suspended_by_user": false,
+      "trading_blocked": false,
+      "transfers_blocked": false
+    },
+    "step": "account"
+  },
+  {
+    "request": {},
+    "response": {
+      "is_open": true,
+      "next_close": "2026-11-11T16:00:00-05:00",
+      "next_open": "2026-11-12T09:30:00-05:00",
+      "timestamp": "2026-11-11T13:10:45.069142-05:00"
+    },
+    "step": "clock"
+  },
+  {
+    "request": {},
+    "response": {
+      "dtbp_check": null,
+      "fractional_trading": true,
+      "max_margin_multiplier": "4",
+      "max_options_trading_level": null,
+      "no_shorting": false,
+      "pdt_check": null,
+      "ptp_no_exception_entry": false,
+      "suspend_trade": false,
+      "trade_confirm_email": "all"
+    },
+    "step": "account_configurations"
+  },
+  {
+    "request": {
+      "symbol": "SPY"
+    },
+    "response": {
+      "asset_class": "us_equity",
+      "attributes": [
+        "fractional_eh_enabled",
+        "has_options",
+        "options_late_close",
+        "overnight_tradable"
+      ],
+      "easy_to_borrow": true,
+      "exchange": "ARCA",
+      "fractionable": true,
+      "id": "b28f4066-5c6d-479b-a2af-85dc1a8f16fb",
+      "maintenance_margin_requirement": 30.0,
+      "marginable": true,
+      "min_order_size": null,
+      "min_trade_increment": null,
+      "name": "State Street SPDR S&P 500 ETF Trust",
+      "price_increment": null,
+      "shortable": true,
+      "status": "active",
+      "symbol": "SPY",
+      "tradable": true
+    },
+    "step": "asset"
+  },
+  {
+    "request": {},
+    "response": [
+      {
+        "asset_class": "us_equity",
+        "asset_id": "b0b6dd9d-8b9b-48a9-ba46-b9d54906e415",
+        "asset_marginable": true,
+        "avg_entry_price": "333.16",
+        "avg_entry_swap_rate": null,
+        "change_today": "0.01822",
+        "cost_basis": "333.16",
+        "current_price": "354.86",
+        "exchange": "NASDAQ",
+        "lastday_price": "348.51",
+        "market_value": "354.86",
+        "qty": "1",
+        "qty_available": "1",
+        "side": "long",
+        "swap_rate": null,
+        "symbol": "AAPL",
+        "unrealized_intraday_pl": "6.35",
+        "unrealized_intraday_plpc": "0.01822",
+        "unrealized_pl": "21.7",
+        "unrealized_plpc": "0.06513",
+        "usd": null
+      }
+    ],
+    "step": "positions"
+  },
+  {
+    "request": {},
+    "response": [],
+    "step": "open_orders"
+  },
+  {
+    "request": {
+      "symbol": "SPY"
+    },
+    "response": [
+      761.3,
+      761.35
+    ],
+    "step": "latest_quote"
+  }
+]

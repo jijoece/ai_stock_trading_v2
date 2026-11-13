@@ -1,0 +1,15 @@
+{
+  "request": {},
+  "response": {
+    "dtbp_check": null,
+    "fractional_trading": true,
+    "max_margin_multiplier": "4",
+    "max_options_trading_level": null,
+    "no_shorting": false,
+    "pdt_check": null,
+    "ptp_no_exception_entry": false,
+    "suspend_trade": false,
+    "trade_confirm_email": "all"
+  },
+  "step": "account_configurations"
+}
