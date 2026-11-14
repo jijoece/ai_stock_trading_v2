@@ -11,10 +11,13 @@ gate (entries need a MATCHED book) is what makes "closed" mean "closed and recon
 """
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from decimal import Decimal
 
 from .allocation import UNATTRIBUTED_OWNER, AllocationInputs, AllocationLimits, planned_risk
+
+logger = logging.getLogger(__name__)
 
 ZERO = Decimal("0")
 
@@ -60,6 +63,10 @@ def _planned_risk(
     later be shrunk to understate the risk. They are counted as fully at risk, like a lot with no stop on
     record, until they close."""
     if allocation_stop is None:
+        logger.warning(
+            "strategy exposure from before allocation_stop was recorded is counted at its full notional (%s); "
+            "new entries may be rejected on the risk budget until it closes", notional,
+        )
         return notional
     return planned_risk(quantity, entry, Decimal(allocation_stop))
 

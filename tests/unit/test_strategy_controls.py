@@ -735,3 +735,72 @@ def test_no_controls_record_survives_a_failed_intent_registration(conn, monkeypa
     for table in ("paper_book_risk_decisions", "paper_book_decision_strategy_controls"):
         assert conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] == 0
     assert _orders(conn) == []
+
+
+# -- second review pass: races, schema ledger, legacy exposure visibility, hash cost ------------------------
+
+
+def test_a_rejection_that_lost_a_race_neither_duplicates_nor_restamps_the_winners_decision(conn, monkeypatch):
+    """Review finding: the rejection path persisted in a new transaction without re-checking. A runner that lost the
+    race for the same signal must skip it, not raise (different controls) or write a second decision."""
+    from trading_research.paper_books import order_intent, strategy_bridge
+    from trading_research.paper_books.strategy_bridge import derive_strategy_recommendation_id, signal_from_row
+
+    _store(conn, "alpha", "AAA", MON, entry="100", limit="90", stop="90")  # always rejected by risk
+    (row,) = _rows(conn)
+    signal = signal_from_row(row)
+    recommendation_id = derive_strategy_recommendation_id(derive_strategy_signal_content_id(signal))
+    winner_controls = StrategyControls(strategy_id="alpha", mode="paper", activation_stage=STAGE_5, capital_budget_usd=D("1"))
+    original = strategy_bridge.risk_module.evaluate_paper_risk
+    close = regular_session_close(MON)
+
+    def evaluate_then_lose_the_race(*args, **kwargs):
+        decision = original(*args, **kwargs)
+        # Another runner commits its decision for this signal after this runner's first already_processed() check.
+        risk_id = order_intent.persist_risk_decision(
+            conn, BOOK, f"strategy:{MON.isoformat()}", recommendation_id, signal.symbol, decision, None, lambda: close,
+        )
+        save_decision_controls(
+            conn, risk_decision_id=risk_id, book_id=BOOK, controls=winner_controls, created_at=close.isoformat(),
+        )
+        return decision
+
+    monkeypatch.setattr(strategy_bridge.risk_module, "evaluate_paper_risk", evaluate_then_lose_the_race)
+    (outcome,) = _enter(conn, [row])  # default controls differ from the winner's: this used to raise ValueError
+    assert outcome.outcome == OUTCOME_SKIPPED_ALREADY_PROCESSED and _orders(conn) == []
+    assert conn.execute("SELECT COUNT(*) FROM paper_book_risk_decisions").fetchone()[0] == 1
+    (stored,) = conn.execute("SELECT controls_hash FROM paper_book_decision_strategy_controls").fetchall()
+    assert stored[0] == winner_controls.controls_hash  # still the controls the winner decided under
+
+
+def test_a_database_without_the_allocation_stop_column_fails_the_schema_ledger(conn):
+    from trading_research.storage.schema_version import (
+        CURRENT_SCHEMA_VERSION, SchemaVersionError, _migration_17_strategy_link_allocation_stop,
+    )
+
+    assert conn.execute("SELECT 1 FROM schema_version WHERE version = 17").fetchone() is not None
+    assert CURRENT_SCHEMA_VERSION >= 17
+    conn.execute("ALTER TABLE paper_book_strategy_links DROP COLUMN allocation_stop")
+    with pytest.raises(SchemaVersionError, match="allocation_stop"):
+        _migration_17_strategy_link_allocation_stop(conn)
+
+
+def test_counting_legacy_exposure_at_full_notional_is_logged(conn, caplog):
+    import logging
+
+    from trading_research.paper_books.strategy_exposure import read_book_exposure
+
+    _store(conn, "alpha", "AAA", MON)
+    _enter(conn, _rows(conn))
+    conn.execute("ALTER TABLE paper_book_strategy_links DROP COLUMN allocation_stop")
+    conn.execute("ALTER TABLE paper_book_strategy_links ADD COLUMN allocation_stop TEXT")
+    with caplog.at_level(logging.WARNING, logger="trading_research.paper_books.strategy_exposure"):
+        read_book_exposure(conn, BOOK)
+    assert "full notional" in caplog.text
+
+
+def test_the_controls_hash_is_computed_once_and_matches_the_record():
+    controls = StrategyControls(strategy_id="alpha", mode="paper", activation_stage=STAGE_5)
+    assert controls.controls_hash == hash_config(controls.audit_record())
+    assert vars(controls)["controls_hash"] == controls.controls_hash  # cached on the frozen instance
+    assert replace(controls, capital_budget_usd=D("1")).controls_hash != controls.controls_hash

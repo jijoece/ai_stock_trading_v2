@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date, datetime
+from functools import cached_property
 from decimal import Decimal
 
 from ..evaluation.market_calendar import add_trading_days, regular_session_close
@@ -99,9 +100,9 @@ class StrategyControls:
             "signal_validity_sessions": self.signal_validity_sessions,
         }
 
-    @property
+    @cached_property
     def controls_hash(self) -> str:
-        """Identity of the effective controls. Changing any setting changes it."""
+        """Identity of the effective controls. Changing any setting changes it. Computed once: the record is frozen."""
         return hash_config(self.audit_record())
 
 

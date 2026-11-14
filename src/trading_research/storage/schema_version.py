@@ -328,6 +328,16 @@ def _migration_16_decision_strategy_controls(conn: sqlite3.Connection) -> None:
         )
 
 
+def _migration_17_strategy_link_allocation_stop(conn: sqlite3.Connection) -> None:
+    """`paper_book_strategy_links.allocation_stop` (the stop a decision was risked at, frozen at approval) is
+    added by `strategy_bridge_schema` before migrations run, like the other additive DDL. This records the
+    column in the version ledger and fails closed if it is absent, so a database without it cannot be opened
+    as current: allocation reads select it."""
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(paper_book_strategy_links)").fetchall()}
+    if "allocation_stop" not in columns:
+        raise SchemaVersionError("paper_book_strategy_links.allocation_stop column is missing")
+
+
 # Ordered, idempotent migrations. Each callable must be safe to invoke more
 # than once (defense in depth on top of the version gate, which normally
 # prevents re-invocation) and must not raise on a database that already has
@@ -394,6 +404,11 @@ _MIGRATIONS: dict[int, tuple[str, Callable[[sqlite3.Connection], None]]] = {
         "add append-only paper_book_decision_strategy_controls table "
         "(docs/automated-live-trading-implementation-plan.md Phase 2)",
         _migration_16_decision_strategy_controls,
+    ),
+    17: (
+        "record the paper_book_strategy_links.allocation_stop column "
+        "(docs/automated-live-trading-implementation-plan.md Phase 3)",
+        _migration_17_strategy_link_allocation_stop,
     ),
 }
 
