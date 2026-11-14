@@ -159,9 +159,10 @@ def harness(monkeypatch, tmp_path):
     monkeypatch.setattr(spike, "load_env_file", lambda path: {})
     monkeypatch.setattr(spike, "CREATED_IDS", set())
 
-    def run(mode: str, broker: FakeBroker) -> int:
+    def run(mode: str, broker: FakeBroker, *, confirm: bool = True) -> int:
         monkeypatch.setattr(spike, "build_clients", lambda env: (broker, None))
-        return spike.main([mode, "--env-file", "unused.env", "--i-understand-this-trades-paper"])
+        flags = ["--i-understand-this-trades-paper"] if confirm else []
+        return spike.main([mode, "--env-file", "unused.env", *flags])
 
     return run
 
@@ -222,17 +223,139 @@ def test_a_refused_fill_run_never_flattens_an_existing_position(harness):
 
 def test_run_exits_non_zero_while_a_prefixed_order_cannot_be_cancelled(harness, monkeypatch, capsys):
     broker = FakeBroker(cancel_fails=True)
-    monkeypatch.setattr(spike, "stage_rest", lambda trading, data, rec: trading.add_open_order("p1spike-stuck"))
+    stuck = spike.cid("stuck")
+    monkeypatch.setattr(spike, "stage_rest", lambda trading, data, rec: trading.add_open_order(stuck))
 
     assert harness("rest", broker) == 1
 
     out = capsys.readouterr().out
-    assert "EXPOSURE REMAINS" in out and "p1spike-stuck" in out
+    assert "EXPOSURE REMAINS" in out and stuck in out
 
 
 def test_clean_exit_in_rest_mode_returns_zero(harness, monkeypatch):
     broker = FakeBroker()
-    monkeypatch.setattr(spike, "stage_rest", lambda trading, data, rec: trading.add_open_order("p1spike-rests"))
+    monkeypatch.setattr(spike, "stage_rest", lambda trading, data, rec: trading.add_open_order(spike.cid("rests")))
 
     assert harness("rest", broker) == 0
     assert broker.open_ids() == []
+
+
+# -- review fix: rest mode is a mutating mode ------------------------------------
+
+
+@pytest.mark.parametrize("mode", ["rest", "fill"])
+def test_order_submitting_modes_refuse_to_run_without_the_confirmation_flag(harness, mode):
+    broker = FakeBroker()
+
+    with pytest.raises(SystemExit, match="--i-understand-this-trades-paper"):
+        harness(mode, broker, confirm=False)
+
+    assert broker.submitted == [] and broker.orders == []
+
+
+def test_read_only_mode_needs_no_confirmation_and_submits_nothing(harness, monkeypatch):
+    broker = FakeBroker()
+    monkeypatch.setattr(spike, "stage_read_only", lambda trading, data, rec: None)  # the fake has no account reads
+
+    assert harness("read-only", broker, confirm=False) == 0
+    assert broker.submitted == []
+
+
+def test_rest_order_that_fills_is_flattened_and_the_run_exits_non_zero(harness, capsys):
+    broker = FakeBroker(fill_labels=("oto_day",))  # a "far from the market" entry fills anyway (gap)
+
+    assert harness("rest", broker) == 1
+
+    assert broker.position == 0  # cleanup restored a known-flat account
+    assert broker.open_ids() == []
+    flattens = [s for s in broker.submitted if "cleanup_flatten" in s[0]]
+    assert [(side, qty) for _, side, qty in flattens] == [(OrderSide.SELL, 1.0)]
+    out = capsys.readouterr().out
+    assert "EXPOSURE REMAINS" in out and "filled unexpectedly" in out
+
+
+def test_rest_short_sell_that_fills_is_covered_not_left_short(harness, monkeypatch):
+    broker = FakeBroker(fill_labels=("cleanup_flatten",))  # the cover order (a BUY) fills
+
+    def short_sell_fills(trading, data, rec):
+        spike.require_no_symbol_exposure(trading, rec)  # the same preflight stage_rest runs first
+        order = trading._new(spike.cid("short_no_position"), OrderSide.SELL, 1, "new")
+        trading._fill(order)  # the broker fills the far-above-market sell: the account is now short one share
+
+    monkeypatch.setattr(spike, "stage_rest", short_sell_fills)
+
+    assert harness("rest", broker) == 1
+    assert broker.position == 0  # the short was bought back, not left open
+    assert any(side is OrderSide.BUY and "cleanup_flatten" in cid for cid, side, _ in broker.submitted)
+
+
+@pytest.mark.parametrize("existing", ["position", "open_order"])
+def test_rest_mode_refuses_to_start_on_pre_existing_exposure_and_never_touches_it(harness, existing):
+    broker = FakeBroker(position=3 if existing == "position" else 0)
+    if existing == "open_order":
+        broker.add_open_order("someone-elses-order")
+
+    with pytest.raises(SystemExit, match="refusing"):
+        harness("rest", broker)
+
+    assert broker.submitted == []
+    assert broker.position == (3 if existing == "position" else 0)
+    assert broker.open_ids() == (["someone-elses-order"] if existing == "open_order" else [])
+
+
+def test_a_clean_rest_run_with_no_fill_still_exits_zero(harness):
+    broker = FakeBroker()
+
+    assert harness("rest", broker) == 0
+    assert broker.position == 0 and broker.open_ids() == []
+
+
+# -- review fixes: run-specific ownership, preflight race, offset fills ----------
+
+
+@pytest.mark.parametrize("mode", ["rest", "fill"])
+def test_a_refused_run_never_cancels_another_spike_runs_order(harness, mode):
+    broker = FakeBroker()
+    broker.add_open_order("p1spike-otherrun-oto_day-1234abcd")  # same family prefix, a different run
+
+    with pytest.raises(SystemExit, match="refusing"):
+        harness(mode, broker)
+
+    assert broker.open_ids() == ["p1spike-otherrun-oto_day-1234abcd"]
+    assert broker.submitted == []
+
+
+def test_an_order_that_fills_between_the_preflight_reads_is_refused(harness):
+    class FillsDuringPreflight(FakeBroker):
+        def get_orders(self, req):
+            for order in [o for o in self.orders if o.status.value in _OPEN]:
+                self._fill(order)  # the open buy fills just before the order query
+            return super().get_orders(req)
+
+    broker = FillsDuringPreflight()
+    broker.add_open_order("someone-elses-buy")
+
+    with pytest.raises(SystemExit, match="filled during the preflight"):
+        harness("rest", broker)
+
+    assert broker.submitted == [] and broker.position == 1  # the position was never treated as this run's
+
+
+def test_a_rest_fill_that_was_offset_before_cleanup_still_fails_the_run(harness, monkeypatch, capsys):
+    broker = FakeBroker(fill_labels=("offset_buy",))
+
+    def buy_fills_then_sell_offsets(trading, data, rec):
+        spike.require_no_symbol_exposure(trading, rec)
+        buy = SimpleNamespace(client_order_id=spike.cid("offset_buy"), side=OrderSide.BUY, qty=1)
+        rec.run("submit_offset_buy", {}, lambda: trading.submit_order(buy))
+        sell = SimpleNamespace(client_order_id=spike.cid("offset_sell"), side=OrderSide.SELL, qty=1)
+        rec.run("submit_offset_sell", {}, lambda: trading.submit_order(sell))  # the fake fills sells at once
+
+    monkeypatch.setattr(spike, "stage_rest", buy_fills_then_sell_offsets)
+
+    assert harness("rest", broker) == 1
+
+    assert broker.position == 0  # flat at the end, so no flatten was needed
+    assert not any("cleanup_flatten" in cid for cid, _, _ in broker.submitted)
+    out = capsys.readouterr().out
+    assert "filled unexpectedly" in out and "offset_buy" in out and "offset_sell" in out

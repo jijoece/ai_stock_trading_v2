@@ -10,19 +10,23 @@ Safety, enforced in code:
   paper URL, or the script refuses to start;
 * credentials come only from a dedicated env file passed with --env-file. That file may contain only the
   allowlisted ALPACA_* keys, so the repository's main `.env` (other services' secrets) is rejected;
-* one share of SPY at most, every order carries the client-order-id prefix `p1spike-`, and everything
-  still open under that prefix is cancelled on exit;
+* one share of SPY at most, every order carries the client-order-id prefix `p1spike-<run token>-`, and
+  everything this run still has open is cancelled on exit (another run's `p1spike-` orders are never
+  touched, even when this run's preflight refuses to start);
 * exit is reconciled to flat, not just cancelled: once `fill` has verified the account held no SPY and no
   SPY orders, cleanup cancels the open orders, waits until none remain, reads the real position and
   flattens exactly that signed quantity. A flatten is never sent on the strength of an assumed fill. If
   exposure or open orders still remain, the run prints them and exits non-zero;
 * the default mode makes no network call. `read-only` reads. `rest` places orders far from the market
-  that cannot fill. `fill` places marketable one-share orders and is refused outside regular hours or if
-  the account already holds or has orders in the symbol.
+  that are not expected to fill. `fill` places marketable one-share orders. Both order-submitting modes
+  require --i-understand-this-trades-paper, and both refuse to start if the account already holds or has
+  open orders in the symbol, so any SPY exposure afterwards is this run's. A far-from-market order can
+  still fill in a gap, so `rest` is reconciled like `fill`: an unexpected fill is flattened and the run
+  exits non-zero. `fill` is also refused outside regular hours.
 
     python spikes/alpaca_phase1/capability_spike.py plan
     python spikes/alpaca_phase1/capability_spike.py read-only --env-file PATH
-    python spikes/alpaca_phase1/capability_spike.py rest --env-file PATH
+    python spikes/alpaca_phase1/capability_spike.py rest --env-file PATH --i-understand-this-trades-paper
     python spikes/alpaca_phase1/capability_spike.py fill --env-file PATH --i-understand-this-trades-paper
 
 Not financial advice.
@@ -44,13 +48,17 @@ ALLOWED_ENV_KEYS = frozenset({
 })
 SYMBOL = "SPY"
 PREFIX = "p1spike-"
+# Every order this run submits carries PREFIX plus a token unique to the run, so cleanup can tell its own
+# orders from another spike run's (which share PREFIX) even when the preflight refused to start.
+RUN_PREFIX = f"{PREFIX}{uuid.uuid4().hex[:6]}-"
 FIXTURE_DIR = Path(__file__).resolve().parents[2] / "docs" / "alpaca-capability" / "fixtures"
 REDACT_KEYS = {"id_account", "account_number", "id"}  # `id` only redacted on account objects, see _redact_account
 
 PLAN = """Phase 1 spike plan (no calls are made in this mode)
 
 read-only : account, clock, account configuration, the asset record, current positions and open orders.
-rest      : one-share SPY orders priced far below the market so they cannot fill:
+rest      : (needs --i-understand-this-trades-paper; refused if SPY is held or has open orders)
+            one-share SPY orders priced far from the market so they are not expected to fill:
             OTO day / OTO gtc / bracket gtc / stop-market vs stop-limit leg types / invalid stop above entry /
             duplicate client order id / lookup by client order id / replace the parent and a held leg /
             cancel the parent and read its legs / a short sell with no position (ADR A9).
@@ -114,6 +122,8 @@ class Recorder:
         # Set only after `fill` has verified the account held no SPY position and no SPY order, so a SPY
         # position found later is this run's and may be flattened. Never true for a refused or other run.
         self.owns_symbol = False
+        self.flattened = False  # cleanup had to send a flatten order: SPY exposure existed at the end
+        self.order_ids: list = []  # every order object a recorded call returned, for the rest-mode fill audit
         FIXTURE_DIR.mkdir(parents=True, exist_ok=True)
 
     def run(self, name: str, request, call, *, account: bool = False):
@@ -121,6 +131,9 @@ class Recorder:
         entry = {"step": name, "request": _jsonable(request)}
         try:
             result = call()
+            if not account and hasattr(result, "client_order_id") and getattr(result, "id", None) is not None \
+                    and result.id not in self.order_ids:
+                self.order_ids.append(result.id)
             entry["response"] = _redact_account(_jsonable(result)) if account else _jsonable(result)
             outcome = result
         except Exception as exc:  # recording the broker's error taxonomy is the point
@@ -144,7 +157,12 @@ class Recorder:
 
 
 def cid(label: str) -> str:
-    return f"{PREFIX}{label}-{uuid.uuid4().hex[:8]}"
+    return f"{RUN_PREFIX}{label}-{uuid.uuid4().hex[:8]}"
+
+
+def is_this_runs(order) -> bool:
+    """True for an order this run submitted (its prefix) or created by a replace (tracked id)."""
+    return (order.client_order_id or "").startswith(RUN_PREFIX) or str(order.id) in CREATED_IDS
 
 
 def build_clients(env: dict[str, str]):
@@ -175,7 +193,7 @@ def cancel_prefixed(trading, rec: Recorder | None = None) -> None:
     from alpaca.trading.requests import GetOrdersRequest
 
     for order in trading.get_orders(GetOrdersRequest(status=QueryOrderStatus.OPEN, symbols=[SYMBOL], nested=True)):
-        if (order.client_order_id or "").startswith(PREFIX) or str(order.id) in CREATED_IDS:
+        if is_this_runs(order):
             try:
                 trading.cancel_order_by_id(order.id)
                 print(f"  cleanup: cancelled {order.client_order_id}")
@@ -205,10 +223,31 @@ def stage_read_only(trading, data, rec: Recorder) -> None:
     rec.run("latest_quote", {"symbol": SYMBOL}, lambda: last_prices(data))
 
 
+def require_no_symbol_exposure(trading, rec: Recorder) -> None:
+    """Refuse to start unless the account has no SPY position and no open SPY order, then claim ownership.
+
+    Only after this passes may cleanup treat a SPY position as this run's and flatten it.
+    """
+    from alpaca.trading.enums import QueryOrderStatus
+    from alpaca.trading.requests import GetOrdersRequest
+
+    if any(p.symbol == SYMBOL for p in trading.get_all_positions()):
+        raise SystemExit(f"the account already holds {SYMBOL}; refusing to mix with an existing position")
+    if trading.get_orders(GetOrdersRequest(status=QueryOrderStatus.OPEN, symbols=[SYMBOL])):
+        raise SystemExit(f"there are open {SYMBOL} orders; refusing to start")
+    # The two reads are separate calls: an open order could fill between them, leaving no position at the
+    # first read and no open order at the second. Re-reading positions after the order check catches that.
+    # Ownership still assumes no other client trades SPY in this paper account while the spike runs.
+    if any(p.symbol == SYMBOL for p in trading.get_all_positions()):
+        raise SystemExit(f"a {SYMBOL} order filled during the preflight; refusing to mix with that position")
+    rec.owns_symbol = True  # verified free of SPY: from here any SPY position is this run's
+
+
 def stage_rest(trading, data, rec: Recorder) -> None:
     from alpaca.trading.enums import OrderClass, OrderSide, TimeInForce
     from alpaca.trading.requests import LimitOrderRequest, ReplaceOrderRequest, StopLossRequest, TakeProfitRequest
 
+    require_no_symbol_exposure(trading, rec)
     bid, ask = last_prices(data)
     reference = ask or bid
     if reference <= 0:
@@ -300,9 +339,9 @@ def _open_orders(trading, *, owns_symbol: bool) -> list:
 
     orders = trading.get_orders(GetOrdersRequest(status=QueryOrderStatus.OPEN, symbols=[SYMBOL]))
     # After the fill preflight there were no SPY orders at all, so every open one is this run's (including
-    # legs, whose client order ids carry no prefix). Otherwise only the prefix and replaced ids are ours.
+    # legs, whose client order ids carry no prefix). Otherwise only this run's prefix and replaced ids are ours.
     return [o for o in orders
-            if owns_symbol or (o.client_order_id or "").startswith(PREFIX) or str(o.id) in CREATED_IDS]
+            if owns_symbol or is_this_runs(o)]
 
 
 def _position_qty(trading) -> Decimal:
@@ -350,6 +389,7 @@ def settle_to_flat(trading, rec: Recorder, seconds: int = SETTLE_SECONDS) -> lis
                 side = OrderSide.SELL if qty > 0 else OrderSide.BUY
                 flat = MarketOrderRequest(symbol=SYMBOL, qty=float(abs(qty)), side=side, time_in_force=TimeInForce.DAY,
                                           client_order_id=cid("cleanup_flatten"))
+                rec.flattened = True
                 order = rec.run("cleanup_flatten", flat.model_dump(mode="json"), lambda: trading.submit_order(flat))
                 if order is not None:
                     _wait(trading, order.id, {"filled"}, seconds)
@@ -363,6 +403,37 @@ def settle_to_flat(trading, rec: Recorder, seconds: int = SETTLE_SECONDS) -> lis
     except Exception as exc:  # cleanup must report, not mask the failure it is cleaning up after
         problems.append(f"cleanup failed ({type(exc).__name__}: {exc}); check {SYMBOL} exposure manually")
     return problems
+
+
+def _filled(order) -> bool:
+    status = getattr(getattr(order, "status", None), "value", getattr(order, "status", None))
+    try:
+        qty = Decimal(str(getattr(order, "filled_qty", None) or 0))
+    except ArithmeticError:
+        qty = Decimal(0)
+    return status in {"filled", "partially_filled"} or qty > 0
+
+
+def unexpected_fills(trading, rec: Recorder) -> list[str]:
+    """Problems for any of this run's orders (or their legs) that executed at all; never raises.
+
+    Rest-mode orders are priced not to fill, so any execution is unexpected, even one a later order offset
+    before cleanup (the final position is then flat and no flatten was needed). Cleanup's own flatten orders
+    are excluded: they only exist because an earlier fill was already reported.
+    """
+    filled: list[str] = []
+    try:
+        for order_id in rec.order_ids:
+            stack = [fetch(trading, order_id)]
+            while stack:
+                order = stack.pop()
+                stack.extend(getattr(order, "legs", None) or [])
+                label = str(getattr(order, "client_order_id", None) or getattr(order, "id", "?"))
+                if _filled(order) and "cleanup_flatten" not in label and label not in filled:
+                    filled.append(label)
+    except Exception as exc:
+        return [f"could not verify that no rest-mode order filled ({type(exc).__name__}); check the account"]
+    return [f"rest-mode order(s) filled unexpectedly: {', '.join(filled)}"] if filled else []
 
 
 def require_flat(trading, rec: Recorder) -> None:
@@ -380,17 +451,13 @@ def stage_fill(trading, data, rec: Recorder) -> None:
     clock = trading.get_clock()
     if not clock.is_open:
         raise SystemExit("the market is closed; the fill stage runs only in regular hours")
-    if trading.get_all_positions() and any(p.symbol == SYMBOL for p in trading.get_all_positions()):
-        raise SystemExit(f"the account already holds {SYMBOL}; refusing to mix with an existing position")
-    if trading.get_orders(GetOrdersRequest(status=QueryOrderStatus.OPEN, symbols=[SYMBOL])):
-        raise SystemExit(f"there are open {SYMBOL} orders; refusing to start")
+    require_no_symbol_exposure(trading, rec)
     bid, ask = last_prices(data)
     if bid <= 0 or ask <= 0:
         raise SystemExit("no usable quote")
     marketable = round(ask + 0.50, 2)
     stop = round(bid * 0.97, 2)
     print(f"  bid {bid} ask {ask}; marketable limit {marketable}; stop {stop}")
-    rec.owns_symbol = True  # the account was verified free of SPY: from here any SPY position is this run's
 
     req = LimitOrderRequest(symbol=SYMBOL, qty=1, side=OrderSide.BUY, limit_price=marketable, time_in_force=TimeInForce.GTC,
                             order_class=OrderClass.OTO, stop_loss=StopLossRequest(stop_price=stop), client_order_id=cid("fill_oto"))
@@ -411,7 +478,7 @@ def stage_fill(trading, data, rec: Recorder) -> None:
                                    client_order_id=cid("fill_competing_sell"))
     rec.run("fill_competing_sell_while_stop_rests", competing.model_dump(mode="json"), lambda: trading.submit_order(competing))
     cancel_prefixed_sells = [o for o in trading.get_orders(GetOrdersRequest(status=QueryOrderStatus.OPEN, symbols=[SYMBOL]))
-                             if (o.client_order_id or "").startswith(f"{PREFIX}fill_competing")]
+                             if (o.client_order_id or "").startswith(f"{RUN_PREFIX}fill_competing")]
     for stray in cancel_prefixed_sells:
         trading.cancel_order_by_id(stray.id)
 
@@ -424,7 +491,7 @@ def stage_fill(trading, data, rec: Recorder) -> None:
 
     # ADR A4 option 2: cancel the stop, confirm, sell, confirm.
     open_stops = [o for o in trading.get_orders(GetOrdersRequest(status=QueryOrderStatus.OPEN, symbols=[SYMBOL]))
-                  if (o.client_order_id or "").startswith(PREFIX) or o.side == OrderSide.SELL]
+                  if is_this_runs(o) or o.side == OrderSide.SELL]
     for stop_order in open_stops:
         rec.run("fill_exit_cancel_stop", {"id": str(stop_order.id)}, lambda s=stop_order: trading.cancel_order_by_id(s.id))
     time.sleep(2)
@@ -474,8 +541,9 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.env_file is None:
         raise SystemExit("--env-file is required")
-    if args.mode == "fill" and not args.i_understand_this_trades_paper:
-        raise SystemExit("fill mode submits and fills one-share paper orders; pass --i-understand-this-trades-paper")
+    if args.mode in ("rest", "fill") and not args.i_understand_this_trades_paper:
+        raise SystemExit(f"{args.mode} mode submits paper orders to the broker and a fill can leave a position; "
+                         "pass --i-understand-this-trades-paper")
 
     trading, data = build_clients(load_env_file(args.env_file))
     rec = Recorder(args.mode.replace("-", "_"))
@@ -486,6 +554,11 @@ def main(argv: list[str] | None = None) -> int:
     finally:
         if args.mode in ("rest", "fill"):
             problems = settle_to_flat(trading, rec)
+            if args.mode == "rest":
+                # rest orders are priced not to fill; a fill means the market gapped or the pricing is wrong
+                if rec.flattened:
+                    problems.append("a rest-mode order filled unexpectedly; the position was flattened (or attempted)")
+                problems.extend(unexpected_fills(trading, rec))
             if problems:
                 print("!! EXPOSURE REMAINS - reconcile the paper account manually:")
                 for problem in problems:

@@ -99,7 +99,7 @@ All contracts are immutable frozen dataclasses in
   persisted price provenance, orders, and fills, capped at 200 rows per book.
 - `dashboard/services/health_service.py` — pause/scheduler/budget/hysteresis
   state plus separate evidence- and model-provider health partitions.
-- `dashboard/streamlit_app.py` — five-page navigation with unique URL paths.
+- `src/dashboard/streamlit_app.py` — five-page navigation with unique URL paths.
 - `dashboard/pages/overview.py` — persisted overview metrics with explicit
   `Not available` handling.
 - `dashboard/pages/decisions.py` — bounded filters, result table, and bought

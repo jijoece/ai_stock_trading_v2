@@ -172,6 +172,17 @@ CREATE TABLE paper_book_safety_events (
 """
 
 
+@pytest.fixture(autouse=True)
+def _no_real_robinhood_or_cache(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """Dashboard tests must never reach the real Robinhood MCP or reuse cached page data."""
+    import streamlit as st
+
+    monkeypatch.setenv("ROBINHOOD_MCP_TOKEN_PATH", str(tmp_path / "no-such-oauth.json"))
+    st.cache_data.clear()
+    yield
+    st.cache_data.clear()
+
+
 @pytest.fixture
 def empty_dashboard_database(tmp_path: Path) -> Path:
     path = tmp_path / "empty-dashboard.sqlite3"

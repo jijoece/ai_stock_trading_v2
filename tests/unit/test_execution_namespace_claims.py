@@ -224,6 +224,34 @@ def test_cancel_releases_only_remaining_reserved_cash():
     assert cash_ledger.reserved_cash(conn, "BASELINE") == Decimal("0")
 
 
+@pytest.mark.parametrize("close, status", [
+    (execution.expire_pending_intent, "EXPIRED"), (execution.cancel_pending_intent, "CANCELLED"),
+])
+def test_reservation_release_and_terminal_status_commit_together(monkeypatch, close, status):
+    conn = connect(":memory:")
+    _seed(conn)
+    intent = _intent(limit_price=Decimal("10"), notional_usd=Decimal("20"))  # will not cross -> stays pending
+    execution.submit_and_simulate(conn, intent, execution.MarketSimulationInput(Decimal("39"), Decimal("39")), NOW)
+    real_update = repo.update_order_status
+
+    def crash(*_a, **_kw):
+        raise RuntimeError("interrupted between the release and the status write")
+
+    monkeypatch.setattr(repo, "update_order_status", crash)
+    with pytest.raises(RuntimeError, match="interrupted"):
+        close(conn, intent, NOW)
+    # all or nothing: the release did not commit on its own while the BUY still reads as pending
+    assert not conn.in_transaction
+    assert cash_ledger.reserved_cash(conn, "BASELINE") == Decimal("20")
+    assert repo.load_order_intent(conn, "BASELINE", "intent-1")["status"] == "PENDING_SUBMISSION"
+
+    monkeypatch.setattr(repo, "update_order_status", real_update)
+    assert close(conn, intent, NOW)["status"] == status
+    assert cash_ledger.reserved_cash(conn, "BASELINE") == Decimal("0")
+    assert repo.load_order_intent(conn, "BASELINE", "intent-1")["status"] == status
+    assert close(conn, intent, NOW)[status.lower()] is False  # already closed: a no-op
+
+
 # --- 10. namespace claims survive restart ------------------------------------
 
 

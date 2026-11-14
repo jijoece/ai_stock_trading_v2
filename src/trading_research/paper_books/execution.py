@@ -238,13 +238,27 @@ def cancel_pending_intent(conn, intent: PaperBookOrderIntent, now: datetime) -> 
     filled — never cancels a completed fill."""
     if repo.has_external_execution_evidence(conn, intent.book_id, intent.paper_order_intent_id):
         raise FillSimulationError("externally scoped intent requires explicit external cancellation")
-    existing = repo.load_order_intent(conn, intent.book_id, intent.paper_order_intent_id)
-    if existing is None or existing["status"] != INTENT_STATUS_PENDING_SUBMISSION:
-        return {"status": existing["status"] if existing else None, "cancelled": False}
-    if intent.side == ORDER_SIDE_BUY:
-        cash_ledger.release_reservation(conn, intent.book_id, intent.paper_order_intent_id, intent.notional_usd, now, reason="cancelled")
-    repo.update_order_status(conn, intent.book_id, intent.paper_order_intent_id, "CANCELLED")
-    return {"status": "CANCELLED", "cancelled": True}
+    return _close_pending_intent(conn, intent, now, status="CANCELLED", reason="cancelled", flag="cancelled")
+
+
+def _close_pending_intent(conn, intent: PaperBookOrderIntent, now: datetime, *, status: str, reason: str,
+                          flag: str) -> dict:
+    """Release the BUY reservation and set the terminal status in ONE write transaction.
+
+    Committed separately, a concurrent strategy-bridge evaluation could read the released ledger while the
+    BUY is still `PENDING_SUBMISSION`, count it as exposure a second time, and persist a stale rejection that
+    `already_processed()` then makes permanent. The status is re-read under the write lock, so a racing fill
+    or close is never overwritten.
+    """
+    with transaction(conn):
+        existing = repo.load_order_intent(conn, intent.book_id, intent.paper_order_intent_id)
+        if existing is None or existing["status"] != INTENT_STATUS_PENDING_SUBMISSION:
+            return {"status": existing["status"] if existing else None, flag: False}
+        if intent.side == ORDER_SIDE_BUY:
+            cash_ledger.release_reservation(conn, intent.book_id, intent.paper_order_intent_id, intent.notional_usd,
+                                            now, reason=reason, commit=False)
+        repo.update_order_status(conn, intent.book_id, intent.paper_order_intent_id, status, commit=False)
+    return {"status": status, flag: True}
 
 
 def expire_pending_intent(conn, intent: PaperBookOrderIntent, now: datetime) -> dict:
@@ -253,10 +267,4 @@ def expire_pending_intent(conn, intent: PaperBookOrderIntent, now: datetime) -> 
     filled/cancelled."""
     if repo.has_external_execution_evidence(conn, intent.book_id, intent.paper_order_intent_id):
         raise FillSimulationError("externally scoped intent cannot be expired by local lifecycle")
-    existing = repo.load_order_intent(conn, intent.book_id, intent.paper_order_intent_id)
-    if existing is None or existing["status"] != INTENT_STATUS_PENDING_SUBMISSION:
-        return {"status": existing["status"] if existing else None, "expired": False}
-    if intent.side == ORDER_SIDE_BUY:
-        cash_ledger.release_reservation(conn, intent.book_id, intent.paper_order_intent_id, intent.notional_usd, now, reason="expired")
-    repo.update_order_status(conn, intent.book_id, intent.paper_order_intent_id, "EXPIRED")
-    return {"status": "EXPIRED", "expired": True}
+    return _close_pending_intent(conn, intent, now, status="EXPIRED", reason="expired", flag="expired")
