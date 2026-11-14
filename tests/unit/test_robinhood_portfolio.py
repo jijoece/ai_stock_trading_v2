@@ -144,6 +144,11 @@ def test_other_history_tool_errors_still_fail_closed(positions):
     'API error 400: {"inactive_instruments":["{sym}"',                # truncated JSON
     'API error 400: inactive_instruments for {sym}',                  # only mentions the field
     'API error 500: see inactive_instruments docs',                   # diagnostic mention
+    'API error 500: {"inactive_instruments":["{sym}"]}',              # valid object, wrong status
+    'API error 400: {"inactive_instruments":["{sym}"]} trailing unrelated failure',  # trailing text
+    'API error 400: {"inactive_instruments":["{sym}"]} {"error":"upstream timeout"}',  # compound error
+    'upstream: API error 400: {"inactive_instruments":["{sym}"]}',    # unrelated leading text
+    '{"inactive_instruments":["{sym}"]}',                             # no status at all
     '',                                                               # no text
 ])
 def test_inactive_error_not_naming_exactly_this_symbol_fails_closed(positions, detail):

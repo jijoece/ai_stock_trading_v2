@@ -23,6 +23,7 @@ What it is and is not:
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
@@ -44,7 +45,8 @@ from .robinhood_holdings import (
 __all__ = ["PortfolioLine", "PortfolioSnapshot", "RobinhoodPortfolioClient", "RobinhoodPortfolioError",
            "UnpricedLine", "parse_position_lines", "robinhood_portfolio_client_from_environment"]
 
-_PRICE_WINDOW_DAYS = 10  # calendar days of daily bars requested to find the last completed close
+_INACTIVE_ERROR_PREFIX = re.compile(r"\s*API error 400:\s*")
+_PRICE_WINDOW_DAYS = 10 # calendar days of daily bars requested to find the last completed close
 
 
 class RobinhoodPortfolioError(McpError):
@@ -161,18 +163,22 @@ def last_completed_session(now: datetime) -> date:
 def _reports_only_inactive(detail: str, symbol: str) -> bool:
     """True only when a history error says exactly ``symbol`` is an inactive instrument.
 
-    The server text looks like ``API error 400: {"inactive_instruments":["FSRNQ"]}``. The JSON
-    object after the first ``{`` must parse, hold exactly one key, ``inactive_instruments``, and
-    list exactly the symbol being priced. Anything else (another symbol, extra symbols, extra
-    keys, malformed or truncated text, a mere mention of the field) is not accepted, so the
-    caller re-raises instead of dropping the holding from the totals.
+    The server text looks like ``API error 400: {"inactive_instruments":["FSRNQ"]}``. The text must
+    start with ``API error 400:``, be followed by one JSON object and nothing else (only whitespace
+    may trail it), and that object must hold exactly one key, ``inactive_instruments``, listing
+    exactly the symbol being priced. Anything else (another status, trailing or compound error
+    text, another symbol, extra symbols, extra keys, malformed or truncated text, a mere mention
+    of the field) is not accepted, so the caller re-raises instead of dropping the holding from
+    the totals.
     """
-    start = detail.find("{")
-    if start < 0:
+    prefix = _INACTIVE_ERROR_PREFIX.match(detail)
+    if prefix is None:
         return False
     try:
-        body = json.JSONDecoder().raw_decode(detail[start:])[0]
+        body, end = json.JSONDecoder().raw_decode(detail, prefix.end())
     except ValueError:
+        return False
+    if detail[end:].strip():
         return False
     if not isinstance(body, dict) or set(body) != {"inactive_instruments"}:
         return False
