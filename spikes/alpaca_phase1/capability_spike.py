@@ -17,12 +17,15 @@ Safety, enforced in code:
   flattens exactly that signed quantity. A flatten is never sent on the strength of an assumed fill. If
   exposure or open orders still remain, the run prints them and exits non-zero;
 * the default mode makes no network call. `read-only` reads. `rest` places orders far from the market
-  that cannot fill. `fill` places marketable one-share orders and is refused outside regular hours or if
-  the account already holds or has orders in the symbol.
+  that are not expected to fill. `fill` places marketable one-share orders. Both order-submitting modes
+  require --i-understand-this-trades-paper, and both refuse to start if the account already holds or has
+  open orders in the symbol, so any SPY exposure afterwards is this run's. A far-from-market order can
+  still fill in a gap, so `rest` is reconciled like `fill`: an unexpected fill is flattened and the run
+  exits non-zero. `fill` is also refused outside regular hours.
 
     python spikes/alpaca_phase1/capability_spike.py plan
     python spikes/alpaca_phase1/capability_spike.py read-only --env-file PATH
-    python spikes/alpaca_phase1/capability_spike.py rest --env-file PATH
+    python spikes/alpaca_phase1/capability_spike.py rest --env-file PATH --i-understand-this-trades-paper
     python spikes/alpaca_phase1/capability_spike.py fill --env-file PATH --i-understand-this-trades-paper
 
 Not financial advice.
@@ -50,7 +53,8 @@ REDACT_KEYS = {"id_account", "account_number", "id"}  # `id` only redacted on ac
 PLAN = """Phase 1 spike plan (no calls are made in this mode)
 
 read-only : account, clock, account configuration, the asset record, current positions and open orders.
-rest      : one-share SPY orders priced far below the market so they cannot fill:
+rest      : (needs --i-understand-this-trades-paper; refused if SPY is held or has open orders)
+            one-share SPY orders priced far from the market so they are not expected to fill:
             OTO day / OTO gtc / bracket gtc / stop-market vs stop-limit leg types / invalid stop above entry /
             duplicate client order id / lookup by client order id / replace the parent and a held leg /
             cancel the parent and read its legs / a short sell with no position (ADR A9).
@@ -114,6 +118,7 @@ class Recorder:
         # Set only after `fill` has verified the account held no SPY position and no SPY order, so a SPY
         # position found later is this run's and may be flattened. Never true for a refused or other run.
         self.owns_symbol = False
+        self.flattened = False  # cleanup had to send a flatten order: SPY exposure existed at the end
         FIXTURE_DIR.mkdir(parents=True, exist_ok=True)
 
     def run(self, name: str, request, call, *, account: bool = False):
@@ -205,10 +210,26 @@ def stage_read_only(trading, data, rec: Recorder) -> None:
     rec.run("latest_quote", {"symbol": SYMBOL}, lambda: last_prices(data))
 
 
+def require_no_symbol_exposure(trading, rec: Recorder) -> None:
+    """Refuse to start unless the account has no SPY position and no open SPY order, then claim ownership.
+
+    Only after this passes may cleanup treat a SPY position as this run's and flatten it.
+    """
+    from alpaca.trading.enums import QueryOrderStatus
+    from alpaca.trading.requests import GetOrdersRequest
+
+    if any(p.symbol == SYMBOL for p in trading.get_all_positions()):
+        raise SystemExit(f"the account already holds {SYMBOL}; refusing to mix with an existing position")
+    if trading.get_orders(GetOrdersRequest(status=QueryOrderStatus.OPEN, symbols=[SYMBOL])):
+        raise SystemExit(f"there are open {SYMBOL} orders; refusing to start")
+    rec.owns_symbol = True  # verified free of SPY: from here any SPY position is this run's
+
+
 def stage_rest(trading, data, rec: Recorder) -> None:
     from alpaca.trading.enums import OrderClass, OrderSide, TimeInForce
     from alpaca.trading.requests import LimitOrderRequest, ReplaceOrderRequest, StopLossRequest, TakeProfitRequest
 
+    require_no_symbol_exposure(trading, rec)
     bid, ask = last_prices(data)
     reference = ask or bid
     if reference <= 0:
@@ -348,6 +369,7 @@ def settle_to_flat(trading, rec: Recorder, seconds: int = SETTLE_SECONDS) -> lis
                 side = OrderSide.SELL if qty > 0 else OrderSide.BUY
                 flat = MarketOrderRequest(symbol=SYMBOL, qty=float(abs(qty)), side=side, time_in_force=TimeInForce.DAY,
                                           client_order_id=cid("cleanup_flatten"))
+                rec.flattened = True
                 order = rec.run("cleanup_flatten", flat.model_dump(mode="json"), lambda: trading.submit_order(flat))
                 if order is not None:
                     _wait(trading, order.id, {"filled"}, seconds)
@@ -378,17 +400,13 @@ def stage_fill(trading, data, rec: Recorder) -> None:
     clock = trading.get_clock()
     if not clock.is_open:
         raise SystemExit("the market is closed; the fill stage runs only in regular hours")
-    if trading.get_all_positions() and any(p.symbol == SYMBOL for p in trading.get_all_positions()):
-        raise SystemExit(f"the account already holds {SYMBOL}; refusing to mix with an existing position")
-    if trading.get_orders(GetOrdersRequest(status=QueryOrderStatus.OPEN, symbols=[SYMBOL])):
-        raise SystemExit(f"there are open {SYMBOL} orders; refusing to start")
+    require_no_symbol_exposure(trading, rec)
     bid, ask = last_prices(data)
     if bid <= 0 or ask <= 0:
         raise SystemExit("no usable quote")
     marketable = round(ask + 0.50, 2)
     stop = round(bid * 0.97, 2)
     print(f"  bid {bid} ask {ask}; marketable limit {marketable}; stop {stop}")
-    rec.owns_symbol = True  # the account was verified free of SPY: from here any SPY position is this run's
 
     req =LimitOrderRequest(symbol=SYMBOL, qty=1, side=OrderSide.BUY, limit_price=marketable, time_in_force=TimeInForce.GTC,
                             order_class=OrderClass.OTO, stop_loss=StopLossRequest(stop_price=stop), client_order_id=cid("fill_oto"))
@@ -472,8 +490,9 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.env_file is None:
         raise SystemExit("--env-file is required")
-    if args.mode == "fill" and not args.i_understand_this_trades_paper:
-        raise SystemExit("fill mode submits and fills one-share paper orders; pass --i-understand-this-trades-paper")
+    if args.mode in ("rest", "fill") and not args.i_understand_this_trades_paper:
+        raise SystemExit(f"{args.mode} mode submits paper orders to the broker and a fill can leave a position; "
+                         "pass --i-understand-this-trades-paper")
 
     trading, data = build_clients(load_env_file(args.env_file))
     rec = Recorder(args.mode.replace("-", "_"))
@@ -484,6 +503,9 @@ def main(argv: list[str] | None = None) -> int:
     finally:
         if args.mode in ("rest", "fill"):
             problems = settle_to_flat(trading, rec)
+            if args.mode == "rest" and rec.flattened:
+                # rest orders are priced not to fill; a fill means the market gapped or the pricing is wrong
+                problems.append("a rest-mode order filled unexpectedly; the position was flattened (or attempted)")
             if problems:
                 print("!! EXPOSURE REMAINS - reconcile the paper account manually:")
                 for problem in problems:

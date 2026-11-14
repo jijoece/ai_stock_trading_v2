@@ -1,15 +1,47 @@
 # Automated live trading: progress and handoff
 
-Last updated 2026-11-11. Read this first, then `docs/automated-live-trading-implementation-plan.md` (the plan),
+Last updated 2026-11-14. Read this first, then `docs/automated-live-trading-implementation-plan.md` (the plan),
 `docs/adr/0010-automated-live-trading.md` (the ADR, **Proposed, not accepted**) and
 `docs/alpaca-capability/README.md` (Phase 1 evidence). The repository stays **paper only**.
 
 ## Where the work is
 
-- Branch `feat/automated-live-trading-phases-0-3-spike`, one commit on top of `feat/historical-backtest-step1`.
-- PR #39 (https://github.com/jijoece/ai_stock_trading_v2/pull/39), base `feat/historical-backtest-step1`
-  (28 commits ahead of `main`; retarget to `main` only after that branch merges).
-- Nothing in this work is reviewed by an independent reviewer yet.
+- PR #39 (https://github.com/jijoece/ai_stock_trading_v2/pull/39) is **MERGED into `main`** (merge commit
+  `7b3bb0d`, 2026-11-13). The old branch `feat/automated-live-trading-phases-0-3-spike` is finished; do not
+  build on it. Start any Phase 4+ work from a fresh branch off `main`.
+- The review-fix commits `0e6f286` to `dde61fd` (14 commits including the "Record review fix applied" notes) are
+  on `main`. Fixes applied after an automated review pass, each noted "pending re-review":
+  zero-risk stop crash and missing approved-decision controls record (`0e6f286`); falsy/non-mapping
+  `strategy_controls` now fail closed (`113a7da`, `b293223`); approved stop frozen and tick-rounded stops used so a
+  smaller tick cannot re-risk open exposure (`792f181`, `b754324`); legacy exposure counted as fully at risk
+  (`547bd9b`); Phase 1 fill spike reconciles to a known-flat account (`ed65694`) and unconfirmed-fill exposure
+  (`dde61fd`).
+- **Re-review run 2026-11-14** (`/code-review high 0b570bf^..dde61fd`, 7 findings, NOT yet verified by me or
+  fixed; no independent human review has happened). Findings, most severe first:
+  1. `strategy_bridge.py:413` rejection path writes the risk decision + controls row in a new transaction without
+     re-checking `already_processed()` / risk-state fingerprint (approved path does). Racing runners: duplicate
+     decision/outcome, or an uncaught `ValueError` from `save_decision_controls` aborting the whole batch.
+  2. `strategy_bridge_repositories.py:472` `save_decision_controls` stamps today's `controls_hash` on a decision
+     that already existed (`save_risk_decision` returned False), so the audit row can claim controls the decision
+     never saw. Insert should depend on the decision being newly saved.
+  3. `strategy_bridge_schema.py:71` `allocation_stop` is added by an unversioned ALTER TABLE on every `connect()`;
+     migration 16 never checks the column; a read-only connection on an old DB would raise OperationalError.
+  4. `strategy_exposure.py:55` legacy rows (`allocation_stop IS NULL`) count at full notional, so an upgraded book
+     rejects all new entries until they close. Intentional fail-safe, but no migration/flag/record of it.
+  5. `spikes/.../capability_spike.py:308` `settle_to_flat` can submit a flatten while a leg it failed to cancel
+     still holds the shares (only matters if the spike is re-run).
+  6. `capability_spike.py:393` typo `req =LimitOrderRequest(` (cosmetic).
+  7. `controls.py:105` `controls_hash` re-hashes on every access (minor; `cached_property`).
+  **Status 2026-11-14:** findings 1-7 validated and fixed in PR #40
+  (https://github.com/jijoece/ai_stock_trading_v2/pull/40, branch `fix/review-automated-live-trading`, commit
+  `21af518`, worktree `../ai_stock_trading_v2-fix`). Finding 1/2: re-check under the write lock; 3: migration 17;
+  4: warning log (behaviour unchanged); 5-7 as listed. The background `nox -s ci safety_typecheck` run finished
+  green (exit 0: tests 3801 passed / 107 skipped, paper_tests 160 passed, migration_smoke ok, safety_typecheck 0
+  errors), even though the operator said to skip it. Not yet re-reviewed or merged.
+  Tooling note: this shell exports `GIT_INDEX_FILE=.git/index` (relative), which breaks `git worktree add` and git
+  inside a worktree; run `unset GIT_INDEX_FILE` first.
+- Checkout at last update was `feat/score-alpaca-data` (unrelated score/Alpaca-data work with uncommitted
+  changes). Do not mix this handoff or Phase 4 work into that branch.
 
 ## Phase state
 
@@ -37,8 +69,14 @@ Tests: `tests/unit/test_allocation.py` (24, incl. Hypothesis), `tests/unit/test_
 
 ## Next steps, in order
 
-1. **Ask the operator** (do not assume): (a) run the overnight check, (b) run `/code-review` on Phases 2-3 (the plan
-   requires an independent review before the next phase), (c) the owner answers O1-O16 / accepts the ADR.
+1. **Re-review done 2026-11-14 (see findings above); next is verify and fix them.** Original plan: run `/code-review`
+   against `0b570bf^..dde61fd` (or the Phases 2-3 files: `strategies/controls.py`, `strategies/config.py`,
+   `paper_books/allocation.py`, `paper_books/strategy_exposure.py`, `risk.evaluate_paper_risk`,
+   `strategy_bridge.py`). It is read-only and the plan requires an independent review before Phase 4. Record the
+   outcome here. Do from a branch off `main`, not from `feat/score-alpaca-data`.
+   **Still ask the operator** (do not assume) before: (a) the overnight check (credentialed), (c) anything that
+   depends on the owner answering O1-O16 / accepting the ADR. Phase 4 stays blocked until review, the Phase 1 gate
+   and ADR acceptance are all done.
 2. Overnight check (only if asked): submit a GTC **OTO** one-share SPY order that fills late in the session, leave it
    open past the close, read the stop leg's state and order id the next session (cancel it and flatten afterwards).
    Also try to resolve the bracket `held`-stop question (does it trigger? paper cannot easily prove a gap).
