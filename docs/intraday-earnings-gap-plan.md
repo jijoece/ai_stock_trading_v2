@@ -127,7 +127,7 @@ Observations that shape this plan:
 | D2 | Earnings-surprise source | An operator-supplied, versioned CSV snapshot: `symbol, fiscal_period, report_date, timing (am/pm), release_time (optional), eps_estimate, eps_actual, source, captured_at`. Reports state the caveat that the estimate is the last pre-report consensus as captured, not a point-in-time series. |
 | D3 | Universe | Every symbol in the CSV that passes the liquidity screen. Reports state the survivorship-bias caveat. Target at least 200 qualifying event days across at least 50 symbols. |
 | D4 | Bar interval | 5 minutes, all sessions. Opening-range variants of 5, 15, and 30 minutes. |
-| D5 | Regular-session fill model | Enter at the signal bar's close plus slippage. A stop fills at the worse of the stop price and the next bar's open. If stop and target both touch in one bar, the stop fills first. Exit at the last regular bar's close (early-close aware) if nothing else triggers. |
+| D5 | Regular-session fill model | A signal that needs a completed bar's close (`orb`, `pmh_break`, `vwap_pullback`, and the VWAP-trail exit) is known only at that bar's `available_at`, so the order is submitted then and fills no earlier than the **next** bar: a market entry fills at the next bar's open plus slippage, never at the signal bar's close. A stop fills at the worse of the stop price and the next bar's open. If stop and target both touch in one bar, the stop fills first. A time-based exit (`flat_time`, early-close aware) fills at the open of the bar that starts at that time; the session's last bar's close is used only if no such bar exists. If nothing else triggers, the position is flat by then. |
 | D6 | Costs | `slippage_bps` per side (default 10) plus a spread proxy: `max(spread_floor_bps, k × first bar's (high − low) / close)`. Extended hours use a separate, larger floor and multiplier. Recorded in the run identity. |
 | D7 | Train/test split | Chronological. Parameters are chosen only on the earliest 60% of event dates; the last 40% is evaluated once, with frozen parameters. |
 | D8 | New strategy vs. extending `event_catalyst` | New strategy `earnings_gap_intraday`. `event_catalyst` keeps its contract. |
@@ -144,7 +144,11 @@ loaded by `strategies/config.py`.
 ### 5.1 Extended-hours signals
 
 Computed point-in-time from session-tagged bars. Each signal records the
-`available_at` of the latest bar it used.
+`available_at` of the latest bar it used. Every signal function takes an
+`as_of` time and uses only bars whose `available_at ≤ as_of`. The clock times
+in the table (16:30, 20:00, 09:25) are the default `as_of` for the variants
+that use them (section 5.2), not times every variant may read: a variant must
+never read a signal whose `as_of` is later than its own entry decision time.
 
 | Signal | Definition |
 |---|---|
@@ -158,21 +162,30 @@ Computed point-in-time from session-tagged bars. Each signal records the
 
 ### 5.2 Candidate filter
 
-Every check below uses only data knowable before the variant's earliest entry
-time.
+Eligibility is decided **per variant**, using only bars with
+`available_at ≤` that variant's entry decision time (`as_of`). A signal
+computed at a later time may be recorded for the report but never filtered on.
+
+Common checks (all variants; all known before the report reaction):
 
 - Earnings beat: `eps_actual > eps_estimate`, both non-null.
-- Gap: `premarket_gap ≥ minimum_gap_percent` (default 5%). The regular open's
-  gap is recorded too, for the same-day variants.
-- Gap holding: `premarket_hold` is true (last pre-market price ≥ pre-market VWAP).
-- Pre-market interest: `premarket_rel_volume ≥ minimum_premarket_rel_volume`
-  (default 3×). Stocks without 20 sessions of pre-market history are excluded.
 - Price: prior regular close ≥ `minimum_price` (default $3).
 - Liquidity: 20-session average regular-session dollar volume ≥
   `minimum_avg_dollar_volume` (default $5M), from one consistent bar source.
 - History: at least 20 prior sessions (excludes new listings).
 - Optional market-trend filter, off in v1 but recorded: benchmark (`SPY`)
   above its 50-session average.
+
+Variant-specific checks:
+
+| Variant | Decision `as_of` | Checks | Must not use |
+|---|---|---|---|
+| `orb`, `pmh_break`, `vwap_pullback` | 09:25 ET on the reaction day | `premarket_gap ≥ minimum_gap_percent` (default 5%); `premarket_hold` true; `premarket_rel_volume ≥ minimum_premarket_rel_volume` (default 3×), which excludes stocks without 20 sessions of pre-market history. The regular open's gap is recorded, not filtered on. | Any regular-session bar |
+| `premarket_entry` | Each bar end from 08:00 to 09:25: the signals are recomputed as of that time (relative volume against the same-time cumulative average), and the limit order is placed only once all three checks pass as of that time | Same three checks as above, as of the decision time | Any bar ending after the decision time, including the 09:25 snapshot |
+| `post_report_overnight` | `post_signal_time` (default 16:30 ET) on the report day | `post_report_move ≥ minimum_gap_percent` | `post_hold` (measured at 20:00), every pre-market signal, and any bar from the reaction day |
+
+Reason codes for the overnight variant reuse `gap_below_minimum` for
+`post_report_move`; the pre-market codes never apply to it.
 
 ### 5.3 Entry variants
 
@@ -185,6 +198,13 @@ Each run picks one variant; the report compares them.
 | `vwap_pullback` | same day | After 30 regular minutes, with price already above the opening-range high, first bar whose low touches session VWAP and closes above it | `vwap × (1 − vwap_stop_percent)` |
 | `premarket_entry` | same day | Between 08:00 and 09:25, limit buy at `premarket_vwap` once `premarket_hold` is true; fills per D11 | `premarket_low` |
 | `post_report_overnight` | overnight | After `post_signal_time`, limit buy at post-market VWAP if `post_report_move ≥ minimum_gap_percent`; fills per D11 | The regular close before the report |
+
+For `orb`, `pmh_break`, and `vwap_pullback`, "first 5-minute close …" names
+the bar that triggers the signal. The entry order fills at the next bar's open
+plus slippage (D5), so the entry price, the stop distance, and the risk-percent
+guard are all computed from that fill price, not from the signal bar's close.
+If the next bar opens beyond the stop, the trade is skipped as a rejected
+candidate with a reason code.
 
 Session VWAP for the regular-session variants is anchored at 09:30. The
 report also shows each regular-session variant with VWAP anchored at 04:00.
@@ -213,7 +233,7 @@ regular session, `extended_participation` (D11) in extended hours.
 ### 5.6 Exits
 
 - **Same-day variants:** sell half at +1R; trail the rest at session VWAP (exit
-  on a 5-minute close below it). Be flat at `flat_time` (default 15:55 ET, or 5
+  on a 5-minute close below it, filled at the next bar's open per D5). Be flat at `flat_time` (default 15:55 ET, or 5
   minutes before an early close). A configurable `post_market_exit` option
   instead carries the remainder into the post-market until 16:30 under the D11
   fill model. It is off by default and reported as its own row.
@@ -277,7 +297,14 @@ Safety-relevant steps also pass `nox -s safety_typecheck`.
   using only data available before the variant's earliest entry.
 - Tests: one test per reason code; look-ahead tests proving that a bar after
   the cut-off cannot change eligibility; a test that a post-market bar before
-  the release time is never used.
+  the release time is never used. Per-variant invariance tests hold every bar
+  ending at or before the variant's `as_of` constant and vary only later bars:
+  `post_report_overnight` eligibility must not change when the post-market
+  after 16:30, the pre-market, or the reaction-day regular session changes
+  (including bars that would make `premarket_gap`, `premarket_hold`,
+  `premarket_rel_volume`, or `post_hold` pass or fail); `premarket_entry`
+  eligibility at 08:00 must not change when bars between 08:00 and 09:25
+  change; the 09:25 variants must not change when regular-session bars change.
 
 ### Step 4 — Intraday simulator
 
@@ -293,7 +320,12 @@ Safety-relevant steps also pass `nox -s safety_typecheck`.
 - Tests: hand-built bar fixtures for every exit path (stop, gap-through stop,
   +1R partial, VWAP trail, flat time, early close); extended-hours limit fills,
   partial fills, zero-volume bars, closing-print exclusion, and a simulated
-  stop that fails to fill; the overnight variant across a weekend; same-bar
+  stop that fails to fill; an adverse-gap test for each close-derived signal
+  (`orb`, `pmh_break`, `vwap_pullback`, VWAP-trail exit) where the signal
+  becomes true only at the bar's close and the next bar opens lower: the fill
+  is the next bar's open plus slippage, never the signal bar's close, and a
+  next open beyond the stop rejects the entry; the overnight variant across a
+  weekend; same-bar
   stop-and-target ambiguity; the risk-percent skip; the daily loss stop;
   participation caps; and bit-for-bit determinism.
 
@@ -393,6 +425,8 @@ Live trading stays out of scope per the repository's paper-only boundary.
 | Extended-hours fills that wouldn't happen in reality | Limit-only fills, tight participation cap, zero-volume and closing-print exclusion, minimum fill size, capacity metrics, doubled-spread test |
 | Stops that can't execute outside regular hours | Simulated stops that can fail to fill; worst-trade check on the overnight variant |
 | Using a post-market price before the report was public | Release-time cut-off (D10) and a look-ahead test |
+| Selecting an entry with information from after it (overnight entry filtered on next-morning bars) | Per-variant `as_of` filters (section 5.2) and invariance tests (Step 3) |
+| Filling at a signal bar's close that was unknowable until the bar ended | Next-bar-open fills (D5) and adverse-gap tests (Step 4) |
 | Inconsistent volume across data sources | One source for volume filters; reconciliation flag in Step 1 |
 | Estimate snapshot isn't truly point-in-time | Stated caveat; beat defined by sign only in v1, not surprise size |
 | Survivorship bias in the symbol list | Stated caveat; prefer an event list captured before outcomes are known |

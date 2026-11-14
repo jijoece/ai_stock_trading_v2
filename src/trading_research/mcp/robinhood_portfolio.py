@@ -22,6 +22,7 @@ What it is and is not:
 """
 from __future__ import annotations
 
+import json
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
@@ -157,6 +158,28 @@ def last_completed_session(now: datetime) -> date:
     raise RobinhoodPortfolioError("no completed trading session found in the last 14 days")
 
 
+def _reports_only_inactive(detail: str, symbol: str) -> bool:
+    """True only when a history error says exactly ``symbol`` is an inactive instrument.
+
+    The server text looks like ``API error 400: {"inactive_instruments":["FSRNQ"]}``. The JSON
+    object after the first ``{`` must parse, hold exactly one key, ``inactive_instruments``, and
+    list exactly the symbol being priced. Anything else (another symbol, extra symbols, extra
+    keys, malformed or truncated text, a mere mention of the field) is not accepted, so the
+    caller re-raises instead of dropping the holding from the totals.
+    """
+    start = detail.find("{")
+    if start < 0:
+        return False
+    try:
+        body = json.JSONDecoder().raw_decode(detail[start:])[0]
+    except ValueError:
+        return False
+    if not isinstance(body, dict) or set(body) != {"inactive_instruments"}:
+        return False
+    listed = body["inactive_instruments"]
+    return isinstance(listed, list) and all(isinstance(item, str) for item in listed) and listed == [symbol]
+
+
 # --------------------------------------------------------------------------
 # Client
 # --------------------------------------------------------------------------
@@ -208,7 +231,7 @@ class RobinhoodPortfolioClient:
                     symbol, start=session - timedelta(days=_PRICE_WINDOW_DAYS), end=session,
                     as_of=regular_session_close(session))
             except McpToolError as exc:
-                if "inactive_instruments" not in exc.detail:
+                if not _reports_only_inactive(exc.detail, symbol):
                     raise
                 unpriced.append(UnpricedLine(symbol=symbol, quantity=quantity, cost_basis=cost))
                 continue

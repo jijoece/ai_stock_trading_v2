@@ -134,6 +134,31 @@ def test_other_history_tool_errors_still_fail_closed(positions):
         _client(positions, history=rate_limited).snapshot()
 
 
+@pytest.mark.parametrize("detail", [
+    'API error 400: {"inactive_instruments":["OTHER"]}',              # a different symbol
+    'API error 400: {"inactive_instruments":["{sym}","OTHER"]}',      # extra symbols
+    'API error 400: {"inactive_instruments":[]}',                     # empty list
+    'API error 400: {"inactive_instruments":"{sym}"}',                # not a list
+    'API error 400: {"inactive_instruments":[1]}',                    # wrong item type
+    'API error 400: {"inactive_instruments":["{sym}"],"x":1}',        # extra keys
+    'API error 400: {"inactive_instruments":["{sym}"',                # truncated JSON
+    'API error 400: inactive_instruments for {sym}',                  # only mentions the field
+    'API error 500: see inactive_instruments docs',                   # diagnostic mention
+    '',                                                               # no text
+])
+def test_inactive_error_not_naming_exactly_this_symbol_fails_closed(positions, detail):
+    victim = _client(positions).snapshot().lines[0].symbol
+    text = detail.replace("{sym}", victim)
+
+    def bad(symbol):
+        if symbol == victim:
+            raise oc.McpToolError(f"the MCP tool call returned an error: {text}", text)
+        return _history_for(symbol)
+
+    with pytest.raises(oc.McpToolError):
+        _client(positions, history=bad).snapshot()
+
+
 def test_missing_last_close_fails_closed(positions):
     def stale(symbol):
         payload = _history_for(symbol)
