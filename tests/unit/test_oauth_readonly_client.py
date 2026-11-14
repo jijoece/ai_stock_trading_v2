@@ -247,27 +247,35 @@ async def test_a_new_process_refreshes_an_expired_stored_token_instead_of_asking
     import time
     from urllib.parse import parse_qs
 
-    import httpx
+    from mcp.client.auth import oauth2
+    # mcp 1.x is built on httpx, 2.x on httpx2: drive the SDK's auth flow with whichever one it uses.
+    hx = getattr(oauth2, "httpx2", None) or getattr(oauth2, "httpx")
     store = await _expired_login(tmp_path)
     seen: list[str] = []
 
-    def server(request: httpx.Request) -> httpx.Response:
+    def server(request):
         seen.append(f"{request.method} {request.url}")
         if str(request.url) == "https://auth.acme.example/oauth/token":
             form = parse_qs(request.content.decode())
             assert form["grant_type"] == ["refresh_token"] and form["refresh_token"] == ["rt-1"]
-            return httpx.Response(200, json={"access_token": "at-new", "token_type": "Bearer",
-                                             "expires_in": 3600, "refresh_token": "rt-2"})
+            return hx.Response(200, request=request, json={"access_token": "at-new", "token_type": "Bearer",
+                                                           "expires_in": 3600, "refresh_token": "rt-2"})
         if request.headers.get("Authorization") == "Bearer at-new":
-            return httpx.Response(200, json={"ok": True})
-        return httpx.Response(401)
+            return hx.Response(200, request=request, json={"ok": True})
+        return hx.Response(401, request=request)
 
     async def no_login(*_a):
         raise oc.McpLoginRequired("an interactive login was started")
 
     provider = oc._make_provider(ACME, ACME.default_url, store, "http://127.0.0.1/callback", no_login, no_login)
-    async with httpx.AsyncClient(auth=provider, transport=httpx.MockTransport(server)) as http:
-        response = await http.post(ACME.default_url, json={})
+    flow = provider.async_auth_flow(hx.Request("POST", ACME.default_url, json={}))
+    request = await flow.__anext__()
+    while True:
+        response = server(request)
+        try:
+            request = await flow.asend(response)
+        except StopAsyncIteration:
+            break
     assert response.status_code == 200
     assert seen == ["POST https://auth.acme.example/oauth/token", f"POST {ACME.default_url}"]
     refreshed = await store.get_tokens()
