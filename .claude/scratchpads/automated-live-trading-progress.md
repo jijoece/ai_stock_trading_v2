@@ -37,7 +37,8 @@ Last updated 2026-11-14. Read this first, then `docs/automated-live-trading-impl
   `21af518`, worktree `../ai_stock_trading_v2-fix`). Finding 1/2: re-check under the write lock; 3: migration 17;
   4: warning log (behaviour unchanged); 5-7 as listed. The background `nox -s ci safety_typecheck` run finished
   green (exit 0: tests 3801 passed / 107 skipped, paper_tests 160 passed, migration_smoke ok, safety_typecheck 0
-  errors), even though the operator said to skip it. Not yet re-reviewed or merged.
+  errors), even though the operator said to skip it. PR #40 was merged to `main` on 2026-11-14 (merge commit
+  `611c138`) without an independent re-review of the fixes (only an automated CodeRabbit pass).
   Tooling note: this shell exports `GIT_INDEX_FILE=.git/index` (relative), which breaks `git worktree add` and git
   inside a worktree; run `unset GIT_INDEX_FILE` first.
 - Checkout at last update was `feat/score-alpaca-data` (unrelated score/Alpaca-data work with uncommitted
@@ -69,11 +70,11 @@ Tests: `tests/unit/test_allocation.py` (24, incl. Hypothesis), `tests/unit/test_
 
 ## Next steps, in order
 
-1. **Re-review done 2026-11-14 (see findings above); next is verify and fix them.** Original plan: run `/code-review`
-   against `0b570bf^..dde61fd` (or the Phases 2-3 files: `strategies/controls.py`, `strategies/config.py`,
-   `paper_books/allocation.py`, `paper_books/strategy_exposure.py`, `risk.evaluate_paper_risk`,
-   `strategy_bridge.py`). It is read-only and the plan requires an independent review before Phase 4. Record the
-   outcome here. Do from a branch off `main`, not from `feat/score-alpaca-data`.
+1. **Re-review the PR #40 fixes.** The review of `0b570bf^..dde61fd` is done and findings 1-7 are fixed in PR #40
+   (above), so do not repeat that review or those fixes. Run `/code-review` against PR #40's changes
+   (`gh pr diff 40`, or `dde61fd..21af518`), confirm each fix and look for regressions. The plan requires an
+   independent review before Phase 4. Record the outcome here. Do from a branch off `main`, not from
+   `feat/score-alpaca-data`.
    **Still ask the operator** (do not assume) before: (a) the overnight check (credentialed), (c) anything that
    depends on the owner answering O1-O16 / accepting the ADR. Phase 4 stays blocked until review, the Phase 1 gate
    and ADR acceptance are all done.

@@ -11,4 +11,7 @@ include_fragments = "anchor-only"
 exclude = [
   '^https://dl\.acm\.org/doi/10\.1145/3614419\.3643993$',
   '^https://support\.reddithelp\.com/hc/en-us/articles/42728983564564-Responsible-Builder-Policy$',
+  # Times out with no response for automated checks (CI and a local probe on 2026-11-14), failing every CI
+  # run including `main`. Re-check by hand and drop this entry once it answers again.
+  '^https://alphagaindaily\.com/en/blog/backtrader-vs-zipline-vs-quantconnect$',
 ]

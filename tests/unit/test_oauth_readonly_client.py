@@ -176,6 +176,119 @@ def test_token_store_rejects_corrupt_file(tmp_path):
         oc.FileTokenStore(path).has_tokens()
 
 
+async def test_token_writes_never_reuse_a_predictable_or_existing_temporary_file(tmp_path):
+    store = oc.FileTokenStore(tmp_path / "oauth.json")
+    planted = tmp_path / "oauth.json.tmp"  # the old fixed name, pre-created world-writable by someone else
+    planted.write_text("planted")
+    os.chmod(planted, 0o666)
+    await store.set_tokens(_token())
+    assert planted.read_text() == "planted"
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["oauth.json", "oauth.json.lock", "oauth.json.tmp"]
+    assert stat.S_IMODE(store.path.stat().st_mode) == 0o600
+
+
+def test_concurrent_token_store_updates_keep_every_field(tmp_path):
+    import threading
+
+    from mcp.shared.auth import OAuthClientInformationFull
+    path = tmp_path / "oauth.json"
+    info = OAuthClientInformationFull(client_id="cid", redirect_uris=["http://127.0.0.1/callback"])  # type: ignore[list-item]
+    errors: list[BaseException] = []
+
+    def run(coro_factory):
+        try:
+            for _ in range(20):
+                asyncio.run(coro_factory(oc.FileTokenStore(path)))
+        except BaseException as exc:  # pragma: no cover - surfaced by the assertion below
+            errors.append(exc)
+
+    threads = [threading.Thread(target=run, args=(lambda s: s.set_tokens(_token()),)),
+               threading.Thread(target=run, args=(lambda s: s.set_client_info(info),))]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert not errors
+    data = json.loads(path.read_text())
+    assert data["tokens"]["refresh_token"] == "rt-1" and data["client_info"]["client_id"] == "cid"
+    assert [p.name for p in tmp_path.iterdir() if p.suffix == ".tmp"] == []
+
+
+async def test_token_expiry_is_persisted_with_the_tokens(tmp_path):
+    import time
+    store = oc.FileTokenStore(tmp_path / "oauth.json")
+    assert store.token_expires_at() is None
+    before = time.time()
+    await store.set_tokens(_token())  # expires_in=3600
+    expires_at = store.token_expires_at()
+    assert expires_at is not None
+    assert before + 3600 - oc.TOKEN_EXPIRY_SKEW_SECONDS <= expires_at <= time.time() + 3600
+
+
+def _metadata(token_endpoint="https://auth.acme.example/oauth/token"):
+    from mcp.shared.auth import OAuthMetadata
+    return OAuthMetadata(issuer="https://auth.acme.example",  # type: ignore[arg-type]
+                         authorization_endpoint="https://auth.acme.example/authorize",  # type: ignore[arg-type]
+                         token_endpoint=token_endpoint)  # type: ignore[arg-type]
+
+
+async def _expired_login(tmp_path):
+    from mcp.shared.auth import OAuthClientInformationFull, OAuthToken
+    store = oc.FileTokenStore(tmp_path / "oauth.json")
+    await store.set_client_info(OAuthClientInformationFull(
+        client_id="cid", redirect_uris=["http://127.0.0.1/callback"]))  # type: ignore[list-item]
+    store.set_oauth_metadata(_metadata())
+    await store.set_tokens(OAuthToken(access_token="at-old", token_type="Bearer", expires_in=0,
+                                      refresh_token="rt-1"))
+    return store
+
+
+async def test_a_new_process_refreshes_an_expired_stored_token_instead_of_asking_for_a_login(tmp_path):
+    import time
+    from urllib.parse import parse_qs
+
+    import httpx
+    store = await _expired_login(tmp_path)
+    seen: list[str] = []
+
+    def server(request: httpx.Request) -> httpx.Response:
+        seen.append(f"{request.method} {request.url}")
+        if str(request.url) == "https://auth.acme.example/oauth/token":
+            form = parse_qs(request.content.decode())
+            assert form["grant_type"] == ["refresh_token"] and form["refresh_token"] == ["rt-1"]
+            return httpx.Response(200, json={"access_token": "at-new", "token_type": "Bearer",
+                                             "expires_in": 3600, "refresh_token": "rt-2"})
+        if request.headers.get("Authorization") == "Bearer at-new":
+            return httpx.Response(200, json={"ok": True})
+        return httpx.Response(401)
+
+    async def no_login(*_a):
+        raise oc.McpLoginRequired("an interactive login was started")
+
+    provider = oc._make_provider(ACME, ACME.default_url, store, "http://127.0.0.1/callback", no_login, no_login)
+    async with httpx.AsyncClient(auth=provider, transport=httpx.MockTransport(server)) as http:
+        response = await http.post(ACME.default_url, json={})
+    assert response.status_code == 200
+    assert seen == ["POST https://auth.acme.example/oauth/token", f"POST {ACME.default_url}"]
+    refreshed = await store.get_tokens()
+    assert refreshed is not None and refreshed.access_token == "at-new" and refreshed.refresh_token == "rt-2"
+    expires_at = store.token_expires_at()
+    assert expires_at is not None and expires_at > time.time()
+
+
+async def test_discovered_metadata_is_remembered_once(tmp_path):
+    store = oc.FileTokenStore(tmp_path / "oauth.json")
+    provider = SimpleNamespace(context=SimpleNamespace(oauth_metadata=None))
+    oc._remember_metadata(provider, store)
+    assert store.get_oauth_metadata() is None and not store.path.exists()
+    provider.context.oauth_metadata = _metadata()
+    oc._remember_metadata(provider, store)
+    assert store.get_oauth_metadata() == _metadata()
+    mtime = store.path.stat().st_mtime_ns
+    oc._remember_metadata(provider, store)
+    assert store.path.stat().st_mtime_ns == mtime
+
+
 def test_default_token_path_is_per_server_and_honours_overrides(tmp_path):
     assert oc.default_token_path(ACME, {"ACME_MCP_TOKEN_PATH": str(tmp_path / "t.json")}) == tmp_path / "t.json"
     assert oc.default_token_path(ACME, {"XDG_CONFIG_HOME": str(tmp_path)}) == (

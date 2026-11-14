@@ -31,11 +31,12 @@ import asyncio
 import json
 import os
 import sys
+import tempfile
 import threading
 import time
 import webbrowser
-from collections.abc import Callable, Iterable, Mapping
-from contextlib import asynccontextmanager
+from collections.abc import Callable, Generator, Iterable, Mapping
+from contextlib import asynccontextmanager, contextmanager
 from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
@@ -43,6 +44,11 @@ from typing import Any, Protocol
 from urllib.parse import parse_qs, urlparse
 
 from .tool_classifier import load_policy
+
+try:
+    import fcntl
+except ImportError:  # pragma: no cover - not POSIX
+    fcntl = None  # type: ignore[assignment]
 
 MIN_CALL_INTERVAL_SECONDS = 0.5
 LOGIN_TIMEOUT_SECONDS = 300.0
@@ -121,15 +127,42 @@ def default_token_path(spec: ServerSpec, env: Mapping[str, str] | None = None) -
     return base / "trading_research" / f"{spec.name}_mcp_oauth.json"
 
 
+TOKEN_EXPIRY_SKEW_SECONDS = 30.0
+
+
 class FileTokenStore:
     """OAuth tokens and registered client info in one 0600 file (directory 0700).
 
     Refuses to read a file that is accessible to group/other, and never logs or
-    prints its contents.
+    prints its contents. Each write goes to its own exclusively created
+    temporary file, and read-modify-write updates are serialized across
+    processes with an advisory lock, so concurrent logins or refreshes cannot
+    share a temporary file or lose each other's fields.
+
+    Besides the SDK's token and client-info fields, the file keeps the absolute
+    access-token expiry and the discovered authorization-server metadata. The
+    SDK keeps both only in memory, so without them a new process would send an
+    expired token, get a 401, and need another interactive login although a
+    refresh token is stored.
     """
 
     def __init__(self, path: Path) -> None:
         self.path = path
+
+    @contextmanager
+    def _locked(self) -> Generator[None, None, None]:
+        """Hold an exclusive advisory lock for one read-modify-write (POSIX; a no-op elsewhere)."""
+        if fcntl is None:
+            yield
+            return
+        self.path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        lock_path = self.path.with_name(self.path.name + ".lock")
+        fd = os.open(lock_path, os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0), 0o600)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX)
+            yield
+        finally:
+            os.close(fd)  # closing the descriptor releases the lock
 
     def _read(self) -> dict[str, Any]:
         try:
@@ -146,11 +179,23 @@ class FileTokenStore:
 
     def _write(self, data: dict[str, Any]) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-        tmp = self.path.with_name(self.path.name + ".tmp")
-        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            fh.write(json.dumps(data))
-        os.replace(tmp, self.path)
+        # mkstemp creates a new, uniquely named 0600 file with O_EXCL: never a pre-existing or shared one.
+        fd, tmp_name = tempfile.mkstemp(prefix=f".{self.path.name}.", suffix=".tmp", dir=self.path.parent)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                fh.write(json.dumps(data))
+                fh.flush()
+                os.fsync(fh.fileno())
+            os.replace(tmp_name, self.path)
+        except BaseException:
+            Path(tmp_name).unlink(missing_ok=True)
+            raise
+
+    def _update(self, **fields: Any) -> None:
+        with self._locked():
+            data = self._read()
+            data.update(fields)
+            self._write(data)
 
     def has_tokens(self) -> bool:
         return bool(self._read().get("tokens"))
@@ -164,9 +209,16 @@ class FileTokenStore:
         return OAuthToken.model_validate(raw) if raw else None
 
     async def set_tokens(self, tokens) -> None:
-        data = self._read()
-        data["tokens"] = tokens.model_dump(mode="json", exclude_none=True)
-        self._write(data)
+        expires_in = getattr(tokens, "expires_in", None)
+        self._update(tokens=tokens.model_dump(mode="json", exclude_none=True),
+                     tokens_expire_at=None if expires_in is None else time.time() + float(expires_in))
+
+    def token_expires_at(self) -> float | None:
+        """When the stored access token expires (epoch seconds, minus a small skew), or None when unknown."""
+        value = self._read().get("tokens_expire_at")
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return None
+        return float(value) - TOKEN_EXPIRY_SKEW_SECONDS
 
     async def get_client_info(self):
         from mcp.shared.auth import OAuthClientInformationFull
@@ -174,9 +226,20 @@ class FileTokenStore:
         return OAuthClientInformationFull.model_validate(raw) if raw else None
 
     async def set_client_info(self, client_info) -> None:
-        data = self._read()
-        data["client_info"] = client_info.model_dump(mode="json", exclude_none=True)
-        self._write(data)
+        self._update(client_info=client_info.model_dump(mode="json", exclude_none=True))
+
+    def get_oauth_metadata(self) -> Any:
+        from mcp.shared.auth import OAuthMetadata
+        raw = self._read().get("oauth_metadata")
+        if not isinstance(raw, dict):
+            return None
+        try:
+            return OAuthMetadata.model_validate(raw)
+        except ValueError:
+            return None  # stale or foreign metadata: the SDK rediscovers it on the next 401
+
+    def set_oauth_metadata(self, metadata: Any) -> None:
+        self._update(oauth_metadata=metadata.model_dump(mode="json", exclude_none=True))
 
 
 # --------------------------------------------------------------------------
@@ -232,23 +295,60 @@ def _scrub(exc: BaseException, what: str) -> McpError:
     return McpError(f"{what} failed (" + ", ".join(sorted({type(x).__name__ for x in leaves})) + ")")
 
 
+def _make_provider(spec: ServerSpec, url: str, store: TokenStore, redirect_uri: str,
+                   redirect_handler, callback_handler):
+    """An SDK OAuth provider with the persisted token expiry and token endpoint restored.
+
+    The SDK's lazy initialization loads only the tokens and client info, so a new provider treats any
+    stored access token as valid until the server rejects it, and its 401 handling starts an interactive
+    login instead of refreshing. Restoring the expiry makes the SDK refresh an expired token before the
+    request. Restoring the metadata points that refresh at the discovered token endpoint instead of the
+    SDK's guess of `<server origin>/token`.
+    """
+    from mcp.client.auth import OAuthClientProvider
+    from mcp.shared.auth import OAuthMetadata
+
+    provider = OAuthClientProvider(
+        server_url=url, client_metadata=_client_metadata(spec, redirect_uri), storage=store,
+        redirect_handler=redirect_handler, callback_handler=callback_handler)
+    load_expiry = getattr(store, "token_expires_at", None)
+    expires_at = load_expiry() if callable(load_expiry) else None
+    if isinstance(expires_at, float):
+        provider.context.token_expiry_time = expires_at
+    load_metadata = getattr(store, "get_oauth_metadata", None)
+    metadata = load_metadata() if callable(load_metadata) else None
+    if isinstance(metadata, OAuthMetadata):
+        provider.context.oauth_metadata = metadata
+    return provider
+
+
+def _remember_metadata(provider: Any, store: TokenStore) -> None:
+    """Persist the authorization-server metadata the SDK discovered, for later refreshes."""
+    metadata = getattr(provider.context, "oauth_metadata", None)
+    save = getattr(store, "set_oauth_metadata", None)
+    if metadata is None or not callable(save):
+        return
+    load = getattr(store, "get_oauth_metadata", None)
+    if callable(load) and load() == metadata:
+        return
+    save(metadata)
+
+
 def _open_session(spec: ServerSpec, url: str, store: TokenStore, redirect_uri: str,
                   redirect_handler, callback_handler):
     """Async context manager yielding an initialized, OAuth-authenticated MCP session."""
     import httpx
     from mcp import ClientSession
-    from mcp.client.auth import OAuthClientProvider
     from mcp.client.streamable_http import streamable_http_client
 
     @asynccontextmanager
     async def _cm():
-        provider = OAuthClientProvider(
-            server_url=url, client_metadata=_client_metadata(spec, redirect_uri), storage=store,
-            redirect_handler=redirect_handler, callback_handler=callback_handler)
+        provider = _make_provider(spec, url, store, redirect_uri, redirect_handler, callback_handler)
         async with httpx.AsyncClient(auth=provider, follow_redirects=True, timeout=30.0) as http:
             async with streamable_http_client(url, http_client=http) as (read, write, _):
                 async with ClientSession(read, write) as session:
                     await session.initialize()
+                    _remember_metadata(provider, store)
                     yield session
     return _cm()
 

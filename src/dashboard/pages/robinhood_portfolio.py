@@ -11,11 +11,15 @@ from dashboard.services.robinhood_portfolio_service import (
     PortfolioViewError,
     load_portfolio,
     portfolio_enabled,
+    token_state,
 )
 
 
 @st.cache_data(ttl=300, show_spinner=False)
-def _load():
+def _load(token_fingerprint: tuple[int, int, int] | None):
+    # `token_fingerprint` is only the cache key (no leading underscore, so Streamlit hashes it): a login or
+    # logout changes the token file, which forces a fresh read instead of the previous session's snapshot.
+    del token_fingerprint
     return load_portfolio()
 
 
@@ -41,7 +45,7 @@ def render() -> None:
         _load.clear()
     try:
         with st.spinner("Reading positions and prices..."):
-            snapshot = _load()
+            snapshot = _load(token_state())
     except PortfolioViewError as exc:
         st.error(str(exc))
         return

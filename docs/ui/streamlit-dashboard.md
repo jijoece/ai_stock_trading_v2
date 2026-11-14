@@ -38,6 +38,14 @@ Streamlit and Pandas are declared in `pyproject.toml`. Install with the
 project's existing dependency workflow (e.g. `pip install -e .` inside
 `.venv`).
 
+The opt-in Score a Ticker page also needs TA-Lib, which is only in the
+optional `indicators` extra. Without it `score.py` fails while importing its
+indicators, before either data source is used:
+
+```bash
+.venv/bin/python -m pip install -e '.[indicators]'
+```
+
 ## Database environment variable
 
 Set `AI_STOCK_TRADING_DB_PATH` to the existing research SQLite database file
@@ -113,8 +121,20 @@ ALPACA_MARKET_DATA_API_SECRET=...
 
 `scripts/run_dashboard.sh` reads only these variables (plus
 `ALPACA_MARKET_DATA_BASE_URL` and `ROBINHOOD_MCP_URL`) from `.env`; it does not
-`source` the file and never exports other secrets. Exported shell variables
-take precedence. Restart the dashboard to pick up changes.
+`source` the file and never exports other secrets. For these launcher
+settings, exported shell variables take precedence over `.env`. Alpaca
+scoring is different: the `score.py` child rereads `.env` itself, and the
+`ALPACA_MARKET_DATA_API_KEY`/`ALPACA_MARKET_DATA_API_SECRET` values there win
+over exported ones (the shell values are only a fallback when `.env` does not
+set them).
+
+To pick up changes, restart the dashboard. `run_dashboard.sh` exits without
+restarting when a dashboard is already running, so stop it first:
+
+```bash
+scripts/stop_dashboard.sh
+scripts/run_dashboard.sh
+```
 
 * It runs `scripts/score.py --alpaca|--robinhood SYMBOLS --json` as a child
   process with a fixed argument list (no shell, 180 s timeout) and displays the

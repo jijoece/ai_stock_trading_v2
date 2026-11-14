@@ -495,6 +495,24 @@ def _fetch_error_message(exc: Exception) -> str:
     return f"market data fetch failed ({type(exc).__name__})"
 
 
+def _check_session_continuity(dates: list[date]) -> None:
+    """Refuse history with a missing internal XNYS session.
+
+    The closes are passed on without their dates, so a gap would silently shorten every indicator lookback,
+    and `macro_pillar.ratio_series`, which aligns undated series by their ends, would pair different sessions.
+    """
+    from trading_research.evaluation.market_calendar import MarketCalendarError, next_trading_session
+    try:
+        for prev, cur in zip(dates, dates[1:]):
+            expected = next_trading_session(prev)
+            if cur != expected:
+                raise ScoreError(
+                    f"history is missing the {expected} session (bars jump from {prev} to {cur}); "
+                    "refusing to score a series with gaps")
+    except MarketCalendarError as exc:
+        raise ScoreConfigError(f"market calendar unavailable: {exc}") from None
+
+
 def fetch_closes(client, symbol: str, *, as_of_session: date, adjustment: str,
                  min_sessions: int, provider: Optional[str] = None) -> dict:
     """Fetch daily closes up to and including `as_of_session`; fails closed on any doubt.
@@ -531,6 +549,7 @@ def fetch_closes(client, symbol: str, *, as_of_session: date, adjustment: str,
         raise SessionNotPublished(
             f"history ends {dates[-1]}, not on the as-of session {as_of_session}; "
             "the final session's bar is missing")
+    _check_session_continuity(dates)
     return {
         "closes": [float(b.close) for b in bars],
         "first_session": dates[0].isoformat(),
@@ -684,7 +703,25 @@ def _attempt(client, provider, feed, adjustment_verified, args, symbols, as_of_s
     return results, errors, context, unpublished, saved
 
 
+def _require_project_package(source: str) -> None:
+    """Re-launch under the repository `.venv` (when run directly) before anything imports `trading_research`.
+
+    The first such import is the market calendar in `_last_completed_session`, which runs before either client
+    factory, so the recovery has to happen here or a missing package would fail the run instead.
+    """
+    try:
+        import trading_research.evaluation.market_calendar  # noqa: F401
+    except ImportError:
+        if __name__ == "__main__":
+            _project_env.reexec_in_project_venv(__file__)  # does not return on success
+        raise ScoreConfigError(
+            f"--{source} needs the project environment (trading_research is not importable); "
+            f"run with .venv/bin/python scripts/score.py --{source} ..."
+        ) from None
+
+
 def _score_remote(args, symbols: list[str], source: str) -> tuple[date, list[dict], list[dict], dict]:
+    _require_project_package(source)
     now = _utc_now()
     as_of_session = _last_completed_session(now)
     if args.as_of:

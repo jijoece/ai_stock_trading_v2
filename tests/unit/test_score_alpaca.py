@@ -17,6 +17,7 @@ import sys
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -186,6 +187,23 @@ def test_missing_final_session_bar_rejected(score):
     with pytest.raises(score.ScoreError, match="final session's bar is missing"):
         score.fetch_closes(FakeClient({"AAPL": bars}), "AAPL",
                            as_of_session=AS_OF_SESSION, adjustment="split", min_sessions=220)
+
+
+def test_a_missing_internal_session_is_rejected(score):
+    bars = _bars("AAPL", n=240)
+    gapped = bars[:100] + bars[101:]  # 239 bars, final session present, one internal session dropped
+    missing = bars[100].session_date
+    with pytest.raises(score.ScoreError, match=f"missing the {missing} session"):
+        score.fetch_closes(FakeClient({"AAPL": gapped}), "AAPL",
+                           as_of_session=AS_OF_SESSION, adjustment="split", min_sessions=220)
+
+
+def test_a_missing_internal_session_fails_the_cli_run(score, patch_env, capsys):
+    bars = _bars("AAPL")
+    patch_env(FakeClient({"AAPL": bars[:50] + bars[51:]}))
+    code, out = _run_json(score, capsys, ["--alpaca", "AAPL", "--json"])
+    assert code == 1
+    assert "refusing to score a series with gaps" in out["errors"][0]["error"]
 
 
 def test_wrong_symbol_or_provider_rejected(score):
@@ -369,6 +387,32 @@ def test_unimportable_repo_package_gives_venv_hint(score, monkeypatch):
     monkeypatch.setitem(sys.modules, "trading_research.backtesting.alpaca_history", None)
     with pytest.raises(score.ScoreConfigError, match=r"\.venv/bin/python"):
         score._alpaca_client("iex")
+
+
+@pytest.mark.parametrize("source", ["alpaca", "robinhood"])
+def test_environment_recovery_runs_before_the_first_calendar_import(score, monkeypatch, source):
+    # indicators imported, trading_research did not: the calendar lookup is the first trading_research
+    # import, so the re-launch must happen before it rather than only in the client factories.
+    monkeypatch.setitem(sys.modules, "trading_research.evaluation.market_calendar", None)
+    relaunched: list[str] = []
+
+    def fake_reexec(script):
+        relaunched.append(script)
+        raise SystemExit(0)  # a real re-exec replaces the process
+
+    monkeypatch.setattr(score._project_env, "reexec_in_project_venv", fake_reexec)
+    monkeypatch.setitem(score.__dict__, "__name__", "__main__")
+    calendar_calls: list[object] = []
+    monkeypatch.setattr(score, "_last_completed_session", lambda now: calendar_calls.append(now))
+    with pytest.raises(SystemExit):
+        score._score_remote(SimpleNamespace(as_of=None), ["AAPL"], source)
+    assert relaunched == [score.__file__] and calendar_calls == []
+
+
+def test_unimportable_calendar_gives_venv_hint_when_imported(score, monkeypatch):
+    monkeypatch.setitem(sys.modules, "trading_research.evaluation.market_calendar", None)
+    with pytest.raises(score.ScoreConfigError, match=r"--robinhood needs the project environment"):
+        score._score_remote(SimpleNamespace(as_of=None), ["AAPL"], "robinhood")
 
 
 @pytest.mark.parametrize("argv", [

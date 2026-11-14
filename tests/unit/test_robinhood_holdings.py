@@ -79,6 +79,21 @@ def test_bad_accounts_responses_fail_closed(payload, fragment):
         rhh.parse_active_accounts(payload)
 
 
+@pytest.mark.parametrize("extra", [
+    {"state": "active"},  # both deactivation flags missing
+    {"state": "active", "deactivated": False},
+    {"state": "active", "deactivated": "false", "permanently_deactivated": False},
+    {"state": "active", "deactivated": False, "permanently_deactivated": None},
+    {"deactivated": False, "permanently_deactivated": False},  # no state
+    {"state": "", "deactivated": False, "permanently_deactivated": False},
+])
+def test_an_account_with_uncertain_activity_is_refused_not_skipped(accounts, extra):
+    accounts["data"]["accounts"].append({"account_number": "ACCT-0003", **extra})
+    with pytest.raises(rhh.RobinhoodHoldingsError, match="activity fields") as excinfo:
+        rhh.parse_active_accounts(accounts)
+    assert "ACCT-0003" not in str(excinfo.value)
+
+
 def test_positions_parse_to_symbol_quantities():
     longs, other = rhh.parse_positions(_load("robinhood_positions_multi.json"))
     assert longs == {"AAA": Decimal("39"), "BBB": Decimal("2"), "NVDA": Decimal("5")} and other == set()

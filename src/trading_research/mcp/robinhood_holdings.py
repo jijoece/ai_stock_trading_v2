@@ -68,8 +68,15 @@ def parse_active_accounts(payload: Any) -> list[str]:
         number = acct.get("account_number") if isinstance(acct, dict) else None
         if not isinstance(number, str) or not number:
             raise RobinhoodHoldingsError("an account entry has no account_number")
-        flags = (acct.get("state"), acct.get("deactivated"), acct.get("permanently_deactivated"))
-        if flags == ("active", False, False):
+        # Every account's activity fields must be well formed before any account is filtered out: an
+        # account whose status is uncertain is refused, never silently treated as inactive (its positions
+        # would then go unread and `holds()` could answer False for a symbol held only there).
+        state, deactivated, permanent = (
+            acct.get("state"), acct.get("deactivated"), acct.get("permanently_deactivated"))
+        if not isinstance(state, str) or not state or not isinstance(deactivated, bool) \
+                or not isinstance(permanent, bool):
+            raise RobinhoodHoldingsError("an account entry has missing or malformed activity fields")
+        if (state, deactivated, permanent) == ("active", False, False):
             active.append(number)
     if not active:
         raise RobinhoodHoldingsError("no active Robinhood account found")

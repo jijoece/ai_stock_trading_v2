@@ -89,3 +89,43 @@ def test_page_shows_sanitized_error(monkeypatch):
         "from dashboard.pages.robinhood_portfolio import render\nrender()", default_timeout=10
     ).run()
     assert app.error[0].value == "not logged in"
+
+
+def test_token_state_tracks_the_token_file_without_reading_it(tmp_path, monkeypatch):
+    from dashboard.services.robinhood_portfolio_service import token_state
+    token = tmp_path / "oauth.json"
+    monkeypatch.setenv("ROBINHOOD_MCP_TOKEN_PATH", str(token))
+    assert token_state() is None
+    token.write_text('{"tokens": {"access_token": "a"}}')
+    first = token_state()
+    assert first is not None
+    token.write_text('{"tokens": {"access_token": "a-different-login"}}')
+    assert token_state() != first
+    token.unlink()
+    assert token_state() is None
+
+
+def test_a_login_change_invalidates_the_cached_snapshot(tmp_path, monkeypatch):
+    monkeypatch.setenv(ENABLE_ENV, "1")
+    token = tmp_path / "oauth.json"
+    monkeypatch.setenv("ROBINHOOD_MCP_TOKEN_PATH", str(token))
+    token.write_text('{"tokens": {"access_token": "first"}}')
+    calls: list[int] = []
+
+    def load():
+        calls.append(1)
+        return SNAPSHOT
+
+    monkeypatch.setattr(page, "load_portfolio", load)
+    script = "from dashboard.pages.robinhood_portfolio import render\nrender()"
+    AppTest.from_string(script, default_timeout=10).run()
+    AppTest.from_string(script, default_timeout=10).run()
+    assert len(calls) == 1  # same login: served from the cache
+
+    token.write_text('{"tokens": {"access_token": "second-account-login"}}')  # mcp_login.py in another process
+    AppTest.from_string(script, default_timeout=10).run()
+    assert len(calls) == 2
+
+    token.unlink()  # logout
+    app = AppTest.from_string(script, default_timeout=10).run()
+    assert len(calls) == 3 and not app.exception
