@@ -374,8 +374,13 @@ Safety-relevant steps also pass `nox -s safety_typecheck`.
   09:25 variants. The 16:30 baseline is decided at 16:30, so its candidate set
   is the `post_report_overnight` set (common checks plus `post_report_move`),
   never the 09:25 set, whose gap, hold and relative-volume inputs are not known
-  until the next morning. A fixture with identical bars through the baseline's
-  exit and different later pre-market bars must select the same trades. **Control:** the same-day rules on ordinary sessions
+  until the next morning. Required test: hold every bar through 16:30
+  identical and, in separate cases, vary each next-morning pre-market input
+  (`premarket_gap`, `premarket_hold`, `premarket_rel_volume`) before the
+  baseline's exit, including values that would fail the 09:25 filter. The
+  selected candidate set and the 16:30 entry must be unchanged; only the exit
+  return may differ. The test must fail if the baseline is selected with the
+  09:25 filter. **Control:** the same-day rules on ordinary sessions
   for the same symbols.
 - A Markdown/JSON report under `reports/`, with the survivorship, estimate,
   release-time, and fill-model caveats printed at the top.
