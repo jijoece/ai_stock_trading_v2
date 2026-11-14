@@ -411,6 +411,13 @@ def create_strategy_entry_intents(
             persisted_risk_id = risk_decision_id
             if not approved:
                 with transaction(conn):
+                    # Re-check under the write lock, as the approved path does. A runner that lost a race for this
+                    # signal must not add a duplicate decision, and must not stamp its own controls onto the
+                    # winner's decision (save_decision_controls would raise if they differ, aborting the batch).
+                    if already_processed():
+                        return outcome(
+                            OUTCOME_SKIPPED_ALREADY_PROCESSED, "this signal was already evaluated for the book",
+                        )
                     order_intent.persist_risk_decision(
                         conn, book_id, cycle_id, recommendation_id, signal.symbol, decision, snap.snapshot_id, clock,
                         commit=False,

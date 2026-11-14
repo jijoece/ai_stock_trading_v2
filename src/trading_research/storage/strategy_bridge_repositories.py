@@ -123,7 +123,9 @@ def save_decision_controls(
 ) -> bool:
     """Record the controls a risk decision was evaluated under. True if added, False if the identical
     record exists; raises if the decision is already recorded under different controls. Does not open a
-    transaction: the caller persists it with the decision it describes."""
+    transaction: the caller persists it with the decision it describes. Call it only for a decision the same
+    transaction newly saved (after confirming none existed): the row attributes the controls given here to the
+    decision, which is false for a decision made earlier under settings that were not recorded."""
     record = json.dumps(controls.audit_record(), sort_keys=True)
     cursor = conn.execute(
         "INSERT OR IGNORE INTO paper_book_decision_strategy_controls "
