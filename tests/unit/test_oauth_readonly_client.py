@@ -282,9 +282,7 @@ async def test_a_new_process_refreshes_an_expired_stored_token_instead_of_asking
     import time
     from urllib.parse import parse_qs
 
-    from mcp.client.auth import oauth2
-    # mcp 1.x is built on httpx, 2.x on httpx2: drive the SDK's auth flow with whichever one it uses.
-    hx = getattr(oauth2, "httpx2", None) or getattr(oauth2, "httpx")
+    import httpx as hx
     store = await _expired_login(tmp_path)
     seen: list[str] = []
 
@@ -303,14 +301,11 @@ async def test_a_new_process_refreshes_an_expired_stored_token_instead_of_asking
         raise oc.McpLoginRequired("an interactive login was started")
 
     provider = oc._make_provider(ACME, ACME.default_url, store, "http://127.0.0.1/callback", no_login, no_login)
-    flow = provider.async_auth_flow(hx.Request("POST", ACME.default_url, json={}))
-    request = await flow.__anext__()
-    while True:
-        response = server(request)
-        try:
-            request = await flow.asend(response)
-        except StopAsyncIteration:
-            break
+    # The same client construction as `_open_session` (an SDK whose provider is not an httpx.Auth, such as
+    # mcp 2.x on httpx2, fails here with "Invalid auth argument"), with a mock transport instead of the network.
+    async with hx.AsyncClient(auth=provider, follow_redirects=True, timeout=30.0,
+                              transport=hx.MockTransport(server)) as http:
+        response = await http.post(ACME.default_url, json={})
     assert response.status_code == 200
     assert seen == ["POST https://auth.acme.example/oauth/token", f"POST {ACME.default_url}"]
     refreshed = await store.get_tokens()
