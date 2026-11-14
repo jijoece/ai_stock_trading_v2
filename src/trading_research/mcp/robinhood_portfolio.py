@@ -237,7 +237,7 @@ class RobinhoodPortfolioClient:
                     symbol, start=session - timedelta(days=_PRICE_WINDOW_DAYS), end=session,
                     as_of=regular_session_close(session))
             except McpToolError as exc:
-                if not _reports_only_inactive(exc.detail, symbol):
+                if not _reports_only_inactive(exc.full_detail, symbol):
                     raise
                 unpriced.append(UnpricedLine(symbol=symbol, quantity=quantity, cost_basis=cost))
                 continue

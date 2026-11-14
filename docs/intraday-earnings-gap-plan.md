@@ -132,7 +132,7 @@ Observations that shape this plan:
 | D7 | Train/test split | Chronological. Parameters are chosen only on the earliest 60% of event dates; the last 40% is evaluated once, with frozen parameters. |
 | D8 | New strategy vs. extending `event_catalyst` | New strategy `earnings_gap_intraday`. `event_catalyst` keeps its contract. |
 | D9 | Session boundaries | Pre-market 04:00–09:30 ET, regular 09:30–16:00, post-market 16:00–20:00. On early-close days, the post-market ends at a configured time (default 17:00) that must be confirmed against the data vendor and broker before Step 1 is merged. The overnight session (20:00–04:00) is out of scope for v1. |
-| D10 | Report release time | Use `release_time` when the CSV has it. Otherwise assume 16:00 for `pm` and 08:00 for `am`, and require the first usable signal bar to start **after** the assumed release, never before. |
+| D10 | Report release time | Use `release_time` when the CSV has it, and require the first usable signal bar to start **after** it. Never assume a release time. When it is missing, use a conservative bound: an `am` report is treated as released at the 09:30 regular open, so every variant whose decision time is before 09:30 (`premarket_entry`, and the 09:25 variants) excludes the event; a `pm` report is treated as released at 20:00, so `post_report_overnight` excludes it, while variants decided on the next morning stay eligible. Excluded events are recorded with reason `release_time_unverified` and counted in the report. |
 | D11 | Extended-hours fill model | Limit orders only. A buy fills only if the bar trades at or below the limit and has volume. Fill size is capped at `extended_participation` (default 2%) of that bar's volume; any remainder is unfilled, not filled later. Bars with zero volume, and the 16:00 bar's closing-print volume, never fill. Stops cannot rest in extended hours: a stop is simulated as "if a bar closes below the stop, sell with a limit at that bar's low minus the extended spread proxy at the next bar," which may also fail to fill. |
 | D12 | Overnight variant | Allowed in the backtest, labelled `overnight`, and reported apart from the same-day variants. It has its own acceptance gate, because overnight gap risk is a different risk from a same-day trade. |
 
@@ -200,11 +200,15 @@ Each run picks one variant; the report compares them.
 | `post_report_overnight` | overnight | After `post_signal_time`, limit buy at post-market VWAP if `post_report_move ≥ minimum_gap_percent`; fills per D11 | The regular close before the report |
 
 For `orb`, `pmh_break`, and `vwap_pullback`, "first 5-minute close …" names
-the bar that triggers the signal. The entry order fills at the next bar's open
-plus slippage (D5), so the entry price, the stop distance, and the risk-percent
-guard are all computed from that fill price, not from the signal bar's close.
-If the next bar opens beyond the stop, the trade is skipped as a rejected
-candidate with a reason code.
+the bar that triggers the signal. The order is submitted when that bar
+completes and fills at the next bar's open plus slippage (D5). Everything that
+decides whether and how large to submit (the risk-percent guard, the
+nonpositive-risk check, and sizing) uses only information known at submission:
+the signal bar's close as the reference entry price, and the variant's stop.
+The next open is never used to cancel or resize the order. If it gaps beyond
+the stop, the order still fills, and the stop then exits at the worse of the
+stop price and that same open (D5), so the adverse-gap loss is in the results.
+Realized R is measured against the planned risk (reference entry − stop).
 
 Session VWAP for the regular-session variants is anchored at 09:30. The
 report also shows each regular-session variant with VWAP anchored at 04:00.
@@ -213,15 +217,25 @@ report also shows each regular-session variant with VWAP anchored at 04:00.
 
 - No regular-session entry before `earliest_entry_time` (default 09:45 ET),
   except `pmh_break` (09:35).
-- Skip if the risk per share (entry − stop) is more than `maximum_risk_percent`
-  of entry (default 8%).
+- Before submission, skip with reason code `nonpositive_risk` if the risk per
+  share (reference entry − stop) is zero or negative (for example a flat
+  pre-market where `premarket_vwap` equals `premarket_low`). This runs before
+  the risk-percent guard and before sizing, so the sizing formula never
+  divides by zero.
+- Before submission, skip if the risk per share (reference entry − stop) is
+  more than `maximum_risk_percent` of the reference entry (default 8%). The
+  reference entry is the signal bar's close for regular-session variants and
+  the limit price for extended-hours variants.
 - At most one entry per symbol per event; at most `maximum_trades_per_day`
   across symbols (default 3); stop trading for the day after
   `maximum_losses_per_day` (default 2).
 - No new regular-session entry after `latest_entry_time` (default 14:30 ET).
-- Extended-hours entries require a minimum filled notional
-  (`minimum_extended_fill_usd`, default $1,000); partial fills below it count as
-  no trade.
+- Extended-hours entries require a minimum **requested** notional
+  (`minimum_extended_fill_usd`, default $1,000), checked before submission
+  (shares × limit price). An order below it is never submitted. Once an order
+  is submitted, whatever executes is a real position, however small: partial
+  fills below the minimum stay in inventory and follow the exit rules. They are
+  counted in the capacity report (Step 5) rather than discarded.
 
 ### 5.5 Sizing
 
@@ -322,9 +336,16 @@ Safety-relevant steps also pass `nox -s safety_typecheck`.
   partial fills, zero-volume bars, closing-print exclusion, and a simulated
   stop that fails to fill; an adverse-gap test for each close-derived signal
   (`orb`, `pmh_break`, `vwap_pullback`, VWAP-trail exit) where the signal
-  becomes true only at the bar's close and the next bar opens lower: the fill
-  is the next bar's open plus slippage, never the signal bar's close, and a
-  next open beyond the stop rejects the entry; the overnight variant across a
+  becomes true only at the bar's close and the next bar opens lower: a buy
+  fills at the next bar's open plus slippage and a sell (including the
+  VWAP-trail exit) at the next bar's open minus slippage, never the signal
+  bar's close; a next open beyond the stop still fills the entry and the stop
+  exits at the worse of the stop and that open (two fixtures identical through
+  submission, with next opens on opposite sides of the stop, both hold the
+  order); a flat-price pre-market fixture (entry equals stop) is skipped as
+  `nonpositive_risk` without dividing by zero; an extended-hours order that
+  fills below `minimum_extended_fill_usd` keeps its shares and follows the exit
+  rules; missing `release_time` uses the D10 bounds; the overnight variant across a
   weekend; same-bar
   stop-and-target ambiguity; the risk-percent skip; the daily loss stop;
   participation caps; and bit-for-bit determinism.
@@ -337,7 +358,8 @@ Safety-relevant steps also pass `nox -s safety_typecheck`.
   variant, entry session, opening-range length, gap bucket (5–10%, 10–20%,
   >20%), and `continuation` sign.
 - **Capacity:** for extended-hours variants, the median and 10th-percentile
-  filled notional per trade, and the share of orders unfilled.
+  filled notional per trade, the share of orders unfilled, and the number of
+  fills below `minimum_extended_fill_usd`.
 - **Baselines**, on the same candidate set: buy at the regular open and sell at
   the close; buy at 09:45 and sell at the close; buy at the 09:25 pre-market
   price and sell at the close; buy at the 16:30 post-market price and sell at

@@ -129,6 +129,14 @@ def test_tool_error_is_typed_and_carries_the_redacted_detail():
     assert "inactive_instruments" in exc.value.detail and exc.value.detail in str(exc.value)
 
 
+def test_tool_error_display_detail_is_truncated_but_full_detail_is_not():
+    text = "API error 400: " + "x " * 150 + '{"inactive_instruments":["FSRNQ"]}'
+    with pytest.raises(oc.McpToolError) as exc:
+        oc._payload_from_result(_error_result(text), "get_equity_historicals", {})
+    assert exc.value.detail.endswith("...") and "inactive_instruments" not in exc.value.detail
+    assert exc.value.full_detail.endswith('{"inactive_instruments":["FSRNQ"]}')
+
+
 def test_tool_error_without_server_text_or_tool_name_keeps_the_generic_message():
     with pytest.raises(oc.McpError) as exc:
         oc._payload_from_result(_error_result())

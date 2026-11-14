@@ -54,7 +54,7 @@ Streamlit Community Cloud (SCC) is the only option that is truly free, private a
 ### Inferences
 - Even a basic Streamlit app with pandas usually needs at least 512 MB to 1 GB of RAM. That makes Koyeb (512 MB / 0.1 vCPU) and Railway Free (0.5 GB) marginal. The $1/month credit on Railway Free would not cover an always-on service.
 - On Cloud Run with request-based billing, an open Streamlit WebSocket probably counts as an in-flight request. If so, CPU and memory are billed while the tab stays open. For one user browsing a few hours a day, 180k vCPU-s (~50 vCPU-hours) is likely enough at 1 vCPU.
-- Oracle A1 is the only free option with enough capacity to also run the scheduler in the cloud. In practice you would add a keepalive or cron job to avoid idle reclamation.
+- Oracle A1 is the only free option with enough capacity to also run the scheduler in the cloud. A keepalive or cron job does not guarantee protection from idle reclamation: a brief periodic job can leave 95th-percentile CPU below 20%, with network and memory also under Oracle's thresholds, so Oracle may still reclaim the instance. Treat reclamation as a remaining risk and keep off-instance backups of the database and configuration.
 
 ### Gaps
 - The RAM and CPU of Render's free instance were not on the fetched page. Older Render pricing showed 512 MB / 0.1 CPU, but this was not verified.

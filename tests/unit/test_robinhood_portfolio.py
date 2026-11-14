@@ -125,6 +125,19 @@ def test_inactive_instrument_is_reported_unpriced_and_left_out_of_totals(positio
     assert snapshot.cost_basis == live.cost_basis - victim.cost_basis
 
 
+def test_inactive_classification_uses_untruncated_text_not_the_display_detail(positions):
+    victim = _client(positions).snapshot().lines[0].symbol
+    full = f'API error 400: {{"inactive_instruments":["{victim}"]}}'
+
+    def history(symbol):
+        if symbol == victim:
+            raise oc.McpToolError(f"returned an error: {full[:20]}...", full[:20] + "...", full)
+        return _history_for(symbol)
+
+    snapshot = _client(positions, history=history).snapshot()
+    assert [item.symbol for item in snapshot.unpriced] == [victim]
+
+
 def test_other_history_tool_errors_still_fail_closed(positions):
     def rate_limited(_symbol):
         raise oc.McpToolError("the MCP tool call to get_equity_historicals returned an error: API error 429",

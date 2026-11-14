@@ -63,11 +63,16 @@ class McpError(Exception):
 
 
 class McpToolError(McpError):
-    """The server answered a tool call with an error result. ``detail`` is the redacted, truncated server text."""
+    """The server answered a tool call with an error result.
 
-    def __init__(self, message: str, detail: str = "") -> None:
+    ``detail`` is the redacted, truncated server text, for display only. ``full_detail`` is the same text
+    redacted but not truncated, so an error can be classified without a truncation cutting off the evidence.
+    """
+
+    def __init__(self, message: str, detail: str = "", full_detail: str | None = None) -> None:
         super().__init__(message)
         self.detail = detail
+        self.full_detail = detail if full_detail is None else full_detail
 
 
 class McpLoginRequired(McpError):
@@ -280,12 +285,11 @@ _BEARER = re.compile(r"\bBearer\s+\S+", re.IGNORECASE)
 _OPAQUE_TOKEN = re.compile(r"[A-Za-z0-9_\-.+/=]{24,}")
 
 
-def _server_error_text(result: Any, arguments: dict[str, Any] | None) -> str:
-    """A short, redacted rendering of a tool-level error so a failure can be attributed.
+def _redacted_error_text(result: Any, arguments: dict[str, Any] | None) -> str:
+    """The redacted, whitespace-collapsed, untruncated text of a tool-level error.
 
     Redacts bearer strings, long opaque tokens and the values of sensitive arguments (account numbers,
-    cursors, tokens), collapses whitespace and truncates. Only used for ``isError`` tool results; transport and
-    authentication failures still go through :func:`_scrub`, which never forwards provider text.
+    cursors, tokens). Use it for classification; use :func:`_server_error_text` for anything displayed.
     """
     parts = [text for block in getattr(result, "content", None) or []
              if isinstance(text := getattr(block, "text", None), str)]
@@ -293,7 +297,16 @@ def _server_error_text(result: Any, arguments: dict[str, Any] | None) -> str:
     for key, value in (arguments or {}).items():
         if _SENSITIVE_ARGUMENT_KEY.search(key) and isinstance(value, str) and value:
             message = message.replace(value, "[redacted]")
-    message = _OPAQUE_TOKEN.sub("[redacted]", _BEARER.sub("Bearer [redacted]", message))
+    return _OPAQUE_TOKEN.sub("[redacted]", _BEARER.sub("Bearer [redacted]", message))
+
+
+def _server_error_text(result: Any, arguments: dict[str, Any] | None) -> str:
+    """A short, redacted rendering of a tool-level error so a failure can be attributed.
+
+    Truncates :func:`_redacted_error_text`. Only used for ``isError`` tool results; transport and
+    authentication failures still go through :func:`_scrub`, which never forwards provider text.
+    """
+    message = _redacted_error_text(result, arguments)
     if len(message) > _SERVER_ERROR_MAX_CHARS:
         message = message[:_SERVER_ERROR_MAX_CHARS].rstrip() + "..."
     return message
@@ -302,8 +315,9 @@ def _server_error_text(result: Any, arguments: dict[str, Any] | None) -> str:
 def _payload_from_result(result: Any, tool: str | None = None, arguments: dict[str, Any] | None = None) -> Any:
     if getattr(result, "isError", False):
         subject = f"the MCP tool call to {tool}" if tool else "the MCP tool call"
+        full_detail = _redacted_error_text(result, arguments)
         detail = _server_error_text(result, arguments)
-        raise McpToolError(f"{subject} returned an error" + (f": {detail}" if detail else ""), detail)
+        raise McpToolError(f"{subject} returned an error" + (f": {detail}" if detail else ""), detail, full_detail)
     structured = getattr(result, "structuredContent", None)
     if isinstance(structured, dict) and "data" in structured:
         return structured
