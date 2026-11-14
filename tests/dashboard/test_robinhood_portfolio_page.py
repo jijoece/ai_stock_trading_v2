@@ -9,7 +9,7 @@ from streamlit.testing.v1 import AppTest
 from dashboard.pages import robinhood_portfolio as page
 from dashboard.services.robinhood_portfolio_service import ENABLE_ENV, PortfolioViewError, load_portfolio
 from trading_research.mcp.oauth_readonly_client import McpLoginRequired
-from trading_research.mcp.robinhood_portfolio import PortfolioLine, PortfolioSnapshot
+from trading_research.mcp.robinhood_portfolio import PortfolioLine, PortfolioSnapshot, UnpricedLine
 
 SNAPSHOT = PortfolioSnapshot(
     lines=(
@@ -76,6 +76,25 @@ def test_page_renders_totals_and_positions(monkeypatch):
     assert metrics["Unrealized P/L"] == "$30.00"
     assert list(app.dataframe[0].value["Symbol"]) == ["BBB", "AAA"]  # sorted by value, largest first
     assert "2026-11-13" in app.caption[1].value
+
+
+def test_page_flags_unpriced_holdings_and_excludes_them_from_totals(monkeypatch):
+    monkeypatch.setenv(ENABLE_ENV, "1")
+    page._load.clear()
+    with_unpriced = PortfolioSnapshot(
+        lines=SNAPSHOT.lines, as_of_session=SNAPSHOT.as_of_session, accounts_checked=2,
+        unpriced=(UnpricedLine("DEAD", Decimal("5"), Decimal("12.50")),),
+    )
+    monkeypatch.setattr(page, "load_portfolio", lambda: with_unpriced)
+    app = AppTest.from_string(
+        "from dashboard.pages.robinhood_portfolio import render\nrender()", default_timeout=10
+    ).run()
+    page._load.clear()
+
+    assert not app.exception
+    assert "DEAD" in app.warning[0].value and "$12.50" in app.warning[0].value
+    assert "excluded from every total" in app.warning[0].value
+    assert {m.label: m.value for m in app.metric}["Market value"] == "$330.00"
 
 
 def test_page_shows_sanitized_error(monkeypatch):

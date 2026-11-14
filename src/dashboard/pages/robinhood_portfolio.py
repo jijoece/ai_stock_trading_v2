@@ -56,8 +56,13 @@ def render() -> None:
     columns[0].metric("Market value", _money(snapshot.market_value))
     columns[1].metric("Cost basis", _money(snapshot.cost_basis))
     columns[2].metric("Unrealized P/L", _money(snapshot.unrealized_pnl))
+    if snapshot.unpriced:
+        held = "; ".join(f"{item.symbol} ({item.quantity.normalize():f} shares, cost basis {_money(item.cost_basis)})"
+                         for item in snapshot.unpriced)
+        st.warning(f"Not priced and excluded from every total above: {held}. Robinhood reports these as "
+                   "inactive instruments (delisted or bankrupt), so no price history exists.")
     if not snapshot.lines:
-        st.write("No open long equity positions.")
+        st.write("No open long equity positions." if not snapshot.unpriced else "No priced equity positions.")
         return
     total = snapshot.market_value
     st.dataframe(

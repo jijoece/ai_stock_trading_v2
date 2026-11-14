@@ -100,6 +100,40 @@ def test_malformed_positions_fail_closed(positions, mutate, fragment):
         _client(bad).snapshot()
 
 
+def _inactive_for(*dead: str):
+    def history(symbol):
+        if symbol in dead:
+            raise oc.McpToolError(
+                "the MCP tool call to get_equity_historicals returned an error: "
+                f'API error 400: {{"inactive_instruments":["{symbol}"]}}',
+                f'API error 400: {{"inactive_instruments":["{symbol}"]}}')
+        return _history_for(symbol)
+    return history
+
+
+def test_inactive_instrument_is_reported_unpriced_and_left_out_of_totals(positions):
+    live = _client(positions).snapshot()
+    victim = live.lines[0]
+
+    snapshot = _client(positions, history=_inactive_for(victim.symbol)).snapshot()
+
+    assert [item.symbol for item in snapshot.unpriced] == [victim.symbol]
+    unpriced = snapshot.unpriced[0]
+    assert unpriced.quantity == victim.quantity and unpriced.cost_basis == victim.cost_basis
+    assert victim.symbol not in {line.symbol for line in snapshot.lines}
+    assert snapshot.market_value == live.market_value - victim.market_value
+    assert snapshot.cost_basis == live.cost_basis - victim.cost_basis
+
+
+def test_other_history_tool_errors_still_fail_closed(positions):
+    def rate_limited(_symbol):
+        raise oc.McpToolError("the MCP tool call to get_equity_historicals returned an error: API error 429",
+                              "API error 429")
+
+    with pytest.raises(oc.McpToolError, match="429"):
+        _client(positions, history=rate_limited).snapshot()
+
+
 def test_missing_last_close_fails_closed(positions):
     def stale(symbol):
         payload = _history_for(symbol)
