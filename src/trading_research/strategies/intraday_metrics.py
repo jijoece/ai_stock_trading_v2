@@ -647,8 +647,12 @@ def build_report(
     r = evaluation.result
     # The engine's run id only sees bars its own simulation read. When the caller supplies a manifest
     # covering every consumed input (eligibility, benchmark, baseline, control bars; EPS rows), fold it in.
-    run_id = r.run_id if input_manifest_hash is None else "igb-" + hash_config(
-        {"engine_run_id": r.run_id, "input_manifest_hash": input_manifest_hash}
+    # The report identity also covers every report-defining field (split and persisted parameters such as
+    # the requested start/end), so distinct reports can never resolve to the same artifact path.
+    params_json = _jsonable(dict(parameters or {}))
+    run_id = "igb-" + hash_config(
+        {"engine_run_id": r.run_id, "input_manifest_hash": input_manifest_hash, "split": split,
+         "parameters": params_json}
     )[:24]
     report: dict[str, Any] = {
         "schema": REPORT_SCHEMA_VERSION,
@@ -660,7 +664,7 @@ def build_report(
         "split": split,
         "configuration_hash": r.configuration_hash,
         "data_hash": r.data_hash,
-        "parameters": _jsonable(dict(parameters or {})),
+        "parameters": params_json,
         "counts": {
             "candidates": r.candidates_count,
             "trades": len(r.trades),

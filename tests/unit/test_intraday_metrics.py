@@ -380,7 +380,7 @@ def test_report_is_deterministic_with_caveat_header_and_run_id_filename(tmp_path
     assert r1 == r2 and r1["report_hash"] == r2["report_hash"]
     out = tmp_path / "nested" / "reports"  # created lazily
     j, m = write_report(r1, out)
-    assert j.name == "intraday-gap-igb-test.json" and m.name == "intraday-gap-igb-test.md"
+    assert j.name == f"intraday-gap-{r1['run_id']}.json" and m.name == f"intraday-gap-{r1['run_id']}.md"
     first = (j.read_bytes(), m.read_bytes())
     write_report(r2, out)
     assert (j.read_bytes(), m.read_bytes()) == first
@@ -393,6 +393,23 @@ def test_report_is_deterministic_with_caveat_header_and_run_id_filename(tmp_path
     data = json.loads(j.read_text())
     assert data["counts"]["release_time_unverified"] == 2 and data["gate"]["verdict"] == "PASS"
     assert render_markdown(r1) == md
+
+
+def test_distinct_report_definitions_get_distinct_run_ids_and_files(tmp_path):
+    base = {"start": "2024-01-01", "end": "2024-06-30"}
+    reports = [
+        build_report(evaluation(), split="in_sample", parameters=base),
+        build_report(evaluation(), split="out_of_sample", parameters=base),
+        build_report(evaluation(), split="in_sample", parameters={**base, "start": "2024-02-01"}),
+        build_report(evaluation(), split="in_sample", parameters={**base, "end": "2024-05-31"}),
+    ]
+    assert len({r["run_id"] for r in reports}) == len(reports)
+    paths = {p for r in reports for p in write_report(r, tmp_path)}
+    assert len(paths) == 2 * len(reports)
+    again = build_report(evaluation(), split="in_sample", parameters=dict(base))
+    assert again["run_id"] == reports[0]["run_id"] and again == reports[0]
+    with_manifest = build_report(evaluation(), split="in_sample", parameters=base, input_manifest_hash="abc")
+    assert with_manifest["run_id"] != reports[0]["run_id"]
 
 
 def test_report_changes_with_inputs():
