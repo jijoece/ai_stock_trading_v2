@@ -525,7 +525,12 @@ def evaluate_candidate(
     common, prior_close, avg_dv, trend = _common_checks(surprise, bars, config, ref_session)
 
     if variant == "post_report_overnight":
-        assert window.post_market is not None  # pm, release supplied and before the decision
+        if window.post_market is None:
+            # Release at the post-market close (e.g. the D10 20:00 bound with post_signal_time 20:00)
+            # leaves no tradable post-market window after clipping.
+            return decision(
+                NOT_ELIGIBLE, [RELEASE_AFTER_DECISION_TIME if supplied else RELEASE_TIME_UNVERIFIED], when
+            )
         reasons = list(common)
         report_day = surprise.report_date
         post_bars = _bars_for(bars, surprise.symbol, report_day)

@@ -53,6 +53,19 @@ def test_strategy_config_loads_when_the_section_is_absent(tmp_path):
         load_earnings_gap_intraday_config(_write(tmp_path, text))
 
 
+def test_duplicate_yaml_keys_are_rejected_in_both_loading_paths(tmp_path):
+    text = _text().replace("  risk_fraction:", "  risk_fraction: 0.5\n  risk_fraction:", 1)
+    assert text != _text()
+    path = _write(tmp_path, text)
+    with pytest.raises(StrategyConfigError, match="duplicate mapping key"):
+        load_strategy_config(path)
+    with pytest.raises(StrategyConfigError, match="duplicate mapping key"):
+        load_earnings_gap_intraday_config(path)
+    section_twice = _text() + f"\n{SECTION}:\n  risk_fraction: 0.005\n"
+    with pytest.raises(StrategyConfigError, match="duplicate mapping key"):
+        load_strategy_config(_write(tmp_path, section_twice))
+
+
 def test_the_new_id_is_not_a_paper_capable_strategy():
     assert SECTION in BACKTEST_ONLY_STRATEGY_IDS
     assert SECTION not in KNOWN_STRATEGY_IDS

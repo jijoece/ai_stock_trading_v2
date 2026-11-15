@@ -312,6 +312,29 @@ def test_run_identity_changes_when_only_captured_at_changes(world, tmp_path):
     assert again["run_id"] == base["run_id"]  # byte-identical inputs stay deterministic
 
 
+def test_fetch_with_a_single_event_is_not_rejected_for_an_empty_split(world, tmp_path):
+    csv_path = tmp_path / "one.csv"
+    rep, _ = EVENTS["AAA"]
+    csv_path.write_text(
+        CSV_HEADER + f"AAA,2026Q3,{rep.isoformat()},pm,16:05,1.00,1.20,fixture,2026-11-01T00:00:00+00:00\n",
+        encoding="utf-8",
+    )
+    kw = dict(earnings_csv=csv_path, start=date(2026, 11, 1), end=date(2026, 11, 30), variant="orb",
+              split="in_sample", cache_dir=tmp_path / "cache")
+    fetched = backtest_intraday_gap_cli(**kw, fetch=True, http_client=FakeVendor())
+    assert fetched["mode"] == "fetch" and fetched["fetched"] > 0  # fetch covers both splits
+    assert backtest_intraday_gap_cli(**kw)["error"]["code"] == "NO_EVENTS"  # a backtest still needs events
+
+
+def test_overnight_report_populates_the_continuation_breakdown(world, tmp_path):
+    out = _run(world, tmp_path, "post_report_overnight")
+    assert "error" not in out, out
+    report = json.loads(Path(out["report_json"]).read_text())
+    signs = report["metrics"]["breakdowns"]["continuation_sign"]
+    if report["metrics"]["trades"]:
+        assert set(signs) - {"unknown"}, signs  # report-only signals are attached after eligibility
+
+
 @pytest.mark.parametrize("damage", ["truncated", "stale_schema", "hash_mismatch"])
 def test_fetch_repairs_invalid_existing_cache_entry(world, tmp_path, damage):
     import shutil

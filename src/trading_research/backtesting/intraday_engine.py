@@ -367,6 +367,8 @@ def _regular_plan(
         if submit < min_submit:
             continue
         next_idx = reg_idx[pos + 1] if pos + 1 < len(reg_idx) else None
+        if next_idx is not None and _utc(timeline[next_idx].start) > latest:
+            next_idx = None  # sparse history: the fill bar must not start after the entry cutoff
         plan = _Plan(
             cand=cand, kind="regular", submitted_at=_utc(submit), reference_entry=b.close, stop=signal,
             signal_volume=b.volume, timeline=timeline, fill_index=next_idx, not_before=not_before,
@@ -522,6 +524,7 @@ def _simulate(
 
     done = False
     last_i = entry_idx
+    last_regular_i: int | None = None
     for i, b in enumerate(tl):
         if in_vwap(b):
             vwap.add(b)
@@ -529,9 +532,20 @@ def _simulate(
             continue
         last_i = i
         regular = b.session == "regular"
+        if regular:
+            last_regular_i = i
         day = _ny(b.start).date()
         is_entry = i == entry_idx
         if not is_entry:
+            if (
+                b.session == "post" and not overnight and not same_day_post_exit
+                and last_regular_i is not None and remaining > 0
+            ):
+                # The flat-time bar was missing: close at the last regular bar, never in the post-market.
+                lb = tl[last_regular_i]
+                sell_regular(lb, lb.close, remaining, "flat_time_close", _utc(lb.end))
+                done = True
+                break
             if not regular:
                 pending_trail = False
             if regular:
@@ -568,12 +582,14 @@ def _simulate(
                             lows, highs = min(lows, b.low), max(highs, b.high)
                             done = True
                             break
+        prev_lows = lows
         lows, highs = min(lows, b.low), max(highs, b.high)
         if regular:
             if b.low <= stop:
                 raw = min(stop, b.open)
-                reason = "stop_gap" if b.open < stop else "stop"
-                sell_regular(b, raw, remaining, reason, _utc(b.end))
+                gapped = b.open < stop
+                lows = min(prev_lows, raw)  # nothing after the stop execution counts toward MAE
+                sell_regular(b, raw, remaining, "stop_gap" if gapped else "stop", _utc(b.start if gapped else b.end))
                 done = True
                 break
             if not partial_taken and b.high >= target:
@@ -789,6 +805,13 @@ def run_intraday_backtest(
             [
                 c.symbol, c.fiscal_period, c.report_date.isoformat(), c.variant, c.status, list(c.reasons),
                 c.decision_as_of.astimezone(_UTC).isoformat() if c.decision_as_of is not None else "",
+                c.reaction_date.isoformat(), c.timing,
+                str(c.prior_close) if c.prior_close is not None else "",
+                c.assumed_release.astimezone(_UTC).isoformat() if c.assumed_release is not None else "",
+                str(c.avg_dollar_volume) if c.avg_dollar_volume is not None else "",
+                "" if c.trend_filter_passed is None else str(c.trend_filter_passed),
+                [[k, str(v)] for k, v in sorted(c.signals.items())],
+                [[k, str(v)] for k, v in sorted(c.report_signals.items())],
             ]
             for c in ordered
         ],

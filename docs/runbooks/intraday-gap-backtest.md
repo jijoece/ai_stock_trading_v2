@@ -23,7 +23,13 @@ out-of-sample run.
 
 1. **Export the earnings CSV** (columns: `symbol,fiscal_period,report_date,timing,release_time,eps_estimate,eps_actual,source,captured_at`; see
    `tests/fixtures/earnings_surprises_sample.csv`). `timing` is `am` or `pm`;
-   `release_time` may be empty (see the release-time caveat below).
+   `release_time` may be empty (see the release-time caveat below). Treat the
+   file as a versioned snapshot: record its SHA-256 (`shasum -a 256 data/earnings.csv`)
+   and commit or archive it. Use that exact file for fetching, tuning and the
+   single out-of-sample run: the chronological split is recomputed from the
+   rows, so a changed CSV moves the 60/40 boundary and invalidates the frozen
+   parameters. The report's `input_manifest_hash` covers the earnings rows, so
+   compare it between runs.
 2. **Fetch bars** (operator, credentialed). Fetches every missing symbol-day
    (event history, the control window and the trend benchmark) for all events in
    range, for both splits, then stops without running a backtest:
@@ -94,7 +100,12 @@ and must not be committed.
   signal-bar completion, risk guard and sizing use the signal-bar close, and the
   next open never cancels or resizes. A gap beyond the stop still fills and the
   stop exits at the worse of the stop and that open.
-- Free-feed (IEX) volume understates consolidated volume; volume
-  reconciliation flags differences but never repairs them.
+- Free-feed (IEX) volume understates consolidated volume. The helper
+  `reconcile_daily_volume` (flags differences, never repairs them) exists in
+  `backtesting/intraday_history.py` but is **not yet wired into the fetch,
+  backtest or report**, so the run does not flag symbol-days whose intraday and
+  daily volumes disagree. Liquidity filters, relative volume and participation
+  caps use the one consistent intraday source; check volume sanity manually
+  until reconciliation is wired in.
 - Survivorship, estimate-revision and fill-model caveats are printed at the top
   of every report.

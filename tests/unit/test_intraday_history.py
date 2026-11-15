@@ -308,6 +308,38 @@ def test_feed_mismatch_in_cache_document_fails_closed(tmp_path):
         sip.get_bars("ABC", NORMAL)
 
 
+def test_early_close_end_is_part_of_cache_identity(tmp_path):
+    a = CachedAlpacaIntradayProvider(tmp_path, early_close_postmarket_end=time(17, 0))
+    b = CachedAlpacaIntradayProvider(tmp_path, early_close_postmarket_end=time(18, 0))
+    assert a.cache_path("ABC", NORMAL) != b.cache_path("ABC", NORMAL)
+    a.fetch(FakeHttp([fixture_payload(NORMAL)]), "ABC", NORMAL)
+    with pytest.raises(BacktestError, match="no cached intraday data"):
+        b.get_bars("ABC", NORMAL)  # never silently reuses coverage fetched for another end time
+
+
+@pytest.mark.parametrize("text", ["[]", "null", "3", '"x"'])
+def test_non_object_cache_document_is_a_backtest_error(tmp_path, text):
+    prov = CachedAlpacaIntradayProvider(tmp_path)
+    path = prov.cache_path("ABC", NORMAL)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding="utf-8")
+    with pytest.raises(BacktestError, match="not a JSON object"):
+        prov.get_bars("ABC", NORMAL)
+
+
+def test_recording_provider_returns_the_first_snapshot_it_recorded(tmp_path):
+    from trading_research.backtesting.intraday_history import RecordingIntradayProvider
+
+    prov = CachedAlpacaIntradayProvider(tmp_path)
+    path = prov.fetch(FakeHttp([fixture_payload(NORMAL)]), "ABC", NORMAL)
+    rec = RecordingIntradayProvider(prov)
+    first = rec.get_bars("ABC", NORMAL)
+    manifest = rec.manifest_hash()
+    path.write_text("[]", encoding="utf-8")  # the cache file changes mid-run
+    assert rec.get_bars("ABC", NORMAL) == first
+    assert rec.manifest_hash() == manifest
+
+
 def test_recording_provider_manifest_tracks_every_read(tmp_path):
     from trading_research.backtesting.intraday_history import RecordingIntradayProvider
 

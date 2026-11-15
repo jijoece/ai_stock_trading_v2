@@ -81,6 +81,8 @@ def test_unknown_session_rejected():
         {"open": Decimal("12")},
         {"close": Decimal("8")},
         {"volume": -1},
+        {"high": Decimal("Infinity")},
+        {"low": Decimal("NaN")},
     ],
 )
 def test_invalid_ohlc_or_volume_rejected(overrides):

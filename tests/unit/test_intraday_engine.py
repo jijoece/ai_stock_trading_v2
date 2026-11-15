@@ -135,7 +135,7 @@ def test_adverse_gap_orb_next_open_never_cancels_or_resizes(next_open, reason):
     assert t.exit_reason == reason
     if reason == "stop_gap":  # exits at the worse of stop (10.0) and that same open (9.90)
         assert t.exit_price == D("9.90") * (1 - REG)
-        assert et_of(t.exit_time).time() == time(10, 0)
+        assert et_of(t.exit_time).time() == time(9, 55)  # a gap-through exit happens at the bar's open
         # Entry and stop exit are both at that open: only costs are lost, R is vs planned risk.
         assert t.r_multiple == t.pnl / (D("0.6") * 833) and t.pnl < 0
         assert t.pnl == (t.exit_price - t.entry_price) * 833
@@ -526,3 +526,41 @@ def test_ineligible_candidates_are_recorded_with_reasons():
     res = run([c], {}, cfg(), "orb")
     assert not res.trades and res.rejected[0].stage == "candidate"
     assert res.rejected[0].reasons == ("gap_below_minimum", "gap_not_holding")
+
+
+# -- PR 43 review regressions -----------------------------------------------------
+
+
+def test_sparse_regular_bars_never_fill_after_the_entry_cutoff():
+    """A 14:30 submission whose next existing bar is 15:55 must not enter after latest_entry_time."""
+    bars = [
+        b for b in build(RD, orb_fn(signal=(14, 25)))
+        if not time(14, 30) <= et_of(b.start).time() <= time(15, 50)
+    ]
+    res = run([cand("orb")], {(SYM, RD): bars}, cfg(), "orb")
+    assert not res.trades
+    assert any(r.stage == "unfilled" for r in res.rejected)
+
+
+def test_missing_flat_bar_with_post_market_bars_still_exits_at_the_last_regular_close():
+    bars = [b for b in build(RD, orb_fn()) if et_of(b.start).time() < time(15, 55)]
+    bars.append(ob(RD, 16, 0, "10.55", "10.7", "10.5", "10.55", 900_000, cp=True))
+    bars.append(ob(RD, 16, 5, "9.0", "9.1", "8.9", "9.0", 100_000))
+    (t,) = run([cand("orb")], {(SYM, RD): bars}, cfg(), "orb").trades
+    assert t.exit_reason == "flat_time_close" and t.exit_session == "regular"
+    assert t.exit_price == D("10.55") * (1 - REG) and et_of(t.exit_time).time() == time(15, 55)
+
+
+def test_mae_stops_at_the_stop_execution_price():
+    stop_tail = {(10, 0): (D("10.5"), D("10.52"), D("9.0"), D("9.5"))}  # wicks far below the 10.0 stop
+    (t,) = run_orb(orb_fn(tail=stop_tail)).trades
+    assert t.exit_reason == "stop" and t.exit_price == D("10.0") * (1 - REG)
+    assert t.mae_r == (t.entry_price - D("10.0")) / t.risk_per_share
+
+
+def test_run_id_changes_when_an_execution_relevant_candidate_field_changes():
+    bars = {(SYM, RD): build(RD, orb_fn())}
+    a = run([cand("orb", prior=D("10"))], bars, cfg(), "orb")
+    b = run([cand("orb", prior=D("10.4"))], bars, cfg(), "orb")
+    assert a.run_id != b.run_id
+    assert a.run_id == run([cand("orb", prior=D("10"))], bars, cfg(), "orb").run_id

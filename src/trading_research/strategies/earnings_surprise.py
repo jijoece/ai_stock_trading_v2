@@ -143,8 +143,11 @@ def load_earnings_csv(path: str | Path) -> tuple[EarningsSurprise, ...]:
     with handle:
         reader = csv.DictReader(handle)
         header = tuple(reader.fieldnames or ())
+        repeated = sorted({c for c in header if header.count(c) > 1})
+        if repeated:
+            raise EarningsSurpriseError(f"duplicate CSV columns: {repeated}")
         missing = [c for c in CSV_COLUMNS if c not in header]
-        extra = [c for c in header if c not in CSV_COLUMNS]
+        extra =[c for c in header if c not in CSV_COLUMNS]
         if missing:
             raise EarningsSurpriseError(f"missing CSV columns: {missing}")
         if extra:

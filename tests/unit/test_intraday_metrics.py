@@ -155,9 +155,15 @@ def test_baselines_hand_computed_with_costs_and_skips():
     base = compute_baselines([cand("orb")], prov, cfg())
     reg = D("0.0015")
     ext = D("0.004")
-    assert base["open_to_close"].mean_return_percent == (D(11) * (1 - reg) / (D(10) * (1 + reg)) - 1) * 100
+    tol = D("1e-20")
+    assert base["open_to_close"].mean_return_percent == pytest.approx(
+        (D(11) * (1 - reg) / (D(10) * (1 + reg)) - 1) * 100, abs=tol
+    )
     assert base["0945_to_close"].mean_return_percent == base["open_to_close"].mean_return_percent
-    assert base["premarket_0925_to_close"].mean_return_percent == (D(11) * (1 - reg) / (D(10) * (1 + ext)) - 1) * 100
+    # Extended buy: entry cost is held apart, so the return is on the limit-price notional (as for trades).
+    assert base["premarket_0925_to_close"].mean_return_percent == pytest.approx(
+        (D(11) * (1 - reg) - D(10) * (1 + ext)) / D(10) * 100, abs=tol
+    )
     assert base["post_1630_to_next_open"].trades == 0 and base["post_1630_to_next_open"].skipped == 1  # am event
     assert set(base) == set(BASELINE_NAMES)
 
@@ -168,8 +174,18 @@ def test_post_baseline_for_pm_event_uses_1630_price_to_next_open():
     react = build(RD, lambda h, m: flat("10.5"))
     prov = FixtureIntradayHistoryProvider({(SYM, report): tuple(post), (SYM, RD): tuple(react)})
     base = compute_baselines([pm_cand()], prov, cfg())
-    expected = (D("10.5") * (1 - D("0.0015")) / (D(10) * (1 + D("0.004"))) - 1) * 100
-    assert base["post_1630_to_next_open"].mean_return_percent == expected
+    expected = (D("10.5") * (1 - D("0.0015")) - D(10) * (1 + D("0.004"))) / D(10) * 100  # limit-notional basis
+    assert base["post_1630_to_next_open"].mean_return_percent == pytest.approx(expected, abs=D("1e-20"))
+
+
+def test_baseline_cost_is_invariant_to_the_exit_bars_own_range():
+    """Spread comes from the first session bar available at execution, like the engine, so a wide
+    final bar changes the price (11 vs 11) but not the cost model."""
+    wide = build(RD, _day_fn)
+    narrow = build(RD, lambda h, m: (D(11), D("11.02"), D("10.98"), D(11)) if (h, m) == (15, 55) else flat(10))
+    r_wide = compute_baselines([cand("orb")], FixtureIntradayHistoryProvider({(SYM, RD): tuple(wide)}), cfg())
+    r_narrow = compute_baselines([cand("orb")], FixtureIntradayHistoryProvider({(SYM, RD): tuple(narrow)}), cfg())
+    assert r_wide["0945_to_close"].mean_return_percent == r_narrow["0945_to_close"].mean_return_percent
 
 
 def test_baselines_ignore_ineligible_candidates():
@@ -192,6 +208,21 @@ def test_control_redates_to_ordinary_session_and_skips_event_days():
     clash = dataclasses.replace(cand("orb"), fiscal_period="Q2", reaction_date=CONTROL_DAY, report_date=CONTROL_DAY)
     redated = control_candidates([cand("orb"), clash], prov)
     assert all(x.fiscal_period != "2026Q3" for x in redated)  # the original's control day is an event day
+
+
+def test_pm_control_reference_close_is_the_report_day_close_like_candidate_selection():
+    from trading_research.strategies.intraday_metrics import _prev_session
+
+    new_report = _prev_session(CONTROL_DAY)
+    before = _prev_session(new_report)
+    prov = FixtureIntradayHistoryProvider({
+        (SYM, new_report): tuple(build(new_report, lambda h, m: flat(10))),
+        (SYM, before): tuple(build(before, lambda h, m: flat(8))),
+    })
+    pm = cand("post_report_overnight", timing="pm", report=date(2026, 11, 12), decision=et(date(2026, 11, 12), 16, 30))
+    (c,) = control_candidates([pm], prov)
+    assert c.report_date == new_report and c.reaction_date == CONTROL_DAY
+    assert c.prior_close == D(10)  # not the 8.00 close of the session before the report day
 
 
 def test_control_runs_same_rules_on_ordinary_day():

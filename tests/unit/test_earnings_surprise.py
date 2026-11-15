@@ -64,6 +64,13 @@ def test_missing_and_extra_columns(tmp_path):
         load_earnings_csv(_write(tmp_path, "", header=HEADER.strip() + ",extra\n"))
 
 
+def test_duplicate_csv_columns_rejected(tmp_path):
+    header = HEADER.strip() + ",eps_estimate\n"
+    body = "AAA,2026Q3,2026-11-10,am,,1.0,1.1,fx,2026-11-10T10:00:00+00:00,2.0\n"
+    with pytest.raises(EarningsSurpriseError, match="duplicate CSV columns"):
+        load_earnings_csv(_write(tmp_path, body, header=header))
+
+
 def test_missing_file(tmp_path):
     with pytest.raises(EarningsSurpriseError):
         load_earnings_csv(tmp_path / "nope.csv")

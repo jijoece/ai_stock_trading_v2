@@ -69,6 +69,8 @@ class IntradayBar:
             raise BacktestError("intraday bar end must be after start")
         if self.available_at != self.end:
             raise BacktestError("intraday bar available_at must equal end")
+        if not all(v.is_finite() for v in (self.open, self.high, self.low, self.close)):
+            raise BacktestError("intraday bar OHLC values must be finite")
         if min(self.open, self.high, self.low, self.close) <= 0 or self.high < self.low:
             raise BacktestError("intraday bar OHLC values are invalid")
         if not (self.low <= self.open <= self.high and self.low <= self.close <= self.high):

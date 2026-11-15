@@ -44,7 +44,7 @@ from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from ..backtesting.intraday_engine import IntradayBacktestResult, IntradayTrade, run_intraday_backtest
+from ..backtesting.intraday_engine import IntradayBacktestResult, IntradayTrade, _spread_bps, run_intraday_backtest
 from ..backtesting.intraday_history import IntradayHistoryProvider
 from ..backtesting.models import BacktestError, IntradayBar
 from ..evaluation.market_calendar import MARKET_TIMEZONE_NAME, is_trading_day
@@ -321,19 +321,38 @@ def _ext_price_bar(
     return max(usable, key=lambda b: b.start) if usable else None
 
 
+@dataclass(frozen=True)
+class _Leg:
+    """One baseline execution: its price and the information available when it executes."""
+
+    price: Decimal
+    bars: Sequence[IntradayBar]
+    session: str  # pre | regular | post
+    day: date
+    at: datetime  # execution time: only bars with available_at <= at inform the spread
+
+
 def _baseline_return(
-    buy_price: Decimal, buy_bar: IntradayBar, buy_ext: bool, sell_price: Decimal, sell_bar: IntradayBar,
-    sell_ext: bool, cfg: EarningsGapIntradayConfig,
+    buy: _Leg, sell: _Leg, cfg: EarningsGapIntradayConfig, not_before: datetime | None
 ) -> Decimal:
-    def side_bps(bar: IntradayBar, ext: bool) -> Decimal:
+    """Same cost model as the engine: slippage plus the spread proxy from the first
+    session bar already available at the execution time (never the executing bar's
+    own or later range). Extended buys divide by the limit-price notional with the
+    entry cost held separately, as `_trade_return_percent` does for strategy trades."""
+
+    def side_bps(leg: _Leg) -> Decimal:
+        ext = leg.session != "regular"
         floor, k = (
             (cfg.extended_spread_floor_bps, cfg.extended_spread_k) if ext else (cfg.spread_floor_bps, cfg.spread_k)
         )
-        return cfg.slippage_bps + _proxy_bps(bar, floor, k)
+        return cfg.slippage_bps + _spread_bps(
+            leg.bars, leg.session, leg.day, leg.at, floor, k, not_before if ext else None
+        )
 
-    cost_in = buy_price * (1 + side_bps(buy_bar, buy_ext) / _BPS)
-    proceeds = sell_price * (1 - side_bps(sell_bar, sell_ext) / _BPS)
-    return (proceeds / cost_in - 1) * _HUNDRED
+    cost_in = buy.price * (1 + side_bps(buy) / _BPS)
+    proceeds = sell.price * (1 - side_bps(sell) / _BPS)
+    denominator = buy.price if buy.session != "regular" else cost_in
+    return (proceeds - cost_in) / denominator * _HUNDRED
 
 
 def compute_baselines(
@@ -355,7 +374,11 @@ def compute_baselines(
         # open -> close
         if open_bar and close_bar:
             returns["open_to_close"].append(
-                _baseline_return(open_bar.open, open_bar, False, close_bar.close, close_bar, False, config)
+                _baseline_return(
+                    _Leg(open_bar.open, react, "regular", c.reaction_date, open_bar.start),
+                    _Leg(close_bar.close, react, "regular", c.reaction_date, close_bar.start),
+                    config, not_before,
+                )
             )
         else:
             skipped["open_to_close"] += 1
@@ -364,7 +387,11 @@ def compute_baselines(
         b945 = next((b for b in reg if b.start >= cutoff), None)
         if b945 and close_bar:
             returns["0945_to_close"].append(
-                _baseline_return(b945.open, b945, False, close_bar.close, close_bar, False, config)
+                _baseline_return(
+                    _Leg(b945.open, react, "regular", c.reaction_date, b945.start),
+                    _Leg(close_bar.close, react, "regular", c.reaction_date, close_bar.start),
+                    config, not_before,
+                )
             )
         else:
             skipped["0945_to_close"] += 1
@@ -373,7 +400,11 @@ def compute_baselines(
         pre_bar = _ext_price_bar(react, "pre", c.reaction_date, as_of, not_before)
         if pre_bar and close_bar:
             returns["premarket_0925_to_close"].append(
-                _baseline_return(pre_bar.close, pre_bar, True, close_bar.close, close_bar, False, config)
+                _baseline_return(
+                    _Leg(pre_bar.close, react, "pre", c.reaction_date, as_of),
+                    _Leg(close_bar.close, react, "regular", c.reaction_date, close_bar.start),
+                    config, not_before,
+                )
             )
         else:
             skipped["premarket_0925_to_close"] += 1
@@ -385,7 +416,11 @@ def compute_baselines(
             post_bar = _ext_price_bar(rep, "post", c.report_date, at, not_before)
             if post_bar is not None:
                 returns["post_1630_to_next_open"].append(
-                    _baseline_return(post_bar.close, post_bar, True, open_bar.open, open_bar, False, config)
+                    _baseline_return(
+                        _Leg(post_bar.close, rep, "post", c.report_date, at),
+                        _Leg(open_bar.open, react, "regular", c.reaction_date, open_bar.start),
+                        config, not_before,
+                    )
                 )
                 post_ok = True
         if not post_ok:
@@ -444,8 +479,11 @@ def control_candidates(
             return datetime.combine(target, local.time(), tzinfo=_NY)
 
         prior = None
-        prev = tuple(provider.get_bars(c.symbol, _prev_session(new_report)))
-        reg = _regular_bars(prev, _prev_session(new_report))
+        # Same reference as candidate selection: the regular close of the session immediately
+        # before the reaction day (the report day itself for a pm event).
+        ref_day = _prev_session(new_react)
+        prev = tuple(provider.get_bars(c.symbol, ref_day))
+        reg = _regular_bars(prev, ref_day)
         if reg:
             prior = reg[-1].close
         out.append(

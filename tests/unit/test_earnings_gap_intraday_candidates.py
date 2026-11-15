@@ -213,6 +213,14 @@ def test_pm_report_without_release_time_is_excluded_from_overnight_only():
         assert decide(w, v, s).eligible, v  # next-morning variants stay eligible
 
 
+def test_post_signal_time_at_the_post_market_close_leaves_no_window_and_does_not_assert():
+    import dataclasses
+
+    cfg = dataclasses.replace(CFG, post_signal_time=time(20, 0))
+    d = decide(world_pm(), "post_report_overnight", surprise(release=None), cfg)  # D10 bound: released at 20:00
+    assert d.status == NOT_ELIGIBLE and d.reasons == ("release_time_unverified",)
+
+
 def test_pm_report_released_after_post_signal_time_is_excluded_from_overnight():
     d = decide(world_pm(), "post_report_overnight", surprise(release=time(16, 45)))
     assert d.reasons == ("release_after_decision_time",)

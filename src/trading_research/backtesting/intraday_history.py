@@ -211,9 +211,12 @@ class CachedAlpacaIntradayProvider:
         self._adjustment = adjustment
         self._feed = feed
         self._post_end = early_close_postmarket_end
+        # The early-close post-market end decides which bars exist in a cached day, so it is part of
+        # the coverage identity: a cache fetched for one end time is never read as another's.
+        self._coverage = f"{SESSION_COVERAGE}-ec{early_close_postmarket_end:%H%M}"
 
     def cache_path(self, symbol: str, session_date: date) -> Path:
-        key = cache_key(symbol, session_date, INTERVAL_LABEL, self._adjustment, SESSION_COVERAGE, self._feed)
+        key = cache_key(symbol, session_date, INTERVAL_LABEL, self._adjustment, self._coverage, self._feed)
         return self._dir / "intraday" / symbol.upper() / f"{key}.json"
 
     # offline read ----------------------------------------------------------
@@ -229,11 +232,13 @@ class CachedAlpacaIntradayProvider:
             doc = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, ValueError) as exc:
             raise BacktestError(f"{symbol} {session_date}: unreadable intraday cache ({exc})") from exc
+        if not isinstance(doc, dict):
+            raise BacktestError(f"{symbol} {session_date}: intraday cache document is not a JSON object")
         if doc.get("schema_version") != CACHE_SCHEMA_VERSION:
             raise BacktestError(f"{symbol} {session_date}: unsupported intraday cache schema")
         expected = {
             "symbol": symbol, "session_date": session_date.isoformat(), "interval": INTERVAL_LABEL,
-            "adjustment": self._adjustment, "coverage": SESSION_COVERAGE, "feed": self._feed,
+            "adjustment": self._adjustment, "coverage": self._coverage, "feed": self._feed,
         }
         for field, value in expected.items():
             if doc.get(field) != value:
@@ -305,7 +310,7 @@ class CachedAlpacaIntradayProvider:
         doc = {
             "schema_version": CACHE_SCHEMA_VERSION, "symbol": symbol,
             "session_date": session_date.isoformat(), "interval": INTERVAL_LABEL,
-            "adjustment": self._adjustment, "coverage": SESSION_COVERAGE, "feed": self._feed,
+            "adjustment": self._adjustment, "coverage": self._coverage, "feed": self._feed,
             "data_hash": intraday_data_hash(bars),
             "bars": [
                 {"t": b.start.astimezone(timezone.utc).isoformat().replace("+00:00", "Z"),
@@ -336,8 +341,11 @@ class RecordingIntradayProvider:
         self._seen: dict[tuple[str, date], tuple[IntradayBar, ...]] = {}
 
     def get_bars(self, symbol: str, session_date: date) -> tuple[IntradayBar, ...]:
+        key = (symbol.upper(), session_date)
+        if key in self._seen:
+            return self._seen[key]  # every stage sees the first snapshot, which the manifest records
         bars = tuple(self._inner.get_bars(symbol, session_date))
-        self._seen[(symbol.upper(), session_date)] = bars
+        self._seen[key] = bars
         return bars
 
     def manifest_hash(self, extra: Mapping[str, Any] | None = None) -> str:

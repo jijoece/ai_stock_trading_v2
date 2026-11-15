@@ -2807,7 +2807,11 @@ def backtest_intraday_gap_cli(
     from .backtesting.intraday_history import CachedAlpacaIntradayProvider, RecordingIntradayProvider
     from .backtesting.models import BacktestError
     from .strategies.config import StrategyConfigError, load_earnings_gap_intraday_config
-    from .strategies.earnings_gap_intraday import EarningsGapIntradayConfigError, select_candidates
+    from .strategies.earnings_gap_intraday import (
+        EarningsGapIntradayConfigError,
+        report_only_signals,
+        select_candidates,
+    )
     from .strategies.earnings_surprise import EarningsSurpriseError, load_earnings_csv
     from .strategies.intraday_metrics import build_report, evaluate_variant, write_report
 
@@ -2836,7 +2840,8 @@ def backtest_intraday_gap_cli(
             config = dataclasses.replace(config, **overrides)
         surprises = [s for s in load_earnings_csv(earnings_csv) if start <= s.report_date <= end]
         events = _intraday_gap_split(surprises, split)
-        if not events:
+        # Fetch covers every in-range event across both splits, so only backtesting needs a nonempty split.
+        if not (surprises if fetch else events):
             return _err("NO_EVENTS", "no earnings events in the requested range and split")
         provider = CachedAlpacaIntradayProvider(
             cache_dir, adjustment=adjustment, feed=feed,  # plan D1: split-adjusted unless overridden
@@ -2876,6 +2881,16 @@ def backtest_intraday_gap_cli(
 
         recorder = RecordingIntradayProvider(provider)  # every bar any stage reads feeds the manifest
         candidates = select_candidates(events, recorder, config, variant)
+        # Report-only later-time signals (continuation sign) are attached AFTER eligibility is decided
+        # and are never fed back into selection.
+        by_event = {(e.symbol, e.fiscal_period, e.report_date): e for e in events}
+        candidates = tuple(
+            dataclasses.replace(
+                c, report_signals=report_only_signals(by_event[(c.symbol, c.fiscal_period, c.report_date)], recorder, config)
+            )
+            if c.eligible else c
+            for c in candidates
+        )
         equity_value = Decimal(str(equity)) if equity is not None else Decimal("100000")
         evaluation = evaluate_variant(candidates, recorder, config, variant, equity_value)
         parameters = {

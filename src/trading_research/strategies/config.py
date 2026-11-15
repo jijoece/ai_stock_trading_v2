@@ -9,6 +9,7 @@ the whole file's hash.
 """
 from __future__ import annotations
 
+from collections.abc import Hashable
 from dataclasses import dataclass, field, fields
 from datetime import time
 from decimal import Decimal, InvalidOperation
@@ -347,10 +348,31 @@ def _parse_earnings_gap_intraday(section: object) -> EarningsGapIntradayConfig:
         raise StrategyConfigError(str(exc)) from exc
 
 
+class _UniqueKeySafeLoader(yaml.SafeLoader):
+    """SafeLoader that rejects duplicate mapping keys instead of keeping the last one."""
+
+    def construct_mapping(self, node, deep=False):  # type: ignore[no-untyped-def]
+        if isinstance(node, yaml.MappingNode):
+            seen: set = set()
+            for key_node, _ in node.value:
+                key = self.construct_object(key_node, deep=True)
+                if isinstance(key, Hashable):
+                    if key in seen:
+                        raise yaml.constructor.ConstructorError(
+                            None, None, f"duplicate mapping key {key!r}", key_node.start_mark
+                        )
+                    seen.add(key)
+        return super().construct_mapping(node, deep=deep)
+
+
+def _safe_load_unique(text: str):  # type: ignore[no-untyped-def]
+    return yaml.load(text, Loader=_UniqueKeySafeLoader)  # noqa: S506 - SafeLoader subclass
+
+
 def _read_raw(path: str | Path | None) -> dict:
     config_path = Path(path) if path else DEFAULT_STRATEGY_CONFIG_PATH
     try:
-        raw = yaml.safe_load(config_path.read_text()) or {}
+        raw = _safe_load_unique(config_path.read_text()) or {}
     except OSError as exc:
         raise StrategyConfigError(f"cannot read strategy config at {config_path}: {exc}") from exc
     except yaml.YAMLError as exc:
@@ -381,7 +403,7 @@ def load_strategy_config(path: str | Path | None = None) -> StrategyConfig:
     """Load and validate config/strategies.yaml. Fails closed on any problem."""
     config_path = Path(path) if path else DEFAULT_STRATEGY_CONFIG_PATH
     try:
-        raw = yaml.safe_load(config_path.read_text()) or {}
+        raw = _safe_load_unique(config_path.read_text()) or {}
     except OSError as exc:
         raise StrategyConfigError(f"cannot read strategy config at {config_path}: {exc}") from exc
     except yaml.YAMLError as exc:
