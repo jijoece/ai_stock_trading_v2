@@ -2857,14 +2857,22 @@ def backtest_intraday_gap_cli(
             # Fetch covers every event in range (both splits), so either split can then run offline.
             wanted = {(s.symbol, d) for s in surprises for d in _intraday_gap_fetch_dates(s, config)}
             wanted |= {(config.trend_benchmark.upper(), d) for s in surprises for d in _intraday_gap_fetch_dates(s, config)}
-            fetched = skipped = 0
+            fetched = skipped = repaired = 0
             for symbol, day in sorted(wanted):
                 if provider.cache_path(symbol, day).exists():
-                    skipped += 1
-                    continue
+                    try:
+                        provider.get_bars(symbol, day)  # full validation: schema, keys, parse, data_hash
+                    except BacktestError:
+                        repaired += 1  # invalid entry: refetch; fetch() replaces it atomically
+                    else:
+                        skipped += 1
+                        continue
                 provider.fetch(http_client, symbol, day)
                 fetched += 1
-            return {"mode": "fetch", "events": len(surprises), "fetched": fetched, "already_cached": skipped}
+            return {
+                "mode": "fetch", "events": len(surprises), "fetched": fetched,
+                "already_cached": skipped, "repaired_invalid": repaired,
+            }
 
         recorder = RecordingIntradayProvider(provider)  # every bar any stage reads feeds the manifest
         candidates = select_candidates(events, recorder, config, variant)
@@ -2880,7 +2888,8 @@ def backtest_intraday_gap_cli(
         manifest = recorder.manifest_hash({
             "earnings": [
                 [e.symbol, e.fiscal_period, e.report_date.isoformat(), e.timing,
-                 e.release_time.isoformat() if e.release_time else "", e.eps_estimate, e.eps_actual, e.source]
+                 e.release_time.isoformat() if e.release_time else "", e.eps_estimate, e.eps_actual, e.source,
+                 e.captured_at.astimezone(timezone.utc).isoformat()]
                 for e in events
             ],
             "adjustment": adjustment, "feed": feed,

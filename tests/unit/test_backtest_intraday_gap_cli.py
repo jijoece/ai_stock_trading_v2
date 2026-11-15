@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 from datetime import date, datetime, timedelta, timezone
+from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -290,3 +291,50 @@ def test_run_identity_changes_when_any_consumed_input_changes(world, tmp_path, m
     assert after["run_id"] != before["run_id"]
     assert json.loads(open(after["report_json"]).read())["input_manifest_hash"] != \
         json.loads(open(before["report_json"]).read())["input_manifest_hash"]
+
+
+def test_run_identity_changes_when_only_captured_at_changes(world, tmp_path):
+    kw = dict(start=date(2026, 11, 1), end=date(2026, 11, 30), variant="orb", split="in_sample",
+              cache_dir=world["cache"])
+    csv_path = world["csv"]
+    changed = tmp_path / "captured.csv"
+    changed.write_text(csv_path.read_text().replace("2026-11-01T00:00:00+00:00", "2026-11-03T20:00:00+00:00", 1))
+    same = tmp_path / "same.csv"
+    same.write_text(csv_path.read_text())
+    base = backtest_intraday_gap_cli(earnings_csv=csv_path, report_dir=tmp_path / "a", **kw)
+    other = backtest_intraday_gap_cli(earnings_csv=changed, report_dir=tmp_path / "b", **kw)
+    again = backtest_intraday_gap_cli(earnings_csv=same, report_dir=tmp_path / "c", **kw)
+    assert "error" not in base and "error" not in other, (base, other)
+    assert other["run_id"] != base["run_id"]
+    assert Path(other["report_json"]).name != Path(base["report_json"]).name
+    assert json.loads(Path(other["report_json"]).read_text())["input_manifest_hash"] != \
+        json.loads(Path(base["report_json"]).read_text())["input_manifest_hash"]
+    assert again["run_id"] == base["run_id"]  # byte-identical inputs stay deterministic
+
+
+@pytest.mark.parametrize("damage", ["truncated", "stale_schema", "hash_mismatch"])
+def test_fetch_repairs_invalid_existing_cache_entry(world, tmp_path, damage):
+    import shutil
+
+    from trading_research.backtesting.intraday_history import CachedAlpacaIntradayProvider
+
+    cache = tmp_path / "cache"
+    shutil.copytree(world["cache"], cache)
+    path = CachedAlpacaIntradayProvider(cache, adjustment="split").cache_path("AAA", date(2026, 11, 4))
+    doc = json.loads(path.read_text())
+    if damage == "truncated":
+        path.write_text(path.read_text()[:50])
+    elif damage == "stale_schema":
+        doc["schema_version"] = "stale"
+        path.write_text(json.dumps(doc))
+    else:
+        doc["data_hash"] = "0" * 64
+        path.write_text(json.dumps(doc))
+    vendor = FakeVendor()
+    outcome = backtest_intraday_gap_cli(
+        earnings_csv=world["csv"], start=date(2026, 11, 1), end=date(2026, 11, 30), variant="orb",
+        split="in_sample", cache_dir=cache, fetch=True, http_client=vendor,
+    )
+    assert outcome["repaired_invalid"] == 1 and outcome["fetched"] == 1
+    assert vendor.calls == [("AAA", "2026-11-04")]
+    assert CachedAlpacaIntradayProvider(cache, adjustment="split").get_bars("AAA", date(2026, 11, 4))
