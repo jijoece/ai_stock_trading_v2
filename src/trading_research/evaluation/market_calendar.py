@@ -48,7 +48,7 @@ advance by any calendar library.
 """
 from __future__ import annotations
 
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, time, timedelta
 from functools import lru_cache
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -233,3 +233,60 @@ def regular_session_close(day: date) -> datetime:
         return close.tz_convert(ZoneInfo(MARKET_TIMEZONE_NAME)).to_pydatetime()
     except ZoneInfoNotFoundError as exc:
         raise MarketCalendarError("America/New_York timezone data is unavailable") from exc
+
+
+# -- extended-hours session boundaries (intraday earnings-gap research) ------
+
+_PREMARKET_OPEN_TIME = time(4, 0)
+_REGULAR_POSTMARKET_END = time(20, 0)
+# UNCONFIRMED against vendor/broker - operator must confirm before merge.
+DEFAULT_EARLY_CLOSE_POSTMARKET_END = time(17, 0)
+
+
+def regular_session_open(day: date) -> datetime:
+    """Scheduled regular-session open (09:30 ET) as an aware New York datetime.
+    Raises `MarketCalendarError` for a non-session or out-of-range date."""
+    if day < _CALENDAR_START or day > _CALENDAR_END:
+        raise MarketCalendarError(
+            f"{day.isoformat()} is outside the supported XNYS calendar range "
+            f"({_CALENDAR_START.isoformat()} to {_CALENDAR_END.isoformat()})"
+        )
+    cal = _calendar()
+    try:
+        value = cal.session_open(pd.Timestamp(day))
+    except (NotSessionError, DateOutOfBounds, RequestedSessionOutOfBounds) as exc:
+        raise MarketCalendarError(
+            f"{day.isoformat()} is not a trading session (weekend or exchange holiday)"
+        ) from exc
+    except Exception as exc:
+        raise MarketCalendarError(
+            f"could not resolve the XNYS session open for {day.isoformat()}"
+        ) from exc
+    try:
+        return value.tz_convert(ZoneInfo(MARKET_TIMEZONE_NAME)).to_pydatetime()
+    except ZoneInfoNotFoundError as exc:
+        raise MarketCalendarError("America/New_York timezone data is unavailable") from exc
+
+
+def premarket_open(day: date) -> datetime:
+    """Start of the pre-market session (04:00 ET) on a trading session."""
+    open_ = regular_session_open(day)  # raises for non-sessions
+    return datetime.combine(open_.date(), _PREMARKET_OPEN_TIME, tzinfo=ZoneInfo(MARKET_TIMEZONE_NAME))
+
+
+def postmarket_close(
+    day: date, early_close_postmarket_end: time = DEFAULT_EARLY_CLOSE_POSTMARKET_END,
+) -> datetime:
+    """End of the post-market session: 20:00 ET on normal days; on early-close
+    days (regular close before 16:00) the configurable `early_close_postmarket_end`
+    (default 17:00 ET, UNCONFIRMED against vendor/broker)."""
+    close = regular_session_close(day)
+    if close.time() >= time(16, 0):
+        end_time = _REGULAR_POSTMARKET_END
+    else:
+        end_time = early_close_postmarket_end
+        if end_time.tzinfo is not None:
+            raise MarketCalendarError("early_close_postmarket_end must be a naive ET wall-clock time")
+        if end_time < close.time():
+            raise MarketCalendarError("early_close_postmarket_end must not precede the regular close")
+    return datetime.combine(close.date(), end_time, tzinfo=ZoneInfo(MARKET_TIMEZONE_NAME))

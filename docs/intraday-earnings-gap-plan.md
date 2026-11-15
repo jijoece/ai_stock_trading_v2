@@ -1,6 +1,9 @@
 # Intraday Earnings-Gap Strategy — Build Plan
 
-**Status:** Proposed (2026-11-14). Nothing in this plan is implemented.
+**Status:** Proposed (2026-11-14). Steps 1–6 are implemented in code (bars and
+provider, earnings records, signals and candidates, simulator, metrics and
+report, CLI and runbook). Step 7 is operator-only and the acceptance gate has
+not been evaluated.
 **Stage:** Research only. The strategy is added at `mode: backtest` and stays
 there until this plan's acceptance gate passes. The global
 `activation_stage` in `config/strategies.yaml` does not change.
@@ -338,8 +341,8 @@ Safety-relevant steps also pass `nox -s safety_typecheck`.
   (`orb`, `pmh_break`, `vwap_pullback`, VWAP-trail exit) where the signal
   becomes true only at the bar's close and the next bar opens lower: a buy
   fills at the next bar's open plus slippage and a sell (including the
-  VWAP-trail exit) at the next bar's open minus slippage, never the signal
-  bar's close; a next open beyond the stop still fills the entry and the stop
+  VWAP-trail exit) at the next bar's open minus slippage, never the signal bar's close;
+  a next open beyond the stop still fills the entry and the stop
   exits at the worse of the stop and that open (two fixtures identical through
   submission, with next opens on opposite sides of the stop, both hold the
   order); a flat-price pre-market fixture (entry equals stop) is skipped as
