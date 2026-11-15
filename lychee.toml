@@ -14,4 +14,6 @@ exclude = [
   # Times out with no response for automated checks (CI and a local probe on 2026-11-14), failing every CI
   # run including `main`. Re-check by hand and drop this entry once it answers again.
   '^https://alphagaindaily\.com/en/blog/backtrader-vs-zipline-vs-quantconnect$',
+  # Answers automated checks with 429 Too Many Requests (lychee and curl, 2026-11-14); the page itself exists.
+  '^https://deepwiki\.com/',
 ]

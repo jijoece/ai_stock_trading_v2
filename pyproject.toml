@@ -9,7 +9,12 @@ description = "Local-first, read-only research pipeline for AI-driven stock rese
 requires-python = ">=3.10"
 dependencies = [
     "anthropic>=0.116.0",
-    "mcp>=1.28.1",
+    # mcp 2.x is a breaking release: it is built on httpx2 (its OAuthClientProvider is not an httpx.Auth, so
+    # oauth_readonly_client._open_session cannot pass it to httpx.AsyncClient), streamable_http_client yields
+    # two streams instead of three, and results use snake_case fields (is_error, structured_content), so the
+    # client's `isError` check would treat a 2.x error result as success. Lift the cap only with a port of
+    # oauth_readonly_client.py and reddit_adapter.py verified against the live servers.
+    "mcp>=1.28.1,<2",
     "jsonschema>=4.26.0",
     "PyYAML>=6.0.3",
     "python-dotenv>=1.2.2",

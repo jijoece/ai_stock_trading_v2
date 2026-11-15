@@ -12,12 +12,18 @@ What it is and is not:
   values lag the market intraday. The as-of session is reported.
 * Average cost is the quantity-weighted mean across accounts.
 * Account numbers never leave this module. Fail closed: any account whose positions
-  cannot be read, or any held symbol whose price cannot be read, raises.
+  cannot be read, or any held symbol whose price cannot be read, raises. The one
+  exception is a symbol Robinhood reports as an inactive instrument (delisted or
+  bankrupt, such as a ``Q`` ticker): it has no price history, so it is listed in
+  ``PortfolioSnapshot.unpriced`` and left out of every total rather than hiding
+  the rest of the portfolio.
 * A non-long position (a short, or an unknown type) raises rather than being
   silently left out of the totals.
 """
 from __future__ import annotations
 
+import json
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
@@ -26,7 +32,7 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from ..evaluation.market_calendar import MarketCalendarError, is_trading_day, regular_session_close
-from .oauth_readonly_client import ROBINHOOD, McpError, client_from_environment
+from .oauth_readonly_client import ROBINHOOD, McpError, McpToolError, client_from_environment
 from .robinhood_history import TOOL_NAME as HISTORICALS_TOOL, RobinhoodHistoryClient
 from .robinhood_holdings import (
     ACCOUNTS_TOOL,
@@ -37,9 +43,10 @@ from .robinhood_holdings import (
 )
 
 __all__ = ["PortfolioLine", "PortfolioSnapshot", "RobinhoodPortfolioClient", "RobinhoodPortfolioError",
-           "parse_position_lines", "robinhood_portfolio_client_from_environment"]
+           "UnpricedLine", "parse_position_lines", "robinhood_portfolio_client_from_environment"]
 
-_PRICE_WINDOW_DAYS = 10  # calendar days of daily bars requested to find the last completed close
+_INACTIVE_ERROR_PREFIX = re.compile(r"\s*API error 400:\s*")
+_PRICE_WINDOW_DAYS = 10 # calendar days of daily bars requested to find the last completed close
 
 
 class RobinhoodPortfolioError(McpError):
@@ -71,10 +78,20 @@ class PortfolioLine:
 
 
 @dataclass(frozen=True)
+class UnpricedLine:
+    """A held symbol with no price history because Robinhood reports the instrument as inactive."""
+    symbol: str
+    quantity: Decimal
+    cost_basis: Decimal
+
+
+@dataclass(frozen=True)
 class PortfolioSnapshot:
+    """Totals cover ``lines`` only; ``unpriced`` holdings are reported separately and are in no total."""
     lines: tuple[PortfolioLine, ...]
     as_of_session: date
     accounts_checked: int
+    unpriced: tuple[UnpricedLine, ...] = ()
 
     @property
     def market_value(self) -> Decimal:
@@ -143,6 +160,32 @@ def last_completed_session(now: datetime) -> date:
     raise RobinhoodPortfolioError("no completed trading session found in the last 14 days")
 
 
+def _reports_only_inactive(detail: str, symbol: str) -> bool:
+    """True only when a history error says exactly ``symbol`` is an inactive instrument.
+
+    The server text looks like ``API error 400: {"inactive_instruments":["FSRNQ"]}``. The text must
+    start with ``API error 400:``, be followed by one JSON object and nothing else (only whitespace
+    may trail it), and that object must hold exactly one key, ``inactive_instruments``, listing
+    exactly the symbol being priced. Anything else (another status, trailing or compound error
+    text, another symbol, extra symbols, extra keys, malformed or truncated text, a mere mention
+    of the field) is not accepted, so the caller re-raises instead of dropping the holding from
+    the totals.
+    """
+    prefix = _INACTIVE_ERROR_PREFIX.match(detail)
+    if prefix is None:
+        return False
+    try:
+        body, end = json.JSONDecoder().raw_decode(detail, prefix.end())
+    except ValueError:
+        return False
+    if detail[end:].strip():
+        return False
+    if not isinstance(body, dict) or set(body) != {"inactive_instruments"}:
+        return False
+    listed = body["inactive_instruments"]
+    return isinstance(listed, list) and all(isinstance(item, str) for item in listed) and listed == [symbol]
+
+
 # --------------------------------------------------------------------------
 # Client
 # --------------------------------------------------------------------------
@@ -186,16 +229,24 @@ class RobinhoodPortfolioClient:
         session = last_completed_session(now)
         totals, accounts_checked = self._positions()
         lines: list[PortfolioLine] = []
+        unpriced: list[UnpricedLine] = []
         for symbol in sorted(totals):
             quantity, cost = totals[symbol]
-            bars = self._history.get_price_history(
-                symbol, start=session - timedelta(days=_PRICE_WINDOW_DAYS), end=session,
-                as_of=regular_session_close(session))
+            try:
+                bars = self._history.get_price_history(
+                    symbol, start=session - timedelta(days=_PRICE_WINDOW_DAYS), end=session,
+                    as_of=regular_session_close(session))
+            except McpToolError as exc:
+                if not _reports_only_inactive(exc.full_detail, symbol):
+                    raise
+                unpriced.append(UnpricedLine(symbol=symbol, quantity=quantity, cost_basis=cost))
+                continue
             if not bars or bars[-1].session_date != session:
                 raise RobinhoodPortfolioError(f"no close for {symbol} on {session.isoformat()}")
             lines.append(PortfolioLine(symbol=symbol, quantity=quantity, average_cost=cost / quantity,
                                        last_close=Decimal(str(bars[-1].close))))
-        return PortfolioSnapshot(lines=tuple(lines), as_of_session=session, accounts_checked=accounts_checked)
+        return PortfolioSnapshot(lines=tuple(lines), as_of_session=session, accounts_checked=accounts_checked,
+                                 unpriced=tuple(unpriced))
 
 
 def robinhood_portfolio_client_from_environment(env: Mapping[str, str] | None = None) -> RobinhoodPortfolioClient:

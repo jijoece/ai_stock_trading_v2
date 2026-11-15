@@ -29,6 +29,7 @@ read multiple milestone variants unless the task requires comparing them.
 | External research-source policy | [`AI-Stock-Trading-Research-Sources.md`](AI-Stock-Trading-Research-Sources.md) |
 | Deterministic strategy candidate selection (momentum/mean-reversion/catalyst) | [`strategy-candidate-selection.md`](strategy-candidate-selection.md) |
 | Historical strategy backtesting build plan (Steps 1-4 implemented; Step 5 operator-initiated) | [`historical-backtesting-plan.md`](historical-backtesting-plan.md) |
+| Intraday earnings-gap strategy build plan, including pre-market and post-market (**Proposed**; nothing implemented) | [`intraday-earnings-gap-plan.md`](intraday-earnings-gap-plan.md) |
 | Strategy paper testing build plan, activation stages 3–7 (phases 1–3 implemented; Phase 0 gate and stages 6–7 are operator-initiated) | [`paper-testing-plan.md`](paper-testing-plan.md) |
 | Automated multi-strategy live trading, remaining work (**Proposed**; only the local paper-path parts of Phases 2–3 are built; the repository remains paper only) | [`automated-live-trading-implementation-plan.md`](automated-live-trading-implementation-plan.md) |
 | Automated live trading: requirements-to-tests matrix and doc-edit list (Phase 0) | [`automated-live-trading-requirements-matrix.md`](automated-live-trading-requirements-matrix.md) |

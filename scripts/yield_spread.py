@@ -1,8 +1,12 @@
 """10Y-2Y Treasury spread from FRED (series T10Y2Y), for `score.py --yield-spread fred`.
 
-Standard library only. The public CSV download needs no API key and no account:
+The public CSV download needs no API key and no account:
 
     https://fred.stlouisfed.org/graph/fredgraph.csv?id=T10Y2Y&cosd=<start>&coed=<end>
+
+The parser is standard library only. The download uses httpx (a project dependency, imported only when
+fetching): on a python.org macOS Python 3.14, `urllib` and `http.client` both timed out against this host while
+curl and httpx answered in under half a second, so do not swap in a stdlib client.
 
 Rules, because this feeds a score:
 
@@ -19,20 +23,17 @@ Rules, because this feeds a score:
   older than the session raises `YieldSpreadError`; nothing is guessed or padded.
 * FRED marks non-trading days with ".": those rows are skipped, never filled.
 * The request carries a generic User-Agent only: no account, host or user details.
-* TLS verification is always on. certifi's CA bundle is used when installed, because some Python
-  builds ship no root certificates for urllib (every HTTPS request would otherwise fail).
+* TLS verification is always on (httpx uses certifi's CA bundle). Errors name only exception types,
+  never host or provider text.
 """
 from __future__ import annotations
 
 import csv
 import math
 import ssl
-import urllib.error
-import urllib.parse
-import urllib.request
 from dataclasses import dataclass, replace
 from datetime import date, datetime, timedelta, timezone
-from typing import Any, Callable, Optional
+from typing import Any, Optional
 
 SERIES_ID = "T10Y2Y"
 FRED_CSV_URL = "https://fred.stlouisfed.org/graph/fredgraph.csv"
@@ -103,50 +104,51 @@ def parse_fred_csv(text: str, *, last_session: date, observations: int = DEFAULT
     return YieldSpread(values=[points[d] for d in days], first_date=days[0], last_date=days[-1])
 
 
-def _ssl_context() -> ssl.SSLContext:
-    """A verifying TLS context that trusts certifi's CA bundle when it is installed.
-
-    Some Python builds (python.org's macOS installer, for one) ship no root certificates for `urllib`, so
-    every HTTPS request fails verification. certifi (already a dependency of httpx) fixes that. Certificate and
-    hostname verification are always on; without certifi this is just the default context.
-    """
-    try:
-        import certifi
-        return ssl.create_default_context(cafile=certifi.where())
-    except (ImportError, OSError):
-        return ssl.create_default_context()
-
-
-def _describe_url_error(exc: urllib.error.URLError) -> str:
-    """Why a request failed, as type names only: provider or host text is never echoed."""
-    reason = exc.reason
-    detail = type(reason).__name__ if isinstance(reason, BaseException) else "URLError"
-    hint = ""
-    if isinstance(reason, ssl.SSLError):
-        hint = (": the TLS certificate could not be verified; this Python may have no root certificates "
-                "(install certifi, or run the Python 'Install Certificates.command')")
-    return f"{detail}{hint}"
+def _describe_http_error(exc: BaseException) -> str:
+    """Why a request failed, as type names only: host and provider text are never echoed."""
+    chain: list[BaseException] = []
+    link: Optional[BaseException] = exc
+    while link is not None and len(chain) < 5 and link not in chain:
+        chain.append(link)
+        link = link.__cause__ or link.__context__
+    detail = type(exc).__name__
+    if any(isinstance(item, ssl.SSLError) for item in chain):
+        detail += ": the TLS certificate could not be verified"
+    return detail
 
 
 def fetch_fred_yield_spread(last_session: date, *, observations: int = DEFAULT_OBSERVATIONS,
-                            urlopen: Optional[Callable[..., Any]] = None, timeout: float = 15.0) -> YieldSpread:
-    """Download and validate T10Y2Y up to `last_session` (a single public GET, no credentials)."""
-    opener = urlopen or urllib.request.urlopen
+                            timeout: float = 15.0, transport: Any = None) -> YieldSpread:
+    """Download and validate T10Y2Y up to `last_session` (one public GET, no credentials).
+
+    `transport` is an httpx transport, for tests (httpx.MockTransport); leave it unset for a real request.
+    """
+    try:
+        import httpx
+    except ImportError:
+        raise YieldSpreadError("downloading from FRED needs httpx; run in the project environment") from None
     retrieved_at = datetime.now(timezone.utc)
     start = last_session - timedelta(days=int(observations * 1.8) + 10)
-    query = urllib.parse.urlencode({"id": SERIES_ID, "cosd": start.isoformat(), "coed": last_session.isoformat()})
-    request = urllib.request.Request(f"{FRED_CSV_URL}?{query}", headers={"User-Agent": USER_AGENT})
+    params ={"id": SERIES_ID, "cosd": start.isoformat(), "coed": last_session.isoformat()}
+    chunks: list[bytes] = []
     try:
-        with opener(request, timeout=timeout, context=_ssl_context()) as response:
-            raw = response.read(MAX_BYTES + 1)
-    except urllib.error.HTTPError as exc:
-        raise YieldSpreadError(f"FRED request failed (HTTP {exc.code})") from None
-    except urllib.error.URLError as exc:
-        raise YieldSpreadError(f"FRED request failed ({_describe_url_error(exc)})") from None
-    except (TimeoutError, OSError) as exc:
-        raise YieldSpreadError(f"FRED request failed ({type(exc).__name__})") from None
-    if len(raw) > MAX_BYTES:
-        raise YieldSpreadError("the FRED response is unexpectedly large")
+        with httpx.Client(timeout=timeout, headers={"User-Agent": USER_AGENT}, transport=transport) as client:
+            with client.stream("GET", FRED_CSV_URL, params=params) as response:
+                if response.status_code != 200:
+                    raise YieldSpreadError(f"FRED request failed (HTTP {response.status_code})")
+                total = 0
+                for chunk in response.iter_bytes():
+                    total += len(chunk)
+                    if total > MAX_BYTES:
+                        raise YieldSpreadError("the FRED response is unexpectedly large")
+                    chunks.append(chunk)
+    except YieldSpreadError:
+        raise
+    except httpx.TimeoutException as exc:
+        raise YieldSpreadError(f"FRED request timed out ({type(exc).__name__}, {timeout:g}s)") from None
+    except httpx.HTTPError as exc:
+        raise YieldSpreadError(f"FRED request failed ({_describe_http_error(exc)})") from None
+    raw = b"".join(chunks)
     try:
         text = raw.decode("utf-8")
     except UnicodeDecodeError:

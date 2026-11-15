@@ -1,18 +1,16 @@
 """`scripts/yield_spread.py`: FRED T10Y2Y download and validation. No network: the CSV is synthetic but
-shaped like FRED's download (`observation_date,T10Y2Y`, "." for non-trading days), and `urlopen` is injected.
+shaped like FRED's download (`observation_date,T10Y2Y`, "." for non-trading days), and the real httpx client
+code runs against `httpx.MockTransport`.
 """
 from __future__ import annotations
 
 import importlib.util
-import io
-import socket
 import ssl
 import sys
-import urllib.error
 from datetime import date, timedelta
 from pathlib import Path
-from urllib.parse import parse_qs, urlparse
 
+import httpx
 import pytest
 
 _PATH = Path(__file__).resolve().parent.parent.parent / "scripts" / "yield_spread.py"
@@ -144,113 +142,92 @@ def test_fred_publishes_with_a_lag_so_a_one_or_two_day_old_last_value_is_fine(ys
     assert ys.parse_fred_csv(_csv(days), last_session=LAST).last_date == LAST - timedelta(days=2)
 
 
-# -- fetching -------------------------------------------------------------------------------------
+# -- fetching (the real httpx client code, over a mock transport) ---------------------------------
 
 
-class _Response:
-    def __init__(self, body: bytes):
-        self._buf = io.BytesIO(body)
-
-    def read(self, n=-1):
-        return self._buf.read(n)
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *exc):
-        return False
+def _transport(body: bytes = b"", *, seen: list | None = None, status: int = 200):
+    def handler(request: httpx.Request) -> httpx.Response:
+        if seen is not None:
+            seen.append(request)
+        return httpx.Response(status, content=body)
+    return httpx.MockTransport(handler)
 
 
-def _opener(body: bytes, seen: list):
-    def opener(request, timeout, context=None):
-        seen.append((request, timeout))
-        opener.contexts.append(context)  # type: ignore[attr-defined]
-        return _Response(body)
-    opener.contexts = []  # type: ignore[attr-defined]
-    return opener
+def _failing(exc: BaseException):
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise exc
+    return httpx.MockTransport(handler)
+
+
+_GOOD = _csv(_weekdays_ending(LAST, 80)).encode()
 
 
 def test_fetch_makes_one_public_https_get_with_a_generic_user_agent(ys):
     seen: list = []
-    body = _csv(_weekdays_ending(LAST, 80)).encode()
-    out = ys.fetch_fred_yield_spread(LAST, urlopen=_opener(body, seen))
-    ((request, timeout),) = seen
-    parsed = urlparse(request.full_url)
-    query = parse_qs(parsed.query)
-    assert parsed.scheme == "https" and parsed.netloc == "fred.stlouisfed.org"
-    assert query["id"] == ["T10Y2Y"] and query["coed"] == ["2025-11-26"] and "cosd" in query
-    assert request.get_header("User-agent") == "trading-research-score/1.0"
-    assert set(request.headers) <= {"User-agent"}  # no cookies, tokens or account details
-    assert timeout > 0 and len(out.values) == 60
+    out = ys.fetch_fred_yield_spread(LAST, transport=_transport(_GOOD, seen=seen))
+    (request,) = seen
+    assert request.method == "GET" and request.url.scheme == "https"
+    assert request.url.host == "fred.stlouisfed.org" and request.url.path == "/graph/fredgraph.csv"
+    params = dict(request.url.params)
+    assert params["id"] == "T10Y2Y" and params["coed"] == "2025-11-26" and "cosd" in params
+    assert request.headers["user-agent"] == "trading-research-score/1.0"
+    assert not {"authorization", "cookie", "x-api-key"} & set(request.headers)  # no credentials of any kind
+    assert len(out.values) == 60
 
 
 def test_summary_describes_the_data_used(ys):
-    out = ys.fetch_fred_yield_spread(LAST, urlopen=_opener(_csv(_weekdays_ending(LAST, 80)).encode(), []))
+    out = ys.fetch_fred_yield_spread(LAST, transport=_transport(_GOOD))
     assert out.summary().startswith("FRED T10Y2Y, 60 observations through 2025-11-25, latest +")
 
 
 def test_a_download_records_its_vintage_and_retrieval_time(ys):
     from datetime import datetime, timezone
     before = datetime.now(timezone.utc)
-    out = ys.fetch_fred_yield_spread(LAST, urlopen=_opener(_csv(_weekdays_ending(LAST, 80)).encode(), []))
+    out = ys.fetch_fred_yield_spread(LAST, transport=_transport(_GOOD))
     assert out.vintage == "current"
     assert out.retrieved_at is not None and out.retrieved_at.tzinfo is not None
     assert before <= out.retrieved_at <= datetime.now(timezone.utc)
 
 
-@pytest.mark.parametrize("raised, fragment", [
-    (urllib.error.HTTPError("u", 503, "x", {}, None), "HTTP 503"),  # type: ignore[arg-type]
-    (urllib.error.URLError("secret-host-detail"), "URLError"),
-    (urllib.error.URLError(socket.gaierror(8, "secret-host-detail")), "gaierror"),
-    (urllib.error.URLError(ConnectionRefusedError("secret-host-detail")), "ConnectionRefusedError"),
-    (TimeoutError("slow"), "TimeoutError"),
+@pytest.mark.parametrize("exc, fragment", [
+    (httpx.ReadTimeout("secret-host-detail"), "timed out.*ReadTimeout"),
+    (httpx.ConnectTimeout("secret-host-detail"), "timed out.*ConnectTimeout"),
+    (httpx.ConnectError("secret-host-detail"), "ConnectError"),
+    (httpx.RemoteProtocolError("secret-host-detail"), "RemoteProtocolError"),
 ])
-def test_network_failures_are_reduced_to_a_short_message(ys, raised, fragment):
-    def opener(request, timeout, context=None):
-        raise raised
-    with pytest.raises(ys.YieldSpreadError, match=fragment) as exc:
-        ys.fetch_fred_yield_spread(LAST, urlopen=opener)
-    assert "secret-host-detail" not in str(exc.value)  # type names only, never host or provider text
-    assert "certifi" not in str(exc.value)  # the certificate hint is only for certificate errors
+def test_network_failures_are_reduced_to_a_short_message(ys, exc, fragment):
+    with pytest.raises(ys.YieldSpreadError, match=fragment) as raised:
+        ys.fetch_fred_yield_spread(LAST, transport=_failing(exc))
+    assert "secret-host-detail" not in str(raised.value)  # type names only, never host or provider text
 
 
-def test_a_certificate_failure_says_why_and_how_to_fix_it(ys):
-    reason = ssl.SSLCertVerificationError(1, "[SSL: CERTIFICATE_VERIFY_FAILED] secret-host-detail")
-
-    def opener(request, timeout, context=None):
-        raise urllib.error.URLError(reason)
-    with pytest.raises(ys.YieldSpreadError) as exc:
-        ys.fetch_fred_yield_spread(LAST, urlopen=opener)
-    message = str(exc.value)
-    assert "SSLCertVerificationError" in message and "no root certificates" in message and "certifi" in message
-    assert "secret-host-detail" not in message
+def test_a_certificate_failure_is_named_as_such(ys):
+    error = httpx.ConnectError("secret-host-detail")
+    error.__cause__ = ssl.SSLCertVerificationError(1, "[SSL: CERTIFICATE_VERIFY_FAILED] secret-host-detail")
+    with pytest.raises(ys.YieldSpreadError, match="ConnectError: the TLS certificate could not be verified") as raised:
+        ys.fetch_fred_yield_spread(LAST, transport=_failing(error))
+    assert "secret-host-detail" not in str(raised.value)
 
 
-# -- TLS ---------------------------------------------------------------------------------------------
+@pytest.mark.parametrize("status", [301, 403, 429, 503])
+def test_non_200_responses_are_errors_and_redirects_are_not_followed(ys, status):
+    with pytest.raises(ys.YieldSpreadError, match=f"HTTP {status}"):
+        ys.fetch_fred_yield_spread(LAST, transport=_transport(b"<html>nope</html>", status=status))
 
 
-def test_requests_use_a_verifying_tls_context(ys):
-    opener = _opener(_csv(_weekdays_ending(LAST, 80)).encode(), [])
-    ys.fetch_fred_yield_spread(LAST, urlopen=opener)
-    (context,) = opener.contexts
-    assert isinstance(context, ssl.SSLContext)
-    assert context.verify_mode == ssl.CERT_REQUIRED and context.check_hostname  # never disabled
-
-
-def test_certifi_bundle_is_used_when_installed(ys):
-    certifi = pytest.importorskip("certifi")
-    assert len(ys._ssl_context().get_ca_certs()) == len(
-        ssl.create_default_context(cafile=certifi.where()).get_ca_certs()) > 0
-
-
-def test_without_certifi_the_default_verifying_context_is_used(ys, monkeypatch):
-    monkeypatch.setitem(sys.modules, "certifi", None)  # makes `import certifi` raise ImportError
-    context = ys._ssl_context()
-    assert context.verify_mode == ssl.CERT_REQUIRED and context.check_hostname
+def test_an_html_page_served_as_200_fails_in_the_parser_not_silently(ys):
+    with pytest.raises(ys.YieldSpreadError, match="unexpected header"):
+        ys.fetch_fred_yield_spread(LAST, transport=_transport(b"<html>captcha</html>"))
 
 
 def test_an_oversized_or_non_text_response_is_refused(ys):
     with pytest.raises(ys.YieldSpreadError, match="unexpectedly large"):
-        ys.fetch_fred_yield_spread(LAST, urlopen=_opener(b"x" * (ys.MAX_BYTES + 2), []))
+        ys.fetch_fred_yield_spread(LAST, transport=_transport(b"x" * (ys.MAX_BYTES + 2)))
     with pytest.raises(ys.YieldSpreadError, match="not UTF-8"):
-        ys.fetch_fred_yield_spread(LAST, urlopen=_opener(b"\xff\xfe\x00bad", []))
+        ys.fetch_fred_yield_spread(LAST, transport=_transport(b"\xff\xfe\x00bad"))
+
+
+def test_without_httpx_it_says_so_instead_of_falling_back_to_a_client_that_stalls(ys, monkeypatch):
+    monkeypatch.setitem(sys.modules, "httpx", None)  # makes `import httpx` raise ImportError
+    with pytest.raises(ys.YieldSpreadError, match="needs httpx"):
+        ys.fetch_fred_yield_spread(LAST)

@@ -100,6 +100,83 @@ def test_malformed_positions_fail_closed(positions, mutate, fragment):
         _client(bad).snapshot()
 
 
+def _inactive_for(*dead: str):
+    def history(symbol):
+        if symbol in dead:
+            raise oc.McpToolError(
+                "the MCP tool call to get_equity_historicals returned an error: "
+                f'API error 400: {{"inactive_instruments":["{symbol}"]}}',
+                f'API error 400: {{"inactive_instruments":["{symbol}"]}}')
+        return _history_for(symbol)
+    return history
+
+
+def test_inactive_instrument_is_reported_unpriced_and_left_out_of_totals(positions):
+    live = _client(positions).snapshot()
+    victim = live.lines[0]
+
+    snapshot = _client(positions, history=_inactive_for(victim.symbol)).snapshot()
+
+    assert [item.symbol for item in snapshot.unpriced] == [victim.symbol]
+    unpriced = snapshot.unpriced[0]
+    assert unpriced.quantity == victim.quantity and unpriced.cost_basis == victim.cost_basis
+    assert victim.symbol not in {line.symbol for line in snapshot.lines}
+    assert snapshot.market_value == live.market_value - victim.market_value
+    assert snapshot.cost_basis == live.cost_basis - victim.cost_basis
+
+
+def test_inactive_classification_uses_untruncated_text_not_the_display_detail(positions):
+    victim = _client(positions).snapshot().lines[0].symbol
+    full = f'API error 400: {{"inactive_instruments":["{victim}"]}}'
+
+    def history(symbol):
+        if symbol == victim:
+            raise oc.McpToolError(f"returned an error: {full[:20]}...", full[:20] + "...", full)
+        return _history_for(symbol)
+
+    snapshot = _client(positions, history=history).snapshot()
+    assert [item.symbol for item in snapshot.unpriced] == [victim]
+
+
+def test_other_history_tool_errors_still_fail_closed(positions):
+    def rate_limited(_symbol):
+        raise oc.McpToolError("the MCP tool call to get_equity_historicals returned an error: API error 429",
+                              "API error 429")
+
+    with pytest.raises(oc.McpToolError, match="429"):
+        _client(positions, history=rate_limited).snapshot()
+
+
+@pytest.mark.parametrize("detail", [
+    'API error 400: {"inactive_instruments":["OTHER"]}',              # a different symbol
+    'API error 400: {"inactive_instruments":["{sym}","OTHER"]}',      # extra symbols
+    'API error 400: {"inactive_instruments":[]}',                     # empty list
+    'API error 400: {"inactive_instruments":"{sym}"}',                # not a list
+    'API error 400: {"inactive_instruments":[1]}',                    # wrong item type
+    'API error 400: {"inactive_instruments":["{sym}"],"x":1}',        # extra keys
+    'API error 400: {"inactive_instruments":["{sym}"',                # truncated JSON
+    'API error 400: inactive_instruments for {sym}',                  # only mentions the field
+    'API error 500: see inactive_instruments docs',                   # diagnostic mention
+    'API error 500: {"inactive_instruments":["{sym}"]}',              # valid object, wrong status
+    'API error 400: {"inactive_instruments":["{sym}"]} trailing unrelated failure',  # trailing text
+    'API error 400: {"inactive_instruments":["{sym}"]} {"error":"upstream timeout"}',  # compound error
+    'upstream: API error 400: {"inactive_instruments":["{sym}"]}',    # unrelated leading text
+    '{"inactive_instruments":["{sym}"]}',                             # no status at all
+    '',                                                               # no text
+])
+def test_inactive_error_not_naming_exactly_this_symbol_fails_closed(positions, detail):
+    victim = _client(positions).snapshot().lines[0].symbol
+    text = detail.replace("{sym}", victim)
+
+    def bad(symbol):
+        if symbol == victim:
+            raise oc.McpToolError(f"the MCP tool call returned an error: {text}", text)
+        return _history_for(symbol)
+
+    with pytest.raises(oc.McpToolError):
+        _client(positions, history=bad).snapshot()
+
+
 def test_missing_last_close_fails_closed(positions):
     def stale(symbol):
         payload = _history_for(symbol)

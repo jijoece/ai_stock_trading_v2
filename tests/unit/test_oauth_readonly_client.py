@@ -111,6 +111,49 @@ def test_payload_prefers_structured_content_then_text():
                                                 content=[SimpleNamespace(text="not json")]))
 
 
+def _error_result(*texts):
+    return SimpleNamespace(isError=True, structuredContent=None, content=[SimpleNamespace(text=t) for t in texts])
+
+
+def test_tool_error_names_the_tool_and_a_short_server_message():
+    with pytest.raises(oc.McpError) as exc:
+        oc._payload_from_result(_error_result("invalid  interval\n for symbol"), "get_equity_historicals", {})
+    assert str(exc.value) == "the MCP tool call to get_equity_historicals returned an error: invalid interval for symbol"
+
+
+def test_tool_error_is_typed_and_carries_the_redacted_detail():
+    with pytest.raises(oc.McpToolError) as exc:
+        oc._payload_from_result(_error_result('API error 400: {"inactive_instruments":["FSRNQ"]}'),
+                                "get_equity_historicals", {})
+    assert isinstance(exc.value, oc.McpError)
+    assert "inactive_instruments" in exc.value.detail and exc.value.detail in str(exc.value)
+
+
+def test_tool_error_display_detail_is_truncated_but_full_detail_is_not():
+    text = "API error 400: " + "x " * 150 + '{"inactive_instruments":["FSRNQ"]}'
+    with pytest.raises(oc.McpToolError) as exc:
+        oc._payload_from_result(_error_result(text), "get_equity_historicals", {})
+    assert exc.value.detail.endswith("...") and "inactive_instruments" not in exc.value.detail
+    assert exc.value.full_detail.endswith('{"inactive_instruments":["FSRNQ"]}')
+
+
+def test_tool_error_without_server_text_or_tool_name_keeps_the_generic_message():
+    with pytest.raises(oc.McpError) as exc:
+        oc._payload_from_result(_error_result())
+    assert str(exc.value) == "the MCP tool call returned an error"
+
+
+def test_tool_error_redacts_sensitive_values_and_truncates():
+    args = {"account_number": "ABC12345", "symbols": ["AAPL"]}
+    text = "account ABC12345 rejected; Bearer secret-token-123 and " + "x" * 40 + " " + "bad request " * 50
+    with pytest.raises(oc.McpError) as exc:
+        oc._payload_from_result(_error_result(text), "get_equity_positions", args)
+    message = str(exc.value)
+    assert "ABC12345" not in message and "secret-token-123" not in message and "x" * 40 not in message
+    assert "[redacted]" in message and message.endswith("...")
+    assert len(message) < len("the MCP tool call to get_equity_positions returned an error: ") + 210
+
+
 def test_transport_errors_never_forward_provider_text(monkeypatch):
     async def boom(*_a):
         raise RuntimeError("Bearer secret-token-123 rejected")
@@ -247,9 +290,7 @@ async def test_a_new_process_refreshes_an_expired_stored_token_instead_of_asking
     import time
     from urllib.parse import parse_qs
 
-    from mcp.client.auth import oauth2
-    # mcp 1.x is built on httpx, 2.x on httpx2: drive the SDK's auth flow with whichever one it uses.
-    hx = getattr(oauth2, "httpx2", None) or getattr(oauth2, "httpx")
+    import httpx as hx
     store = await _expired_login(tmp_path)
     seen: list[str] = []
 
@@ -268,14 +309,11 @@ async def test_a_new_process_refreshes_an_expired_stored_token_instead_of_asking
         raise oc.McpLoginRequired("an interactive login was started")
 
     provider = oc._make_provider(ACME, ACME.default_url, store, "http://127.0.0.1/callback", no_login, no_login)
-    flow = provider.async_auth_flow(hx.Request("POST", ACME.default_url, json={}))
-    request = await flow.__anext__()
-    while True:
-        response = server(request)
-        try:
-            request = await flow.asend(response)
-        except StopAsyncIteration:
-            break
+    # The same client construction as `_open_session` (an SDK whose provider is not an httpx.Auth, such as
+    # mcp 2.x on httpx2, fails here with "Invalid auth argument"), with a mock transport instead of the network.
+    async with hx.AsyncClient(auth=provider, follow_redirects=True, timeout=30.0,
+                              transport=hx.MockTransport(server)) as http:
+        response = await http.post(ACME.default_url, json={})
     assert response.status_code == 200
     assert seen == ["POST https://auth.acme.example/oauth/token", f"POST {ACME.default_url}"]
     refreshed = await store.get_tokens()
