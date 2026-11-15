@@ -189,8 +189,13 @@ class FixtureIntradayHistoryProvider:
         return _validate_bars(symbol, session_date, self._bars.get((symbol, session_date), ()))
 
 
-def cache_key(symbol: str, session_date: date, interval: str, adjustment: str, coverage: str) -> str:
-    return "__".join([symbol.upper(), session_date.isoformat(), interval, adjustment, coverage])
+def cache_key(
+    symbol: str, session_date: date, interval: str, adjustment: str, coverage: str, feed: str | None = None,
+) -> str:
+    parts = [symbol.upper(), session_date.isoformat(), interval, adjustment, coverage]
+    if feed is not None:
+        parts.append(feed)
+    return "__".join(parts)
 
 
 class CachedAlpacaIntradayProvider:
@@ -208,7 +213,7 @@ class CachedAlpacaIntradayProvider:
         self._post_end = early_close_postmarket_end
 
     def cache_path(self, symbol: str, session_date: date) -> Path:
-        key = cache_key(symbol, session_date, INTERVAL_LABEL, self._adjustment, SESSION_COVERAGE)
+        key = cache_key(symbol, session_date, INTERVAL_LABEL, self._adjustment, SESSION_COVERAGE, self._feed)
         return self._dir / "intraday" / symbol.upper() / f"{key}.json"
 
     # offline read ----------------------------------------------------------
@@ -228,7 +233,7 @@ class CachedAlpacaIntradayProvider:
             raise BacktestError(f"{symbol} {session_date}: unsupported intraday cache schema")
         expected = {
             "symbol": symbol, "session_date": session_date.isoformat(), "interval": INTERVAL_LABEL,
-            "adjustment": self._adjustment, "coverage": SESSION_COVERAGE,
+            "adjustment": self._adjustment, "coverage": SESSION_COVERAGE, "feed": self._feed,
         }
         for field, value in expected.items():
             if doc.get(field) != value:
@@ -319,3 +324,27 @@ class CachedAlpacaIntradayProvider:
             Path(tmp).unlink(missing_ok=True)
             raise
         return path
+
+
+class RecordingIntradayProvider:
+    """Wraps a provider and remembers every (symbol, date) read, so the run's
+    input manifest covers all bars consumed by candidate selection, the engine,
+    baselines and the ordinary-day control (not just the engine's own reads)."""
+
+    def __init__(self, inner: IntradayHistoryProvider):
+        self._inner = inner
+        self._seen: dict[tuple[str, date], tuple[IntradayBar, ...]] = {}
+
+    def get_bars(self, symbol: str, session_date: date) -> tuple[IntradayBar, ...]:
+        bars = tuple(self._inner.get_bars(symbol, session_date))
+        self._seen[(symbol.upper(), session_date)] = bars
+        return bars
+
+    def manifest_hash(self, extra: Mapping[str, Any] | None = None) -> str:
+        """Hash of every bar read (and each read's key, so empty days count) plus `extra` inputs."""
+        keys = sorted(self._seen)
+        return hash_config({
+            "schema": CACHE_SCHEMA_VERSION,
+            "reads": [[s, d.isoformat(), intraday_data_hash(self._seen[(s, d)])] for s, d in keys],
+            "extra": dict(extra or {}),
+        })

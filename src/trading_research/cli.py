@@ -2760,7 +2760,8 @@ def _intraday_gap_split(surprises: list, split: str) -> list:
     if not ordered:
         return []
     num, den = INTRADAY_GAP_IN_SAMPLE_FRACTION
-    boundary = ordered[min(len(ordered) - 1, len(ordered) * num // den)].report_date
+    dates = sorted({s.report_date for s in ordered})  # the 60/40 is over unique event dates, not rows
+    boundary = dates[min(len(dates) - 1, len(dates) * num // den)]
     if split == "in_sample":
         return [s for s in ordered if s.report_date < boundary]
     return [s for s in ordered if s.report_date >= boundary]
@@ -2792,6 +2793,7 @@ def backtest_intraday_gap_cli(
     config_path: Path | None = None, report_dir: Path = Path("reports"), equity=None,
     opening_range_minutes: int | None = None, maximum_risk_percent=None,
     api_key: str | None = None, api_secret: str | None = None, http_client=None,
+    adjustment: str = "split", feed: str = "iex",
 ) -> dict:
     """`backtest-intraday-gap` CLI command (docs/intraday-earnings-gap-plan.md Step 6).
 
@@ -2802,7 +2804,7 @@ def backtest_intraday_gap_cli(
     import dataclasses
     from decimal import Decimal
 
-    from .backtesting.intraday_history import CachedAlpacaIntradayProvider
+    from .backtesting.intraday_history import CachedAlpacaIntradayProvider, RecordingIntradayProvider
     from .backtesting.models import BacktestError
     from .strategies.config import StrategyConfigError, load_earnings_gap_intraday_config
     from .strategies.earnings_gap_intraday import EarningsGapIntradayConfigError, select_candidates
@@ -2837,7 +2839,8 @@ def backtest_intraday_gap_cli(
         if not events:
             return _err("NO_EVENTS", "no earnings events in the requested range and split")
         provider = CachedAlpacaIntradayProvider(
-            cache_dir, early_close_postmarket_end=config.early_close_postmarket_end,
+            cache_dir, adjustment=adjustment, feed=feed,  # plan D1: split-adjusted unless overridden
+            early_close_postmarket_end=config.early_close_postmarket_end,
         )
 
         if fetch:
@@ -2863,16 +2866,26 @@ def backtest_intraday_gap_cli(
                 fetched += 1
             return {"mode": "fetch", "events": len(surprises), "fetched": fetched, "already_cached": skipped}
 
-        candidates = select_candidates(events, provider, config, variant)
+        recorder = RecordingIntradayProvider(provider)  # every bar any stage reads feeds the manifest
+        candidates = select_candidates(events, recorder, config, variant)
         equity_value = Decimal(str(equity)) if equity is not None else Decimal("100000")
-        evaluation = evaluate_variant(candidates, provider, config, variant, equity_value)
+        evaluation = evaluate_variant(candidates, recorder, config, variant, equity_value)
         parameters = {
             "variant": variant, "opening_range_minutes": config.opening_range_minutes,
             "maximum_risk_percent": config.maximum_risk_percent, "equity": equity_value,
             "events": len(events), "start": start, "end": end,
             "first_event_date": events[0].report_date, "last_event_date": events[-1].report_date,
+            "adjustment": adjustment, "feed": feed,
         }
-        report = build_report(evaluation, split=split, parameters=parameters)
+        manifest = recorder.manifest_hash({
+            "earnings": [
+                [e.symbol, e.fiscal_period, e.report_date.isoformat(), e.timing,
+                 e.release_time.isoformat() if e.release_time else "", e.eps_estimate, e.eps_actual, e.source]
+                for e in events
+            ],
+            "adjustment": adjustment, "feed": feed,
+        })
+        report = build_report(evaluation, split=split, parameters=parameters, input_manifest_hash=manifest)
         json_path, md_path = write_report(report, report_dir)
         return {
             "mode": "backtest", "run_id": report["run_id"], "variant": variant, "split": split,

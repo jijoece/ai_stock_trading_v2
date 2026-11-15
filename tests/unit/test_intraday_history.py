@@ -278,3 +278,44 @@ def test_reconcile_zero_daily_volume_and_negative_tolerance():
     assert not reconcile_daily_volume((), 0, Decimal("0.1")).flagged
     with pytest.raises(BacktestError):
         reconcile_daily_volume(bars, 10, Decimal("-1"))
+
+
+# -- feed isolation / recording ------------------------------------------------
+
+
+def test_feed_changes_cache_key_and_path(tmp_path):
+    assert cache_key("abc", NORMAL, "5Min", "raw", "x", "iex") != cache_key("abc", NORMAL, "5Min", "raw", "x", "sip")
+    iex = CachedAlpacaIntradayProvider(tmp_path, feed="iex")
+    sip = CachedAlpacaIntradayProvider(tmp_path, feed="sip")
+    assert iex.cache_path("ABC", NORMAL) != sip.cache_path("ABC", NORMAL)
+
+
+def test_sip_provider_does_not_read_iex_cache(tmp_path):
+    CachedAlpacaIntradayProvider(tmp_path, feed="iex").fetch(FakeHttp([fixture_payload(NORMAL)]), "ABC", NORMAL)
+    sip = CachedAlpacaIntradayProvider(tmp_path, feed="sip")
+    with pytest.raises(BacktestError, match="no cached intraday data"):
+        sip.get_bars("ABC", NORMAL)
+
+
+def test_feed_mismatch_in_cache_document_fails_closed(tmp_path):
+    iex = CachedAlpacaIntradayProvider(tmp_path, feed="iex")
+    path = iex.fetch(FakeHttp([fixture_payload(NORMAL)]), "ABC", NORMAL)
+    sip = CachedAlpacaIntradayProvider(tmp_path, feed="sip")
+    sip_path = sip.cache_path("ABC", NORMAL)
+    sip_path.parent.mkdir(parents=True, exist_ok=True)
+    sip_path.write_text(path.read_text(encoding="utf-8"), encoding="utf-8")  # IEX document at the SIP path
+    with pytest.raises(BacktestError, match="feed mismatch"):
+        sip.get_bars("ABC", NORMAL)
+
+
+def test_recording_provider_manifest_tracks_every_read(tmp_path):
+    from trading_research.backtesting.intraday_history import RecordingIntradayProvider
+
+    prov = CachedAlpacaIntradayProvider(tmp_path)
+    prov.fetch(FakeHttp([fixture_payload(NORMAL)]), "ABC", NORMAL)
+    rec = RecordingIntradayProvider(prov)
+    empty = rec.manifest_hash()
+    assert rec.get_bars("abc", NORMAL)
+    one = rec.manifest_hash()
+    assert one != empty and one == rec.manifest_hash()
+    assert rec.manifest_hash({"eps": "1.0"}) != one

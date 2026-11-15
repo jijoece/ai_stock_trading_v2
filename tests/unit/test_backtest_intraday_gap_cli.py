@@ -182,3 +182,111 @@ def test_invalid_variant_and_range_are_curated_errors(world, tmp_path):
         split="in_sample", cache_dir=world["cache"],
     )
     assert bad["error"]["code"] == "INVALID_ARGUMENT"
+
+
+# -- review-finding regressions -------------------------------------------------
+
+
+def _surprise(symbol, day):
+    from types import SimpleNamespace
+
+    return SimpleNamespace(symbol=symbol, report_date=day, fiscal_period="2026Q3")
+
+
+def test_split_uses_unique_event_dates_not_rows():
+    from trading_research.cli import _intraday_gap_split
+
+    first = date(2026, 11, 2)
+    # 100 events on the first date, then nine dates with one event each: 10 unique dates -> 6 in-sample.
+    rows = [_surprise(f"S{i:03d}", first) for i in range(100)]
+    rows += [_surprise("TAIL", first + timedelta(days=d)) for d in range(1, 10)]
+    ins = _intraday_gap_split(rows, "in_sample")
+    oos = _intraday_gap_split(rows, "out_of_sample")
+    ins_dates, oos_dates = {s.report_date for s in ins}, {s.report_date for s in oos}
+    assert len(ins_dates) == 6 and len(oos_dates) == 4 and not ins_dates & oos_dates
+    assert max(ins_dates) < min(oos_dates) and len(ins) + len(oos) == len(rows)
+
+
+def test_split_balanced_multi_symbol_dates():
+    from trading_research.cli import _intraday_gap_split
+
+    rows = [_surprise(s, date(2026, 11, 2) + timedelta(days=d)) for d in range(5) for s in ("A", "B")]
+    ins = {s.report_date for s in _intraday_gap_split(rows, "in_sample")}
+    oos = {s.report_date for s in _intraday_gap_split(rows, "out_of_sample")}
+    assert len(ins) == 3 and len(oos) == 2 and not ins & oos
+
+
+class _ParamCapture(FakeVendor):
+    def __init__(self) -> None:
+        super().__init__()
+        self.params: list[dict] = []
+
+    def get_json(self, url, *, params, operation, symbol):
+        self.params.append(dict(params))
+        return super().get_json(url, params=params, operation=operation, symbol=symbol)
+
+
+def test_cli_defaults_to_split_adjusted_and_records_it(world, tmp_path):
+    vendor = _ParamCapture()
+    cache = tmp_path / "cache"
+    out = backtest_intraday_gap_cli(
+        earnings_csv=world["csv"], start=date(2026, 11, 1), end=date(2026, 11, 30), variant="orb",
+        split="in_sample", cache_dir=cache, fetch=True, http_client=vendor,
+    )
+    assert out["fetched"] > 0
+    assert {p["adjustment"] for p in vendor.params} == {"split"}
+    assert all("__split__" in p.name for p in (cache / "intraday").rglob("*.json"))
+    run = backtest_intraday_gap_cli(
+        earnings_csv=world["csv"], start=date(2026, 11, 1), end=date(2026, 11, 30), variant="orb",
+        split="in_sample", cache_dir=cache, report_dir=tmp_path / "r",
+    )
+    params = json.loads(open(run["report_json"]).read())["parameters"]
+    assert params["adjustment"] == "split" and params["feed"] == "iex"
+    # A raw run cannot silently reuse split-adjusted cache entries.
+    raw_run = backtest_intraday_gap_cli(
+        earnings_csv=world["csv"], start=date(2026, 11, 1), end=date(2026, 11, 30), variant="orb",
+        split="in_sample", cache_dir=cache, report_dir=tmp_path / "r2", adjustment="raw",
+    )
+    assert raw_run["error"]["code"] == "BACKTEST_ERROR"
+
+
+def _mutate_cached_bar(cache, symbol, day):
+    from trading_research.backtesting.intraday_history import CachedAlpacaIntradayProvider, intraday_data_hash
+
+    prov = CachedAlpacaIntradayProvider(cache, adjustment="split")
+    path = prov.cache_path(symbol, day)
+    doc = json.loads(path.read_text())
+    regular = next(b for b in doc["bars"] if b["v"] > 0)
+    regular["v"] += 1
+    doc["data_hash"] = intraday_data_hash(prov._parse(symbol, day, doc["bars"]))
+    path.write_text(json.dumps(doc, sort_keys=True, indent=1))
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    ["prior_volume_bar", "benchmark_bar", "baseline_report_day_bar", "eps_value"],
+)
+def test_run_identity_changes_when_any_consumed_input_changes(world, tmp_path, mutation):
+    import shutil
+
+    cache = tmp_path / "cache"
+    shutil.copytree(world["cache"], cache)
+    csv_path = world["csv"]
+    kw = dict(earnings_csv=csv_path, start=date(2026, 11, 1), end=date(2026, 11, 30), variant="orb",
+              split="in_sample", cache_dir=cache)
+    before = backtest_intraday_gap_cli(report_dir=tmp_path / "a", **kw)
+    assert "error" not in before, before
+    if mutation == "prior_volume_bar":
+        _mutate_cached_bar(cache, "AAA", date(2026, 11, 2))  # session before the report day
+    elif mutation == "benchmark_bar":
+        _mutate_cached_bar(cache, "SPY", date(2026, 11, 3))
+    elif mutation == "baseline_report_day_bar":
+        _mutate_cached_bar(cache, "AAA", date(2026, 11, 3))  # report-day bars read by baselines
+    else:
+        kw["earnings_csv"] = tmp_path / "e.csv"
+        kw["earnings_csv"].write_text(csv_path.read_text().replace("1.00,1.20", "1.00,1.21", 1))
+    after = backtest_intraday_gap_cli(report_dir=tmp_path / "b", **kw)
+    assert "error" not in after, after
+    assert after["run_id"] != before["run_id"]
+    assert json.loads(open(after["report_json"]).read())["input_manifest_hash"] != \
+        json.loads(open(before["report_json"]).read())["input_manifest_hash"]

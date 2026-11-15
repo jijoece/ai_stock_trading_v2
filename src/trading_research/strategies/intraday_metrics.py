@@ -639,16 +639,23 @@ def _jsonable(value: Any) -> Any:
 
 
 def build_report(
-    evaluation: IntradayEvaluation, *, split: str = "unspecified", parameters: Mapping[str, Any] | None = None
+    evaluation: IntradayEvaluation, *, split: str = "unspecified", parameters: Mapping[str, Any] | None = None,
+    input_manifest_hash: str | None = None,
 ) -> dict[str, Any]:
     """Deterministic report dict (no wall clock): caveats first, then identity,
     gate, metrics, baselines, control."""
     r = evaluation.result
+    # The engine's run id only sees bars its own simulation read. When the caller supplies a manifest
+    # covering every consumed input (eligibility, benchmark, baseline, control bars; EPS rows), fold it in.
+    run_id = r.run_id if input_manifest_hash is None else "igb-" + hash_config(
+        {"engine_run_id": r.run_id, "input_manifest_hash": input_manifest_hash}
+    )[:24]
     report: dict[str, Any] = {
         "schema": REPORT_SCHEMA_VERSION,
         "notes": [RESEARCH_NOTE, NOT_ACCEPTANCE_NOTE],
         "caveats": list(CAVEATS),
-        "run_id": r.run_id,
+        "run_id": run_id,
+        "input_manifest_hash": input_manifest_hash,
         "variant": r.variant,
         "split": split,
         "configuration_hash": r.configuration_hash,
