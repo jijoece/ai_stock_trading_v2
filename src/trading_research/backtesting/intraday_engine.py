@@ -315,8 +315,13 @@ def _regular_plan(
     or_end = open_dt + timedelta(minutes=cfg.opening_range_minutes)
     min_submit = _utc(_et_dt(day, cfg.pmh_break_earliest_entry_time if variant == "pmh_break" else cfg.earliest_entry_time))
     latest = _utc(_et_dt(day, cfg.latest_entry_time))
+    try:
+        close = _ny(regular_session_close(day))
+        flat_deadline = _utc(_et_dt(day, min(cfg.flat_time, (close - timedelta(minutes=5)).time())))
+    except MarketCalendarError:
+        flat_deadline = _utc(_et_dt(day, cfg.flat_time))
 
-    pre = _usable_pre_post(timeline, "pre", day, decision, not_before)
+    pre =_usable_pre_post(timeline, "pre", day, decision, not_before)
     pmh = max((b.high for b in pre), default=None)
     pm_vwap_acc = _Vwap()
     for b in pre:
@@ -369,6 +374,8 @@ def _regular_plan(
         next_idx = reg_idx[pos + 1] if pos + 1 < len(reg_idx) else None
         if next_idx is not None and _utc(timeline[next_idx].start) > latest:
             next_idx = None  # sparse history: the fill bar must not start after the entry cutoff
+        if next_idx is not None and not cfg.post_market_exit and _utc(timeline[next_idx].start) >= flat_deadline:
+            next_idx = None  # no entry at/after the effective flat time (early-close days)
         plan = _Plan(
             cand=cand, kind="regular", submitted_at=_utc(submit), reference_entry=b.close, stop=signal,
             signal_volume=b.volume, timeline=timeline, fill_index=next_idx, not_before=not_before,
@@ -536,6 +543,7 @@ def _simulate(
             last_regular_i = i
         day = _ny(b.start).date()
         is_entry = i == entry_idx
+        carried_ext = pending_ext  # order armed by the previous bar, before this bar consumes it
         if not is_entry:
             if (
                 b.session == "post" and not overnight and not same_day_post_exit
@@ -605,6 +613,11 @@ def _simulate(
             if same_day_post_exit and is_last_regular and remaining > 0:
                 spread = ext_spread(_utc(b.end), "post", day) / _BPS
                 pending_ext = (_q_up(b.close * (Decimal(1) - spread)), "post_market_exit", _utc(b.end))
+        elif remaining > 0 and b.is_closing_print:
+            # The closing print is untradable and its price is auction data: it never creates an exit
+            # order. Re-arm the order the prior bar placed so it can work on the next tradable bar.
+            if carried_ext is not None and not is_entry:
+                pending_ext = (carried_ext[0], carried_ext[1], _utc(b.end))
         elif remaining > 0:
             spread = ext_spread(_utc(b.end), b.session, day) / _BPS
             if b.close < stop:

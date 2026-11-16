@@ -211,6 +211,21 @@ def test_flat_time_uses_last_bar_close_when_no_bar_exists():
     assert t.exit_price == D("10.55") * (1 - REG) and et_of(t.exit_time).time() == time(15, 55)
 
 
+def test_early_close_entry_at_the_flat_deadline_is_not_taken():
+    day = date(2026, 11, 27)  # 13:00 close, so the effective flat time is 12:55
+    bars = {(SYM, day): build(day, orb_fn(signal=(12, 50)), end=(13, 0))}  # submission 12:55, fill bar 12:55
+    res = run([cand("orb", day=day, report=day)], bars, cfg(), "orb")
+    assert not res.trades and res.unfilled_count == 1
+
+
+def test_closing_print_price_never_drives_the_post_market_exit_order():
+    bars = build(RD, orb_fn())
+    bars.append(ob(RD, 16, 0, "9.0", "9.0", "9.0", "9.0", 900_000, cp=True))  # auction price far below the stop
+    bars.append(ob(RD, 16, 5, "10.56", "10.6", "10.54", "10.58", 100_000))
+    (t,) = run([cand("orb")], {(SYM, RD): bars}, cfg(post_market_exit=True), "orb").trades
+    assert t.exit_reason == "post_market_exit" and t.exit_price == D("10.52")  # not a stop_ext off 9.0
+
+
 def test_post_market_exit_option_uses_d11_and_skips_closing_print():
     base = orb_fn()
     bars = build(RD, base)

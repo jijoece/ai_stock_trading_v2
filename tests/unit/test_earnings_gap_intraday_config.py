@@ -66,6 +66,21 @@ def test_duplicate_yaml_keys_are_rejected_in_both_loading_paths(tmp_path):
         load_strategy_config(_write(tmp_path, section_twice))
 
 
+def test_yaml_merge_keys_still_load_in_both_loading_paths(tmp_path):
+    text = _text().replace("\n  minimum_price: 3\n", "\n  <<: {minimum_price: 4}\n", 1)
+    assert text != _text()
+    path = _write(tmp_path, text)
+    assert load_earnings_gap_intraday_config(path).minimum_price == Decimal(4)
+    section = load_strategy_config(path).earnings_gap_intraday
+    assert section is not None and section.minimum_price == Decimal(4)
+    # An explicit key still overrides a merged one, and a true duplicate is still rejected.
+    overridden = text.replace("<<: {minimum_price: 4}", "<<: {minimum_price: 4}\n  minimum_price: 5", 1)
+    assert load_earnings_gap_intraday_config(_write(tmp_path, overridden)).minimum_price == Decimal(5)
+    duplicated = text.replace("<<: {minimum_price: 4}", "minimum_price: 4\n  minimum_price: 5", 1)
+    with pytest.raises(StrategyConfigError, match="duplicate mapping key"):
+        load_earnings_gap_intraday_config(_write(tmp_path, duplicated))
+
+
 def test_the_new_id_is_not_a_paper_capable_strategy():
     assert SECTION in BACKTEST_ONLY_STRATEGY_IDS
     assert SECTION not in KNOWN_STRATEGY_IDS

@@ -28,8 +28,10 @@ out-of-sample run.
    and commit or archive it. Use that exact file for fetching, tuning and the
    single out-of-sample run: the chronological split is recomputed from the
    rows, so a changed CSV moves the 60/40 boundary and invalidates the frozen
-   parameters. The report's `input_manifest_hash` covers the earnings rows, so
-   compare it between runs.
+   parameters. Verify the snapshot by comparing the recorded CSV SHA-256 across
+   runs. Do not compare `input_manifest_hash`: it covers only the selected
+   split's earnings rows and the bars that run read, so it differs between the
+   in-sample and out-of-sample runs even when the CSV is unchanged.
 2. **Fetch bars** (operator, credentialed). Fetches every missing symbol-day
    (event history, the control window and the trend benchmark) for all events in
    range, for both splits, then stops without running a backtest:
