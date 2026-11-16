@@ -579,3 +579,37 @@ def test_run_id_changes_when_an_execution_relevant_candidate_field_changes():
     b = run([cand("orb", prior=D("10.4"))], bars, cfg(), "orb")
     assert a.run_id != b.run_id
     assert a.run_id == run([cand("orb", prior=D("10"))], bars, cfg(), "orb").run_id
+
+
+# -- truncated data fails closed (PR 43 review: incomplete_session_data) -----------
+
+
+def test_regular_session_truncated_hours_early_is_rejected_not_a_completed_trade():
+    bars = [b for b in build(RD, orb_fn()) if et_of(b.start).time() < time(11, 0)]
+    res = run([cand("orb")], {(SYM, RD): bars}, cfg(), "orb")
+    assert not res.trades
+    assert any(r.stage == "unfilled" and "incomplete_session_data" in r.reasons for r in res.rejected)
+
+
+def test_truncated_regular_session_followed_by_post_bars_is_rejected():
+    bars = [b for b in build(RD, orb_fn()) if et_of(b.start).time() < time(11, 0)]
+    bars.append(ob(RD, 16, 5, "9.0", "9.1", "8.9", "9.0", 100_000))
+    res = run([cand("orb")], {(SYM, RD): bars}, cfg(), "orb")
+    assert not res.trades
+    assert any("incomplete_session_data" in r.reasons for r in res.rejected)
+
+
+def test_overnight_missing_reaction_session_exit_window_is_rejected():
+    c = cand("post_report_overnight", timing="pm", report=FRI, day=MON, release=et(FRI, 16, 5),
+             decision=et(FRI, 16, 30), prior=D("10.2"))
+    world = overnight_world()
+    world[(SYM, MON)] = [b for b in world[(SYM, MON)] if et_of(b.start).time() < time(9, 30)]
+    res = run([c], world, cfg(), "post_report_overnight")
+    assert not res.trades
+    assert any("incomplete_session_data" in r.reasons for r in res.rejected)
+    world[(SYM, MON)] = [
+        b for b in overnight_world()[(SYM, MON)] if et_of(b.start).time() < time(9, 50)
+    ]
+    res = run([c], world, cfg(), "post_report_overnight")
+    assert not res.trades
+    assert any("incomplete_session_data" in r.reasons for r in res.rejected)

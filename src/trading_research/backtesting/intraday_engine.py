@@ -86,6 +86,7 @@ NO_SIGNAL = "no_signal"
 AFTER_LATEST_ENTRY = "after_latest_entry_time"
 NO_NEXT_BAR = "no_next_bar"
 LIMIT_NOT_REACHED = "limit_not_reached"
+INCOMPLETE_SESSION_DATA = "incomplete_session_data"
 NO_PREMARKET_LEVELS = "no_premarket_levels"
 NO_REFERENCE_CLOSE = "no_reference_close"
 NO_BARS = "no_bars"
@@ -551,6 +552,8 @@ def _simulate(
             ):
                 # The flat-time bar was missing: close at the last regular bar, never in the post-market.
                 lb = tl[last_regular_i]
+                if lb.end < flat_dt(_ny(lb.start).date()):
+                    return _Outcome(unfilled_reason=INCOMPLETE_SESSION_DATA)  # truncated, not a missing flat bar
                 sell_regular(lb, lb.close, remaining, "flat_time_close", _utc(lb.end))
                 done = True
                 break
@@ -642,13 +645,12 @@ def _simulate(
             raw = _q_down(worst * (Decimal(1) - spread))
             legs.append(TradeLeg(_utc(last.end), "post", "sell", remaining, raw, "post_market_unfilled_marked", Decimal(0)))
             remaining = 0
-        elif last.session == "regular":
+        elif last.session == "regular" and last.end >= flat_dt(day):
+            # D5 fallback: the flat-time bar is missing but the session reached its flat deadline.
             sell_regular(last, last.close, remaining, "flat_time_close", _utc(last.end))
         else:
-            spread = ext_spread(_utc(last.end), last.session, day)
-            raw = last.close * (Decimal(1) - (slip + spread) / _BPS)
-            legs.append(TradeLeg(_utc(last.end), last.session, "sell", remaining, raw, "end_of_data", Decimal(0)))
-            remaining = 0
+            # Data stopped before the scheduled exit horizon was observed: fail closed.
+            return _Outcome(unfilled_reason=INCOMPLETE_SESSION_DATA)
 
     buys = [lg for lg in legs if lg.side == "buy"]
     sells = [lg for lg in legs if lg.side == "sell"]
