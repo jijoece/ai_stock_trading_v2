@@ -590,11 +590,11 @@ def test_truncation_before_entry_is_unfilled_after_entry_invalidates_the_run():
     full = build(RD, orb_fn())
     complete = run([cand("orb")], {(SYM, RD): full}, cfg(), "orb")
     assert len(complete.trades) == 1 and complete.unfilled_count == 0
-    # Same timeline cut before the 09:50 signal: the order never existed, a legitimate unfilled/no-signal.
+    # Same timeline cut before the 09:50 signal: the signal is unobservable, so the run is invalid
+    # (see test_truncation_before_a_would_be_signal_is_never_an_ordinary_no_signal).
     pre_entry = [b for b in full if et_of(b.start).time() < time(9, 45)]
-    res = run([cand("orb")], {(SYM, RD): pre_entry}, cfg(), "orb")
-    assert not res.trades
-    assert not any("incomplete_session_data" in r.reasons for r in res.rejected)
+    with pytest.raises(BacktestError, match="incomplete_session_data"):
+        run([cand("orb")], {(SYM, RD): pre_entry}, cfg(), "orb")
     # Same timeline cut after the entry filled (entry bar 09:55): the run is invalid.
     post_entry = [b for b in full if et_of(b.start).time() < time(11, 0)]
     with pytest.raises(BacktestError, match="incomplete_session_data"):
@@ -629,3 +629,21 @@ def test_overnight_missing_reaction_session_exit_window_invalidates_the_run():
     ]
     with pytest.raises(BacktestError, match="incomplete_session_data"):
         run([c], world, cfg(), "post_report_overnight")
+
+
+def test_truncation_before_a_would_be_signal_is_never_an_ordinary_no_signal():
+    # Valid afternoon signal (14:00, inside the entry window); complete session trades.
+    fn = orb_fn(signal=(14, 0))
+    full = build(RD, fn)
+    assert len(run([cand("orb")], {(SYM, RD): full}, cfg(), "orb").trades) == 1
+    # Isolated missing bars (not the signal bar) follow the sparse-data policy: still trades.
+    sparse = [b for b in full if et_of(b.start).time() not in (time(10, 5), time(11, 30))]
+    assert len(run([cand("orb")], {(SYM, RD): sparse}, cfg(), "orb").trades) == 1
+    # Trailing truncation before the signal fails closed instead of becoming `no_signal`.
+    cut = [b for b in full if et_of(b.start).time() < time(13, 30)]
+    with pytest.raises(BacktestError, match="incomplete_session_data"):
+        run([cand("orb")], {(SYM, RD): cut}, cfg(), "orb")
+    # A complete session that genuinely has no signal is still an ordinary no_signal.
+    quiet = build(RD, orb_fn(signal=(23, 0)))
+    res = run([cand("orb")], {(SYM, RD): quiet}, cfg(), "orb")
+    assert not res.trades and any("no_signal" in r.reasons for r in res.rejected)

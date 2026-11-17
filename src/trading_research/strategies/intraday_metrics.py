@@ -47,7 +47,7 @@ from zoneinfo import ZoneInfo
 from ..backtesting.intraday_engine import IntradayBacktestResult, IntradayTrade, _spread_bps, run_intraday_backtest
 from ..backtesting.intraday_history import IntradayHistoryProvider
 from ..backtesting.models import BacktestError, IntradayBar
-from ..evaluation.market_calendar import MARKET_TIMEZONE_NAME, is_trading_day
+from ..evaluation.market_calendar import MARKET_TIMEZONE_NAME, is_trading_day, regular_session_close
 from ..hashing import hash_config
 from .earnings_gap_intraday import CandidateDecision, EarningsGapIntradayConfig, evaluate_candidate
 from .earnings_surprise import EarningsSurprise
@@ -306,6 +306,12 @@ def _regular_bars(bars: Sequence[IntradayBar], day: date) -> list[IntradayBar]:
     return sorted((b for b in bars if b.session == "regular" and _ny(b.start).date() == day), key=lambda b: b.start)
 
 
+def _session_close_floor(day: date) -> datetime:
+    """Earliest acceptable end of the last regular bar: one bar short of the close, tolerating a single
+    missing final bar. Anything earlier means the session was truncated, not that it closed."""
+    return regular_session_close(day).astimezone(_NY) - timedelta(minutes=5)
+
+
 def _ext_price_bar(
     bars: Sequence[IntradayBar], session: str, day: date, as_of: datetime, not_before: datetime | None
 ) -> IntradayBar | None:
@@ -372,6 +378,11 @@ def compute_baselines(
         not_before = c.assumed_release
         open_bar = reg[0] if reg else None
         close_bar = reg[-1] if reg else None
+        if close_bar is not None and _ny(close_bar.end) < _session_close_floor(c.reaction_date):
+            raise BacktestError(
+                f"incomplete_session_data: {c.symbol} {c.fiscal_period} regular-session bars end before the "
+                "close, so the last bar is not the session close; refetch complete sessions"
+            )
         # open -> close
         if open_bar and close_bar:
             returns["open_to_close"].append(

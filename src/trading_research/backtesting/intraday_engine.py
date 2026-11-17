@@ -382,7 +382,17 @@ def _regular_plan(
             signal_volume=b.volume, timeline=timeline, fill_index=next_idx, not_before=not_before,
         )
         return plan, None
-    return None, AFTER_LATEST_ENTRY if late_signal else NO_SIGNAL
+    if late_signal:
+        return None, AFTER_LATEST_ENTRY
+    # No signal was seen. That is only a real observation when the session was observed through the
+    # entry cutoff; a session cut before it could hide a valid later signal (selective trade removal).
+    observed_to = max(timeline[i].end for i in reg_idx)
+    if _utc(observed_to) < min(latest, flat_deadline):
+        raise BacktestError(
+            f"{INCOMPLETE_SESSION_DATA}: {cand.symbol} {cand.fiscal_period} regular-session bars end "
+            "before the latest entry time, so no-signal cannot be established; refetch complete sessions"
+        )
+    return None, NO_SIGNAL
 
 
 def _extended_plan(

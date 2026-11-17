@@ -16,6 +16,7 @@ from trading_research.backtesting.intraday_engine import (
     TradeLeg,
 )
 from trading_research.backtesting.intraday_history import FixtureIntradayHistoryProvider
+from trading_research.backtesting.models import BacktestError
 from trading_research.strategies.intraday_metrics import (
     BASELINE_NAMES,
     BaselineMetrics,
@@ -498,3 +499,13 @@ def test_report_changes_with_inputs():
     a = build_report(evaluation())
     b = build_report(evaluation(), split="in_sample")
     assert a["report_hash"] != b["report_hash"]
+
+
+def test_baselines_reject_an_early_final_bar_as_the_session_close():
+    bars = build(RD, lambda h, m: flat(10), end=(11, 0))
+    prov = FixtureIntradayHistoryProvider({(SYM, RD): tuple(bars)})
+    with pytest.raises(BacktestError, match="incomplete_session_data"):
+        compute_baselines([cand("orb")], prov, cfg())
+    # One missing final bar is tolerated (isolated gap).
+    ok = build(RD, lambda h, m: flat(10), end=(15, 55))
+    compute_baselines([cand("orb")], FixtureIntradayHistoryProvider({(SYM, RD): tuple(ok)}), cfg())
