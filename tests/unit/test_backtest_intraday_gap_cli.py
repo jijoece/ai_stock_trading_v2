@@ -217,6 +217,36 @@ def test_split_balanced_multi_symbol_dates():
     assert len(ins) == 3 and len(oos) == 2 and not ins & oos
 
 
+def test_split_honors_configured_in_sample_fraction():
+    from decimal import Decimal
+
+    from trading_research.cli import _intraday_gap_split
+
+    rows = [_surprise("A", date(2026, 11, 2) + timedelta(days=d)) for d in range(10)]
+    for fraction, expected in ((None, 6), (Decimal("0.6"), 6), (Decimal("0.7"), 7), (Decimal("0.3"), 3)):
+        ins = _intraday_gap_split(rows, "in_sample", fraction)
+        oos = _intraday_gap_split(rows, "out_of_sample", fraction)
+        assert len(ins) == expected and len(oos) == 10 - expected, fraction
+        assert max(s.report_date for s in ins) < min(s.report_date for s in oos)
+
+
+def test_cli_executes_the_configured_in_sample_fraction_and_reports_it(world, tmp_path):
+    import yaml
+
+    base = yaml.safe_load(Path("config/strategies.yaml").read_text())
+    base["earnings_gap_intraday"]["in_sample_fraction"] = 0.8
+    cfg_path = tmp_path / "strategies.yaml"
+    cfg_path.write_text(yaml.safe_dump(base))
+    default = _run(world, tmp_path / "d")
+    custom = _run(world, tmp_path / "c", config_path=cfg_path)
+    assert "error" not in custom, custom
+    p_default = json.loads(open(default["report_json"]).read())["parameters"]
+    p_custom = json.loads(open(custom["report_json"]).read())["parameters"]
+    assert (p_default["events"], p_custom["events"]) == (3, 4)  # 0.6 vs 0.8 of five unique event dates
+    assert (p_default["in_sample_fraction"], p_custom["in_sample_fraction"]) == ("0.6", "0.8")
+    assert default["run_id"] != custom["run_id"]
+
+
 class _ParamCapture(FakeVendor):
     def __init__(self) -> None:
         super().__init__()

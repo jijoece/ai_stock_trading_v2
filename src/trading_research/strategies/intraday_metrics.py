@@ -49,7 +49,8 @@ from ..backtesting.intraday_history import IntradayHistoryProvider
 from ..backtesting.models import BacktestError, IntradayBar
 from ..evaluation.market_calendar import MARKET_TIMEZONE_NAME, is_trading_day
 from ..hashing import hash_config
-from .earnings_gap_intraday import CandidateDecision, EarningsGapIntradayConfig
+from .earnings_gap_intraday import CandidateDecision, EarningsGapIntradayConfig, evaluate_candidate
+from .earnings_surprise import EarningsSurprise
 
 REPORT_SCHEMA_VERSION = "intraday-gap-report-v1"
 MINIMUM_TRADES = 100
@@ -454,11 +455,16 @@ def _prev_session(day: date) -> date:
 def control_candidates(
     candidates: Sequence[CandidateDecision],
     provider: IntradayHistoryProvider,
+    config: EarningsGapIntradayConfig,
     *,
     offset_sessions: int = CONTROL_OFFSET_SESSIONS,
 ) -> tuple[CandidateDecision, ...]:
     """Re-date every eligible candidate to an ordinary session (no event of that
-    symbol) `offset_sessions` sessions earlier, preserving time-of-day."""
+    symbol) `offset_sessions` sessions earlier, preserving time-of-day, and re-run
+    the variant's eligibility rules (gap, hold, relative volume, liquidity, price,
+    trend) point-in-time on that ordinary day. Control days that fail those rules
+    are returned as ineligible, so they are rejected rather than traded. The
+    event's own beat is not re-tested: an ordinary day has no report."""
     event_days: dict[str, set[date]] = defaultdict(set)
     for c in candidates:
         event_days[c.symbol].update({c.report_date, c.reaction_date})
@@ -471,27 +477,20 @@ def control_candidates(
         if {new_react, new_report} & event_days[c.symbol]:
             continue
 
-        def move(value: datetime | None, c: CandidateDecision = c, nr: date = new_react, np_: date = new_report) -> datetime | None:
-            if value is None:
-                return None
-            local = _ny(value)
-            target = np_ if local.date() == c.report_date and c.report_date != c.reaction_date else nr
-            return datetime.combine(target, local.time(), tzinfo=_NY)
-
-        prior = None
-        # Same reference as candidate selection: the regular close of the session immediately
-        # before the reaction day (the report day itself for a pm event).
-        ref_day = _prev_session(new_react)
-        prev = tuple(provider.get_bars(c.symbol, ref_day))
-        reg = _regular_bars(prev, ref_day)
-        if reg:
-            prior = reg[-1].close
-        out.append(
-            dataclasses.replace(
-                c, report_date=new_report, reaction_date=new_react, decision_as_of=move(c.decision_as_of),
-                assumed_release=move(c.assumed_release), prior_close=prior, report_signals={},
-            )
+        released = c.assumed_release
+        # A synthetic, always-"beating" event on the ordinary day: only its symbol, timing and release
+        # time-of-day matter to the eligibility rules; the control must not inherit the catalyst-day
+        # gap/hold/volume/liquidity outcome, so everything else is recomputed from the provider's bars.
+        control_event = EarningsSurprise(
+            symbol=c.symbol, fiscal_period=c.fiscal_period, report_date=new_report, timing=c.timing,  # type: ignore[arg-type]
+            release_time=_ny(released).time().replace(tzinfo=None) if released is not None else None,
+            eps_estimate=Decimal(0), eps_actual=Decimal(1), source="ordinary_day_control",
+            captured_at=datetime.combine(new_report, time(0), tzinfo=_NY),
         )
+        decided = evaluate_candidate(control_event, provider, config, c.variant)
+        if decided.reaction_date != new_react:
+            continue
+        out.append(dataclasses.replace(decided, report_signals={}))
     return tuple(out)
 
 
@@ -502,7 +501,7 @@ def run_control(
     variant: str,
     equity: Decimal,
 ) -> IntradayBacktestResult:
-    return run_intraday_backtest(control_candidates(candidates, provider), provider, config, variant, equity)
+    return run_intraday_backtest(control_candidates(candidates, provider, config), provider, config, variant, equity)
 
 
 def doubled_spread_config(config: EarningsGapIntradayConfig) -> EarningsGapIntradayConfig:

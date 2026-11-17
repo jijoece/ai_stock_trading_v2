@@ -430,6 +430,16 @@ class _Outcome:
     unfilled_reason: str | None = None
 
 
+def _truncated_after_entry(cand: Any) -> BacktestError:
+    """The entry already filled but the bars end before the exit horizon. The position's outcome is
+    unknown, so dropping it (or calling it "unfilled") would silently remove a possibly losing trade
+    from every metric: the whole run is invalid instead."""
+    return BacktestError(
+        f"{INCOMPLETE_SESSION_DATA}: {cand.symbol} {cand.fiscal_period} entered but the bar data ends "
+        "before the exit horizon; refetch complete sessions"
+    )
+
+
 def _simulate(
     plan: _Plan, shares: int, cfg: Any, variant: str, anchor: str
 ) -> _Outcome:
@@ -553,7 +563,7 @@ def _simulate(
                 # The flat-time bar was missing: close at the last regular bar, never in the post-market.
                 lb = tl[last_regular_i]
                 if lb.end < flat_dt(_ny(lb.start).date()):
-                    return _Outcome(unfilled_reason=INCOMPLETE_SESSION_DATA)  # truncated, not a missing flat bar
+                    raise _truncated_after_entry(cand)  # truncated, not a missing flat bar
                 sell_regular(lb, lb.close, remaining, "flat_time_close", _utc(lb.end))
                 done = True
                 break
@@ -650,7 +660,7 @@ def _simulate(
             sell_regular(last, last.close, remaining, "flat_time_close", _utc(last.end))
         else:
             # Data stopped before the scheduled exit horizon was observed: fail closed.
-            return _Outcome(unfilled_reason=INCOMPLETE_SESSION_DATA)
+            raise _truncated_after_entry(cand)
 
     buys = [lg for lg in legs if lg.side == "buy"]
     sells = [lg for lg in legs if lg.side == "sell"]

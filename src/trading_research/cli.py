@@ -2751,17 +2751,20 @@ def backtest_strategy_cli(
 
 
 INTRADAY_GAP_VARIANTS = ("orb", "pmh_break", "vwap_pullback", "premarket_entry", "post_report_overnight")
-INTRADAY_GAP_IN_SAMPLE_FRACTION = (3, 5)  # chronological 60/40 by event date
 
 
-def _intraday_gap_split(surprises: list, split: str) -> list:
-    """Chronological 60/40 split by report date; a date never straddles the boundary."""
+def _intraday_gap_split(surprises: list, split: str, in_sample_fraction=None) -> list:
+    """Chronological in-sample/out-of-sample split by report date; a date never straddles the boundary.
+    `in_sample_fraction` is the configured `earnings_gap_intraday.in_sample_fraction` (default 0.6)."""
+    from decimal import Decimal
+
+    if in_sample_fraction is None:
+        in_sample_fraction = Decimal("0.6")
     ordered = sorted(surprises, key=lambda s: (s.report_date, s.symbol, s.fiscal_period))
     if not ordered:
         return []
-    num, den = INTRADAY_GAP_IN_SAMPLE_FRACTION
-    dates = sorted({s.report_date for s in ordered})  # the 60/40 is over unique event dates, not rows
-    boundary = dates[min(len(dates) - 1, len(dates) * num // den)]
+    dates = sorted({s.report_date for s in ordered})  # the split is over unique event dates, not rows
+    boundary = dates[min(len(dates) - 1, int(Decimal(len(dates)) * in_sample_fraction))]  # int() floors a positive Decimal
     if split == "in_sample":
         return [s for s in ordered if s.report_date < boundary]
     return [s for s in ordered if s.report_date >= boundary]
@@ -2839,7 +2842,7 @@ def backtest_intraday_gap_cli(
         if overrides:
             config = dataclasses.replace(config, **overrides)
         surprises = [s for s in load_earnings_csv(earnings_csv) if start <= s.report_date <= end]
-        events = _intraday_gap_split(surprises, split)
+        events = _intraday_gap_split(surprises, split, config.in_sample_fraction)
         # Fetch covers every in-range event across both splits, so only backtesting needs a nonempty split.
         if not (surprises if fetch else events):
             return _err("NO_EVENTS", "no earnings events in the requested range and split")
@@ -2898,7 +2901,7 @@ def backtest_intraday_gap_cli(
             "maximum_risk_percent": config.maximum_risk_percent, "equity": equity_value,
             "events": len(events), "start": start, "end": end,
             "first_event_date": events[0].report_date, "last_event_date": events[-1].report_date,
-            "adjustment": adjustment, "feed": feed,
+            "adjustment": adjustment, "feed": feed, "in_sample_fraction": config.in_sample_fraction,
         }
         manifest = recorder.manifest_hash({
             "earnings": [

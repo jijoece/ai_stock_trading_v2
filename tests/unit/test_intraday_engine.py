@@ -582,34 +582,50 @@ def test_run_id_changes_when_an_execution_relevant_candidate_field_changes():
 
 
 # -- truncated data fails closed (PR 43 review: incomplete_session_data) -----------
+# Post-entry truncation leaves a filled position with an unknown outcome. It must invalidate the run:
+# never become an "unfilled" order and never disappear from the trade sample.
 
 
-def test_regular_session_truncated_hours_early_is_rejected_not_a_completed_trade():
-    bars = [b for b in build(RD, orb_fn()) if et_of(b.start).time() < time(11, 0)]
-    res = run([cand("orb")], {(SYM, RD): bars}, cfg(), "orb")
+def test_truncation_before_entry_is_unfilled_after_entry_invalidates_the_run():
+    full = build(RD, orb_fn())
+    complete = run([cand("orb")], {(SYM, RD): full}, cfg(), "orb")
+    assert len(complete.trades) == 1 and complete.unfilled_count == 0
+    # Same timeline cut before the 09:50 signal: the order never existed, a legitimate unfilled/no-signal.
+    pre_entry = [b for b in full if et_of(b.start).time() < time(9, 45)]
+    res = run([cand("orb")], {(SYM, RD): pre_entry}, cfg(), "orb")
     assert not res.trades
-    assert any(r.stage == "unfilled" and "incomplete_session_data" in r.reasons for r in res.rejected)
+    assert not any("incomplete_session_data" in r.reasons for r in res.rejected)
+    # Same timeline cut after the entry filled (entry bar 09:55): the run is invalid.
+    post_entry = [b for b in full if et_of(b.start).time() < time(11, 0)]
+    with pytest.raises(BacktestError, match="incomplete_session_data"):
+        run([cand("orb")], {(SYM, RD): post_entry}, cfg(), "orb")
 
 
-def test_truncated_regular_session_followed_by_post_bars_is_rejected():
+def test_truncated_regular_session_followed_by_post_bars_invalidates_the_run():
     bars = [b for b in build(RD, orb_fn()) if et_of(b.start).time() < time(11, 0)]
     bars.append(ob(RD, 16, 5, "9.0", "9.1", "8.9", "9.0", 100_000))
-    res = run([cand("orb")], {(SYM, RD): bars}, cfg(), "orb")
-    assert not res.trades
-    assert any("incomplete_session_data" in r.reasons for r in res.rejected)
+    with pytest.raises(BacktestError, match="incomplete_session_data"):
+        run([cand("orb")], {(SYM, RD): bars}, cfg(), "orb")
 
 
-def test_overnight_missing_reaction_session_exit_window_is_rejected():
+def test_truncated_run_cannot_hide_a_losing_filled_position_among_good_trades():
+    # A second symbol that entered and then lost its remaining bars must not just vanish from the sample.
+    good = build(RD, orb_fn(), symbol="BBB")
+    cut = [b for b in build(RD, orb_fn()) if et_of(b.start).time() < time(11, 0)]
+    cands = [cand("orb", "BBB"), cand("orb", SYM)]
+    with pytest.raises(BacktestError, match="incomplete_session_data"):
+        run(cands, {("BBB", RD): good, (SYM, RD): cut}, cfg(), "orb")
+
+
+def test_overnight_missing_reaction_session_exit_window_invalidates_the_run():
     c = cand("post_report_overnight", timing="pm", report=FRI, day=MON, release=et(FRI, 16, 5),
              decision=et(FRI, 16, 30), prior=D("10.2"))
     world = overnight_world()
     world[(SYM, MON)] = [b for b in world[(SYM, MON)] if et_of(b.start).time() < time(9, 30)]
-    res = run([c], world, cfg(), "post_report_overnight")
-    assert not res.trades
-    assert any("incomplete_session_data" in r.reasons for r in res.rejected)
+    with pytest.raises(BacktestError, match="incomplete_session_data"):
+        run([c], world, cfg(), "post_report_overnight")
     world[(SYM, MON)] = [
         b for b in overnight_world()[(SYM, MON)] if et_of(b.start).time() < time(9, 50)
     ]
-    res = run([c], world, cfg(), "post_report_overnight")
-    assert not res.trades
-    assert any("incomplete_session_data" in r.reasons for r in res.rejected)
+    with pytest.raises(BacktestError, match="incomplete_session_data"):
+        run([c], world, cfg(), "post_report_overnight")

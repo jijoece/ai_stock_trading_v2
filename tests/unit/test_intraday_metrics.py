@@ -200,13 +200,34 @@ def test_baselines_ignore_ineligible_candidates():
 CONTROL_DAY = date(2026, 10, 30)  # 10 sessions before 2026-11-13
 
 
+def ecand(variant, symbol=SYM, **kw):
+    """An am event with a supplied 04:00 release, so the ordinary day has a full pre-market window."""
+    return cand(variant, symbol, release=et(RD, 4, 0), **kw)
+
+
+def control_world(
+    *, symbol=SYM, day=CONTROL_DAY, pre_end=10.9, pre_volume=1_000, prior_close_price="10"
+) -> dict:
+    """Twenty quiet sessions before `day` (history pre-market trades 100/bar), an ordinary-day pre-market
+    rising to `pre_end` on `pre_volume` per bar, then a regular session that breaks out."""
+    from ._intraday_test_helpers import history_day, prior_sessions, rising_prices, series
+
+    world = {}
+    ref = prior_sessions(day, 1)[0]
+    for d in prior_sessions(day, 20):
+        world[(symbol, d)] = tuple(history_day(d, symbol=symbol, price=prior_close_price if d == ref else "10"))
+    pre = series(day, (4, 0), (9, 30), rising_prices(10.3, pre_end, 66), pre_volume, symbol=symbol)
+    world[(symbol, day)] = tuple(pre + build(day, orb_fn(), symbol=symbol))
+    return world
+
+
 def test_control_redates_to_ordinary_session_and_skips_event_days():
-    prov = FixtureIntradayHistoryProvider({})
-    (c,) = control_candidates([cand("orb")], prov)
+    prov = FixtureIntradayHistoryProvider(control_world())
+    (c,) = control_candidates([ecand("orb")], prov, cfg())
     assert c.reaction_date == CONTROL_DAY == c.report_date
-    assert c.decision_as_of == et(CONTROL_DAY, 9, 25)
-    clash = dataclasses.replace(cand("orb"), fiscal_period="Q2", reaction_date=CONTROL_DAY, report_date=CONTROL_DAY)
-    redated = control_candidates([cand("orb"), clash], prov)
+    assert c.decision_as_of == et(CONTROL_DAY, 9, 25) and c.eligible
+    clash = dataclasses.replace(ecand("orb"), fiscal_period="Q2", reaction_date=CONTROL_DAY, report_date=CONTROL_DAY)
+    redated = control_candidates([ecand("orb"), clash], prov, cfg())
     assert all(x.fiscal_period != "2026Q3" for x in redated)  # the original's control day is an event day
 
 
@@ -214,21 +235,51 @@ def test_pm_control_reference_close_is_the_report_day_close_like_candidate_selec
     from trading_research.strategies.intraday_metrics import _prev_session
 
     new_report = _prev_session(CONTROL_DAY)
-    before = _prev_session(new_report)
-    prov = FixtureIntradayHistoryProvider({
-        (SYM, new_report): tuple(build(new_report, lambda h, m: flat(10))),
-        (SYM, before): tuple(build(before, lambda h, m: flat(8))),
-    })
-    pm = cand("post_report_overnight", timing="pm", report=date(2026, 11, 12), decision=et(date(2026, 11, 12), 16, 30))
-    (c,) = control_candidates([pm], prov)
+    prov = FixtureIntradayHistoryProvider(control_world())
+    pm = cand("orb", timing="pm", report=date(2026, 11, 12), decision=et(date(2026, 11, 12), 16, 30),
+              release=et(date(2026, 11, 12), 16, 5))
+    (c,) = control_candidates([pm], prov, cfg())
     assert c.report_date == new_report and c.reaction_date == CONTROL_DAY
-    assert c.prior_close == D(10)  # not the 8.00 close of the session before the report day
+    assert c.prior_close == D(10)  # the report-day close, recomputed from the provider's bars
 
 
 def test_control_runs_same_rules_on_ordinary_day():
-    prov = FixtureIntradayHistoryProvider({(SYM, CONTROL_DAY): tuple(build(CONTROL_DAY, orb_fn()))})
-    res = run_control([cand("orb")], prov, cfg(), "orb", EQ)
+    res = run_control([ecand("orb")], FixtureIntradayHistoryProvider(control_world()), cfg(), "orb", EQ)
     assert len(res.trades) == 1 and res.trades[0].reaction_date == CONTROL_DAY
+
+
+@pytest.mark.parametrize("variant", ["orb", "pmh_break", "vwap_pullback", "premarket_entry"])
+@pytest.mark.parametrize(
+    ("world_kw", "reason"),
+    [
+        ({"pre_end": 10.2}, "gap_below_minimum"),  # ordinary day gaps ~2% while the event gapped >5%
+        ({"pre_volume": 100}, "low_premarket_interest"),  # ordinary relative volume 1x < 3x
+    ],
+)
+def test_control_recomputes_eligibility_on_the_ordinary_day(variant, world_kw, reason):
+    event = ecand(variant, signals={"premarket_gap_percent": D(9), "premarket_rel_volume": D(10)})
+    before = dataclasses.replace(event)
+    prov = FixtureIntradayHistoryProvider(control_world(**world_kw))
+    (c,) = control_candidates([event], prov, cfg())
+    assert not c.eligible and reason in c.reasons  # not inherited from the catalyst day
+    assert event == before and event.eligible  # the original event decision is unchanged
+    if variant != "premarket_entry":
+        res = run_control([event], prov, cfg(), variant, EQ)
+        assert not res.trades and any(r.stage == "candidate" and reason in r.reasons for r in res.rejected)
+
+
+@pytest.mark.parametrize("variant", ["orb", "pmh_break", "vwap_pullback", "premarket_entry"])
+def test_control_stays_eligible_when_the_ordinary_day_passes_the_same_rules(variant):
+    (c,) = control_candidates([ecand(variant)], FixtureIntradayHistoryProvider(control_world()), cfg())
+    assert c.eligible and c.reasons == ()
+    assert c.signals["premarket_gap_percent"] >= cfg().minimum_gap_percent  # recomputed point-in-time
+
+
+def test_control_trade_count_follows_only_the_control_day_inputs():
+    events = [ecand("orb"), ecand("orb", "BBB")]
+    prov = FixtureIntradayHistoryProvider({**control_world(), **control_world(symbol="BBB", pre_end=10.2)})
+    res = run_control(events, prov, cfg(), "orb", EQ)
+    assert [t.symbol for t in res.trades] == [SYM]
 
 
 # -- gate -------------------------------------------------------------------------
