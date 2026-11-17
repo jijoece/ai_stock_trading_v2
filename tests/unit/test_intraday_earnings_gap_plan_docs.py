@@ -61,6 +61,20 @@ def test_close_derived_signals_fill_at_the_next_bar_open():
     assert "Enter at the signal bar's close plus slippage" not in PLAN
 
 
+def test_overnight_baseline_fixture_varies_each_forbidden_premarket_input_before_exit():
+    step = _section("### Step 5", "### Step 6")
+    start = step.index("Required test:")
+    fixture = step[start : step.index("**Control:**", start)]
+    fixture = " ".join(fixture.split())
+    for name in ("premarket_gap", "premarket_hold", "premarket_rel_volume"):
+        assert f"`{name}`" in fixture
+    assert "before the baseline's exit" in fixture
+    assert "fail the 09:25 filter" in fixture
+    assert "16:30 entry must be unchanged" in fixture
+    assert "must fail if the baseline is selected with the 09:25 filter" in fixture
+    assert "later pre-market bars" not in step
+
+
 def test_step_4_requires_adverse_gap_tests_after_a_signal_close():
     step = _section("### Step 4", "### Step 5")
     assert "adverse-gap test" in step and "never the signal bar's close" in step

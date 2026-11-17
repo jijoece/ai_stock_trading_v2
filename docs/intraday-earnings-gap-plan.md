@@ -136,7 +136,7 @@ Observations that shape this plan:
 | D8 | New strategy vs. extending `event_catalyst` | New strategy `earnings_gap_intraday`. `event_catalyst` keeps its contract. |
 | D9 | Session boundaries | Pre-market 04:00–09:30 ET, regular 09:30–16:00, post-market 16:00–20:00. On early-close days, the post-market ends at a configured time (default 17:00) that must be confirmed against the data vendor and broker before Step 1 is merged. The overnight session (20:00–04:00) is out of scope for v1. |
 | D10 | Report release time | Use `release_time` when the CSV has it, and require the first usable signal bar to start **after** it. Never assume a release time. When it is missing, use a conservative bound: an `am` report is treated as released at the 09:30 regular open, so every variant whose decision time is before 09:30 (`premarket_entry`, and the 09:25 variants) excludes the event; a `pm` report is treated as released at 20:00, so `post_report_overnight` excludes it, while variants decided on the next morning stay eligible. Excluded events are recorded with reason `release_time_unverified` and counted in the report. |
-| D11 | Extended-hours fill model | Limit orders only. A buy fills only if the bar trades at or below the limit and has volume. Fill size is capped at `extended_participation` (default 2%) of that bar's volume; any remainder is unfilled, not filled later. Bars with zero volume, and the 16:00 bar's closing-print volume, never fill. Stops cannot rest in extended hours: a stop is simulated as "if a bar closes below the stop, sell with a limit at that bar's low minus the extended spread proxy at the next bar," which may also fail to fill. |
+| D11 | Extended-hours fill model | Limit orders only. The limit is computed from a completed bar, so the order is submitted at that bar's `available_at` and can fill only on a **later** bar, never on the bar that produced the limit. A buy fills only if such a bar trades at or below the limit and has volume. Fill size is capped at `extended_participation` (default 2%) of that bar's volume; any remainder is unfilled, not filled later. Bars with zero volume, and the 16:00 bar's closing-print volume, never fill. Stops cannot rest in extended hours: a stop is simulated as "if a bar closes below the stop, sell with a limit at that bar's low minus the extended spread proxy at the next bar," which may also fail to fill. |
 | D12 | Overnight variant | Allowed in the backtest, labelled `overnight`, and reported apart from the same-day variants. It has its own acceptance gate, because overnight gap risk is a different risk from a same-day trade. |
 
 ## 5. Strategy specification (v1)
@@ -325,8 +325,12 @@ Safety-relevant steps also pass `nox -s safety_typecheck`.
 
 ### Step 4 — Intraday simulator
 
-- Add `backtesting/intraday_engine.py`: walk bars across sessions in time
-  order for each event window, maintain VWAP (09:30 and 04:00 anchors), the
+- Add `backtesting/intraday_engine.py`: walk bars across sessions on **one
+  shared chronological timeline** covering all event windows, not one window at
+  a time, so the portfolio-wide guards (`maximum_trades_per_day`,
+  `maximum_losses_per_day`) and equity see trades in the order they happened:
+  an entry in the morning is never rejected because of losses that occur later
+  that day. Maintain VWAP (09:30 and 04:00 anchors), the
   opening range, and the pre-market levels incrementally. Apply the variant,
   guards, sizing, regular fill model (D5), extended fill model (D11), costs
   (D6), and exits from section 5.
@@ -348,7 +352,10 @@ Safety-relevant steps also pass `nox -s safety_typecheck`.
   order); a flat-price pre-market fixture (entry equals stop) is skipped as
   `nonpositive_risk` without dividing by zero; an extended-hours order that
   fills below `minimum_extended_fill_usd` keeps its shares and follows the exit
-  rules; missing `release_time` uses the D10 bounds; the overnight variant across a
+  rules; an extended-hours limit whose signal bar touched the price but whose
+  next bar does not never fills; two symbols with a morning entry and
+  afternoon losses processed on the shared timeline; missing `release_time`
+  uses the D10 bounds; the overnight variant across a
   weekend; same-bar
   stop-and-target ambiguity; the risk-percent skip; the daily loss stop;
   participation caps; and bit-for-bit determinism.
@@ -366,7 +373,17 @@ Safety-relevant steps also pass `nox -s safety_typecheck`.
 - **Baselines**, on the same candidate set: buy at the regular open and sell at
   the close; buy at 09:45 and sell at the close; buy at the 09:25 pre-market
   price and sell at the close; buy at the 16:30 post-market price and sell at
-  the next regular open. **Control:** the same-day rules on ordinary sessions
+  the next regular open. The first three use the candidate set of the
+  09:25 variants. The 16:30 baseline is decided at 16:30, so its candidate set
+  is the `post_report_overnight` set (common checks plus `post_report_move`),
+  never the 09:25 set, whose gap, hold and relative-volume inputs are not known
+  until the next morning. Required test: hold every bar through 16:30
+  identical and, in separate cases, vary each next-morning pre-market input
+  (`premarket_gap`, `premarket_hold`, `premarket_rel_volume`) before the
+  baseline's exit, including values that would fail the 09:25 filter. The
+  selected candidate set and the 16:30 entry must be unchanged; only the exit
+  return may differ. The test must fail if the baseline is selected with the
+  09:25 filter. **Control:** the same-day rules on ordinary sessions
   for the same symbols.
 - A Markdown/JSON report under `reports/`, with the survivorship, estimate,
   release-time, and fill-model caveats printed at the top.
