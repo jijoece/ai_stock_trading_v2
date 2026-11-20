@@ -29,7 +29,7 @@ read multiple milestone variants unless the task requires comparing them.
 | External research-source policy | [`AI-Stock-Trading-Research-Sources.md`](AI-Stock-Trading-Research-Sources.md) |
 | Deterministic strategy candidate selection (momentum/mean-reversion/catalyst) | [`strategy-candidate-selection.md`](strategy-candidate-selection.md) |
 | Historical strategy backtesting build plan (Steps 1-4 implemented; Step 5 operator-initiated) | [`historical-backtesting-plan.md`](historical-backtesting-plan.md) |
-| Intraday earnings-gap strategy build plan, including pre-market and post-market (**Proposed**; nothing implemented) | [`intraday-earnings-gap-plan.md`](intraday-earnings-gap-plan.md) |
+| Intraday earnings-gap strategy build plan, including pre-market and post-market (**Proposed**; Steps 1–6 implemented in code, acceptance gate not evaluated) | [`intraday-earnings-gap-plan.md`](intraday-earnings-gap-plan.md) |
 | Strategy paper testing build plan, activation stages 3–7 (phases 1–3 implemented; Phase 0 gate and stages 6–7 are operator-initiated) | [`paper-testing-plan.md`](paper-testing-plan.md) |
 | Automated multi-strategy live trading, remaining work (**Proposed**; only the local paper-path parts of Phases 2–3 are built; the repository remains paper only) | [`automated-live-trading-implementation-plan.md`](automated-live-trading-implementation-plan.md) |
 | Automated live trading: requirements-to-tests matrix and doc-edit list (Phase 0) | [`automated-live-trading-requirements-matrix.md`](automated-live-trading-requirements-matrix.md) |
@@ -70,6 +70,7 @@ Use runbooks for operator procedures; use code and tests for exact behavior.
 | Operation | Runbook |
 |---|---|
 | Historical strategy backtesting | [`runbooks/strategy-backtesting.md`](runbooks/strategy-backtesting.md) |
+| Intraday earnings-gap backtest (operator fetch, in-sample tuning, single out-of-sample run) | [`runbooks/intraday-gap-backtest.md`](runbooks/intraday-gap-backtest.md) |
 | Strategy paper testing, stages 3–5 | [`runbooks/strategy-paper-testing.md`](runbooks/strategy-paper-testing.md) |
 | Alpaca paper operations | [`runbooks/alpaca-paper-operations.md`](runbooks/alpaca-paper-operations.md) |
 | Recurring local paper trading | [`runbooks/recurring-local-paper-trading.md`](runbooks/recurring-local-paper-trading.md) |

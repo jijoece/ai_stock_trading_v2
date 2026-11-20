@@ -2750,6 +2750,316 @@ def backtest_strategy_cli(
         return {"error": _sanitized_cli_error(exc)}
 
 
+INTRADAY_GAP_VARIANTS = ("orb", "pmh_break", "vwap_pullback", "premarket_entry", "post_report_overnight")
+
+
+def _intraday_gap_split(surprises: list, split: str, in_sample_fraction=None) -> list:
+    """Chronological in-sample/out-of-sample split by report date; a date never straddles the boundary.
+    `in_sample_fraction` is the configured `earnings_gap_intraday.in_sample_fraction` (default 0.6)."""
+    from decimal import Decimal
+
+    if in_sample_fraction is None:
+        in_sample_fraction = Decimal("0.6")
+    ordered = sorted(surprises, key=lambda s: (s.report_date, s.symbol, s.fiscal_period))
+    if not ordered:
+        return []
+    dates = sorted({s.report_date for s in ordered})  # the split is over unique event dates, not rows
+    boundary = dates[min(len(dates) - 1, int(Decimal(len(dates)) * in_sample_fraction))]  # int() floors a positive Decimal
+    if split == "in_sample":
+        return [s for s in ordered if s.report_date < boundary]
+    return [s for s in ordered if s.report_date >= boundary]
+
+
+def _intraday_gap_fetch_dates(surprise, config) -> list:
+    """Sessions the offline run reads for one event: history before the reaction day (also covering
+    the ordinary-day control, which re-dates 10 sessions earlier) through the reaction day."""
+    from datetime import timedelta
+
+    from .evaluation.market_calendar import is_trading_day
+    from .strategies.earnings_surprise import reaction_window
+
+    window = reaction_window(surprise.report_date, surprise.timing, surprise.release_time)
+    # The trend benchmark is read (and recorded) even when the filter is disabled, so always cover it.
+    needed = 10 + max(config.history_sessions, config.premarket_history_sessions, config.trend_sma_sessions) + 2
+    days, cur = [window.reaction_date], window.reaction_date
+    while len(days) < needed + 1:
+        cur -= timedelta(days=1)
+        if is_trading_day(cur):
+            days.append(cur)
+    if surprise.report_date not in days:
+        days.append(surprise.report_date)
+    return sorted(set(days))
+
+
+def backtest_intraday_gap_cli(
+    *, earnings_csv: Path, start, end, variant: str, split: str, cache_dir: Path, fetch: bool = False,
+    config_path: Path | None = None, report_dir: Path = Path("reports"), equity=None,
+    opening_range_minutes: int | None = None, maximum_risk_percent=None,
+    api_key: str | None = None, api_secret: str | None = None, http_client=None,
+    adjustment: str = "split", feed: str = "iex", frozen_params: Path | None = None,
+) -> dict:
+    """`backtest-intraday-gap` CLI command (docs/intraday-earnings-gap-plan.md Steps 6-7).
+
+    Research only: no broker, model call or scheduler. Without `fetch` it runs fully offline from the
+    on-disk cache. `fetch` is a separate, explicit, operator-only mode that needs Alpaca market-data
+    credentials (passed in by the caller; never read here) and only fills the cache.
+
+    `out_of_sample` takes its parameters only from a committed frozen-parameters file bound to the
+    earnings CSV by SHA-256, and records itself in that file's run-once ledger (Step 7).
+    """
+    import dataclasses
+    from decimal import Decimal
+
+    from .backtesting import intraday_gap_step7 as step7
+
+    from .backtesting.intraday_history import CachedAlpacaIntradayProvider, RecordingIntradayProvider
+    from .backtesting.models import BacktestError
+    from .strategies.config import StrategyConfigError, load_earnings_gap_intraday_config
+    from .strategies.earnings_gap_intraday import (
+        EarningsGapIntradayConfigError,
+        report_only_signals,
+        select_candidates,
+    )
+    from .strategies.earnings_surprise import EarningsSurpriseError, load_earnings_csv
+    from .strategies.intraday_metrics import build_report, evaluate_variant, write_report
+
+    def _err(code: str, message: str) -> dict:
+        return {"error": {"code": code, "message": _bounded_message(message)}}
+
+    if variant not in INTRADAY_GAP_VARIANTS:
+        return _err("INVALID_ARGUMENT", f"unknown variant {variant!r}")
+    if split not in ("in_sample", "out_of_sample"):
+        return _err("INVALID_ARGUMENT", f"unknown split {split!r}")
+    if start > end:
+        return _err("INVALID_ARGUMENT", "--start must not be after --end")
+    oos = split == "out_of_sample" and not fetch
+    if oos and frozen_params is None:
+        return _err(
+            "FROZEN_PARAMETERS_REQUIRED",
+            "out_of_sample requires --frozen-params (a committed frozen-parameters file; see the runbook)",
+        )
+    if oos and (opening_range_minutes is not None or maximum_risk_percent is not None):
+        return _err(
+            "FROZEN_PARAMETERS_CONFLICT",
+            "out_of_sample takes its parameters only from --frozen-params; drop --opening-range-minutes/--maximum-risk-percent",
+        )
+    if not oos and frozen_params is not None:
+        return _err("INVALID_ARGUMENT", "--frozen-params applies only to an out_of_sample backtest")
+    frozen = None
+    try:
+        config = load_earnings_gap_intraday_config(config_path)
+        if oos:
+            assert frozen_params is not None
+            frozen = step7.load_frozen_parameters(frozen_params)
+            csv_sha = step7.file_sha256(earnings_csv)
+            if csv_sha != frozen.earnings_csv_sha256:
+                return _err(
+                    "FROZEN_PARAMETERS_MISMATCH",
+                    "the earnings CSV SHA-256 differs from the frozen snapshot; the 60/40 boundary would move",
+                )
+            if frozen.in_sample_fraction != config.in_sample_fraction:
+                return _err("FROZEN_PARAMETERS_MISMATCH", "in_sample_fraction differs from the frozen value")
+            # Every non-grid setting (and equity/adjustment/feed) must match what the sweep was tuned on.
+            config_sha = step7.strategy_config_sha256(
+                config, equity=Decimal(str(equity)) if equity is not None else Decimal("100000"),
+                adjustment=adjustment, feed=feed,
+            )
+            if config_sha != frozen.strategy_config_sha256:
+                return _err(
+                    "FROZEN_PARAMETERS_MISMATCH",
+                    "the strategy configuration (non-grid settings, equity, adjustment or feed) differs from "
+                    "the one the frozen parameters were tuned under",
+                )
+            if variant not in frozen.variants:
+                return _err("FROZEN_PARAMETERS_MISMATCH", f"{variant} has no frozen parameters")
+            fv = frozen.variants[variant]
+            opening_range_minutes, maximum_risk_percent = fv.opening_range_minutes, fv.maximum_risk_percent
+        overrides: dict = {}
+        if opening_range_minutes is not None:
+            overrides["opening_range_minutes"] = opening_range_minutes
+        if maximum_risk_percent is not None:
+            overrides["maximum_risk_percent"] = Decimal(str(maximum_risk_percent))
+        if overrides:
+            config = dataclasses.replace(config, **overrides)
+        surprises = [s for s in load_earnings_csv(earnings_csv) if start <= s.report_date <= end]
+        events = _intraday_gap_split(surprises, split, config.in_sample_fraction)
+        # Fetch covers every in-range event across both splits, so only backtesting needs a nonempty split.
+        if not (surprises if fetch else events):
+            return _err("NO_EVENTS", "no earnings events in the requested range and split")
+        provider = CachedAlpacaIntradayProvider(
+            cache_dir, adjustment=adjustment, feed=feed,  # plan D1: split-adjusted unless overridden
+            early_close_postmarket_end=config.early_close_postmarket_end,
+        )
+
+        if fetch:
+            if http_client is None:
+                if not api_key or not api_secret:
+                    return _err("MISSING_CREDENTIALS", "--fetch requires Alpaca market-data credentials (not configured)")
+                from .evidence_providers.http_client import HttpJsonClient
+                from .evidence_providers.rate_limits import MinIntervalRateLimiter
+
+                http_client = HttpJsonClient(
+                    base_headers={"APCA-API-KEY-ID": api_key, "APCA-API-SECRET-KEY": api_secret},
+                    rate_limiter=MinIntervalRateLimiter(0.35), provider="alpaca-data",
+                )
+            # Fetch covers every event in range (both splits), so either split can then run offline.
+            wanted = {(s.symbol, d) for s in surprises for d in _intraday_gap_fetch_dates(s, config)}
+            wanted |= {(config.trend_benchmark.upper(), d) for s in surprises for d in _intraday_gap_fetch_dates(s, config)}
+            fetched = skipped = repaired = 0
+            for symbol, day in sorted(wanted):
+                if provider.cache_path(symbol, day).exists():
+                    try:
+                        provider.get_bars(symbol, day)  # full validation: schema, keys, parse, data_hash
+                    except BacktestError:
+                        repaired += 1  # invalid entry: refetch; fetch() replaces it atomically
+                    else:
+                        skipped += 1
+                        continue
+                provider.fetch(http_client, symbol, day)
+                fetched += 1
+            return {
+                "mode": "fetch", "events": len(surprises), "fetched": fetched,
+                "already_cached": skipped, "repaired_invalid": repaired,
+            }
+
+        recorder = RecordingIntradayProvider(provider)  # every bar any stage reads feeds the manifest
+        candidates = select_candidates(events, recorder, config, variant)
+        # Report-only later-time signals (continuation sign) are attached AFTER eligibility is decided
+        # and are never fed back into selection.
+        by_event = {(e.symbol, e.fiscal_period, e.report_date): e for e in events}
+        candidates = tuple(
+            dataclasses.replace(
+                c, report_signals=report_only_signals(by_event[(c.symbol, c.fiscal_period, c.report_date)], recorder, config)
+            )
+            if c.eligible else c
+            for c in candidates
+        )
+        equity_value = Decimal(str(equity)) if equity is not None else Decimal("100000")
+        evaluation = evaluate_variant(candidates, recorder, config, variant, equity_value)
+        parameters = {
+            "variant": variant, "opening_range_minutes": config.opening_range_minutes,
+            "maximum_risk_percent": config.maximum_risk_percent, "equity": equity_value,
+            "events": len(events), "start": start, "end": end,
+            "first_event_date": events[0].report_date, "last_event_date": events[-1].report_date,
+            "adjustment": adjustment, "feed": feed, "in_sample_fraction": config.in_sample_fraction,
+        }
+        if frozen is not None:  # the OOS identity is bound to the exact frozen file and its commit
+            parameters["frozen_parameters_sha256"] = frozen.sha256
+            parameters["frozen_parameters_commit"] = frozen.commit
+            parameters["earnings_csv_sha256"] = frozen.earnings_csv_sha256
+            parameters["strategy_config_sha256"] = frozen.strategy_config_sha256
+        manifest = recorder.manifest_hash({
+            "earnings": [
+                [e.symbol, e.fiscal_period, e.report_date.isoformat(), e.timing,
+                 e.release_time.isoformat() if e.release_time else "", e.eps_estimate, e.eps_actual, e.source,
+                 e.captured_at.astimezone(timezone.utc).isoformat()]
+                for e in events
+            ],
+            "adjustment": adjustment, "feed": feed,
+        })
+        report = build_report(evaluation, split=split, parameters=parameters, input_manifest_hash=manifest)
+        ledger_entry = None
+        if frozen is not None:
+            # Reserve (pending) under the ledger lock BEFORE publishing anything: a competing or
+            # later different run is refused, and an interruption leaves an auditable pending entry
+            # that only this identical deterministic run can complete.
+            ledger_entry = {
+                "run_id": report["run_id"], "report_hash": report["report_hash"],
+                "frozen_parameters_sha256": frozen.sha256, "frozen_parameters_commit": frozen.commit,
+                "strategy_config_sha256": frozen.strategy_config_sha256,
+                "verdict": report["gate"]["verdict"],
+            }
+            step7.reserve_run(frozen.path, variant, ledger_entry)
+        json_path, md_path = write_report(report, report_dir)
+        if frozen is not None:
+            assert ledger_entry is not None
+            step7.commit_run(frozen.path, variant, ledger_entry)
+        return {
+            "mode": "backtest", "run_id": report["run_id"], "variant": variant, "split": split,
+            "verdict": report["gate"]["verdict"], "trades": report["counts"]["trades"],
+            "report_json": str(json_path), "report_markdown": str(md_path),
+            "note": "Research output only; not financial advice and not an acceptance decision.",
+        }
+    except step7.Step7Error as exc:
+        return _err(exc.code, str(exc))
+    except BacktestError as exc:  # curated: includes the missing-cache message
+        return _err("BACKTEST_ERROR", str(exc))
+    except (StrategyConfigError, EarningsGapIntradayConfigError):
+        return _err("BACKTEST_CONFIG_ERROR", "earnings_gap_intraday configuration is missing or invalid")
+    except EarningsSurpriseError as exc:
+        return _err("EARNINGS_CSV_ERROR", str(exc))
+    except Exception as exc:
+        return {"error": _sanitized_cli_error(exc)}
+
+
+def tune_intraday_gap_cli(
+    *, earnings_csv: Path, start, end, cache_dir: Path, config_path: Path | None = None,
+    report_dir: Path = Path("reports"), equity=None, variants: tuple[str, ...] = INTRADAY_GAP_VARIANTS,
+) -> dict:
+    """`tune-intraday-gap` CLI command (docs/intraday-earnings-gap-plan.md Step 7.2).
+
+    Offline, in-sample only: runs the fixed grid through `backtest-intraday-gap`, then writes a
+    deterministic summary and a frozen-parameters template for the operator to review and commit.
+    Stops at the first failing run (a partial sweep is never summarized).
+    """
+    from .backtesting import intraday_gap_step7 as step7
+    from .strategies.config import StrategyConfigError, load_earnings_gap_intraday_config
+    from .strategies.earnings_gap_intraday import EarningsGapIntradayConfigError
+
+    try:
+        points = step7.grid_points(variants)
+        config = load_earnings_gap_intraday_config(config_path)
+        csv_sha = step7.file_sha256(earnings_csv)
+    except step7.Step7Error as exc:
+        return {"error": {"code": exc.code, "message": _bounded_message(str(exc))}}
+    except (StrategyConfigError, EarningsGapIntradayConfigError):
+        return {"error": {"code": "BACKTEST_CONFIG_ERROR", "message": "earnings_gap_intraday configuration is missing or invalid"}}
+    except OSError:
+        return {"error": {"code": "EARNINGS_CSV_ERROR", "message": "cannot read the earnings CSV"}}
+    rows = []
+    for p in points:
+        outcome = backtest_intraday_gap_cli(
+            earnings_csv=earnings_csv, start=start, end=end, variant=p.variant, split="in_sample",
+            cache_dir=cache_dir, config_path=config_path, report_dir=report_dir / "tuning", equity=equity,
+            opening_range_minutes=p.opening_range_minutes, maximum_risk_percent=p.maximum_risk_percent,
+        )
+        if "error" in outcome:
+            failed = {"variant": p.variant, "opening_range_minutes": p.opening_range_minutes,
+                      "maximum_risk_percent": str(p.maximum_risk_percent)}
+            return {**outcome, "failed_grid_point": failed, "completed_runs": len(rows)}
+        report = json.loads(Path(outcome["report_json"]).read_text(encoding="utf-8"))
+        rows.append({
+            "variant": p.variant, "opening_range_minutes": p.opening_range_minutes,
+            "maximum_risk_percent": str(p.maximum_risk_percent), "run_id": outcome["run_id"],
+            "trades": outcome["trades"], "verdict": outcome["verdict"],
+            "expectancy_r": report["metrics"].get("expectancy_r"),
+            "profit_factor": report["metrics"].get("profit_factor"),
+            "max_drawdown_r": report["metrics"].get("max_drawdown_r"),
+        })
+    from decimal import Decimal
+
+    # Same defaults the per-run backtest uses (equity 100000; split-adjusted IEX bars).
+    config_sha = step7.strategy_config_sha256(
+        config, equity=Decimal(str(equity)) if equity is not None else Decimal("100000"),
+        adjustment="split", feed="iex",
+    )
+    summary = step7.build_tuning_summary(
+        rows, earnings_csv_sha256=csv_sha, in_sample_fraction=config.in_sample_fraction,
+        strategy_config_sha256=config_sha,
+    )
+    summary_json = report_dir / "intraday-gap-tuning.json"
+    template = report_dir / "intraday-gap-frozen.template.json"
+    step7.write_json(summary_json, summary)
+    (report_dir / "intraday-gap-tuning.md").write_text(step7.tuning_markdown(summary), encoding="utf-8")
+    step7.write_json(template, step7.frozen_template(summary))
+    return {
+        "mode": "tune", "runs": len(rows), "summary_json": str(summary_json),
+        "summary_markdown": str(report_dir / "intraday-gap-tuning.md"), "frozen_template": str(template),
+        "earnings_csv_sha256": csv_sha,
+        "note": "In-sample only. Review the template, copy it into the repository, commit it, then run out of sample once.",
+    }
+
+
 def strategy_candidates_cli(
     db_path: Path, *, strategies: list[str], symbols: list[str], as_of, data_source: str, snapshot: Path | None,
     benchmark: str, price_adjustment: str, strategy_config: Path | None, screening_config: Path | None,
@@ -3376,6 +3686,37 @@ def main(argv: list[str] | None = None) -> int:
     p_backtest_strategy.add_argument("--max-drawdown-fraction", type=_parse_decimal, default=None, help="Engine drawdown circuit-breaker limit in (0,1); default 0.15. Loosening it changes the run identity")
     p_backtest_strategy.add_argument("--db", type=Path, default=None, help="SQLite database (default: the configured research database)")
 
+    p_intraday_gap = sub.add_parser(
+        "backtest-intraday-gap",
+        help="Backtest an earnings-gap intraday variant offline from cached 5-minute bars (research only); --fetch fills the cache (operator, credentialed)",
+    )
+    p_intraday_gap.add_argument("--earnings-csv", required=True, type=Path)
+    p_intraday_gap.add_argument("--start", required=True, type=date.fromisoformat)
+    p_intraday_gap.add_argument("--end", required=True, type=date.fromisoformat)
+    p_intraday_gap.add_argument("--variant", required=True, choices=INTRADAY_GAP_VARIANTS)
+    p_intraday_gap.add_argument("--split", required=True, choices=("in_sample", "out_of_sample"), help="Chronological 60/40 by event date; out_of_sample needs the frozen parameters")
+    p_intraday_gap.add_argument("--cache-dir", required=True, type=Path)
+    p_intraday_gap.add_argument("--fetch", action="store_true", help="Separate explicit mode: fetch missing bars into the cache (needs Alpaca market-data credentials; operator only). No backtest is run")
+    p_intraday_gap.add_argument("--config", type=Path, default=None, help="Alternative strategies.yaml (default config/strategies.yaml)")
+    p_intraday_gap.add_argument("--report-dir", type=Path, default=Path("reports"))
+    p_intraday_gap.add_argument("--equity", type=_parse_decimal, default=None, help="Starting equity (default 100000)")
+    p_intraday_gap.add_argument("--opening-range-minutes", type=int, choices=(5, 15, 30), default=None)
+    p_intraday_gap.add_argument("--maximum-risk-percent", type=_parse_decimal, default=None, help="In-sample only; out_of_sample reads --frozen-params")
+    p_intraday_gap.add_argument("--frozen-params", type=Path, default=None, help="Committed frozen-parameters JSON; required for out_of_sample (Step 7)")
+
+    p_tune_gap = sub.add_parser(
+        "tune-intraday-gap",
+        help="Run the fixed in-sample grid offline and write a tuning summary plus a frozen-parameters template (research only)",
+    )
+    p_tune_gap.add_argument("--earnings-csv", required=True, type=Path)
+    p_tune_gap.add_argument("--start", required=True, type=date.fromisoformat)
+    p_tune_gap.add_argument("--end", required=True, type=date.fromisoformat)
+    p_tune_gap.add_argument("--cache-dir", required=True, type=Path)
+    p_tune_gap.add_argument("--variants", default=",".join(INTRADAY_GAP_VARIANTS), help="Comma-separated subset of the grid's variants")
+    p_tune_gap.add_argument("--config", type=Path, default=None)
+    p_tune_gap.add_argument("--report-dir", type=Path, default=Path("reports"))
+    p_tune_gap.add_argument("--equity", type=_parse_decimal, default=None)
+
     p_candidates = sub.add_parser(
         "strategy-candidates",
         help="Evaluate one closed session, record every strategy evaluation and print the shortlist (read-only; needs activation stage 3)",
@@ -3438,6 +3779,30 @@ def main(argv: list[str] | None = None) -> int:
             split_date=args.split_date, cost_grid=args.cost_grid, min_trades=args.min_trades,
             price_adjustment=args.price_adjustment, screening_config=args.screening_config,
             max_drawdown_fraction=args.max_drawdown_fraction,
+        )
+        print(json.dumps(outcome, indent=2, sort_keys=True, default=str))
+        return 0 if "error" not in outcome else 2
+
+    if args.command == "backtest-intraday-gap":
+        api_key = api_secret = None
+        if args.fetch:  # credentials are read only for the explicit --fetch mode
+            cfg = load_config()
+            api_key, api_secret = cfg.alpaca_market_data_api_key, cfg.alpaca_market_data_api_secret
+        outcome = backtest_intraday_gap_cli(
+            earnings_csv=args.earnings_csv, start=args.start, end=args.end, variant=args.variant,
+            split=args.split, cache_dir=args.cache_dir, fetch=args.fetch, config_path=args.config,
+            report_dir=args.report_dir, equity=args.equity, opening_range_minutes=args.opening_range_minutes,
+            maximum_risk_percent=args.maximum_risk_percent, api_key=api_key, api_secret=api_secret,
+            frozen_params=args.frozen_params,
+        )
+        print(json.dumps(outcome, indent=2, sort_keys=True, default=str))
+        return 0 if "error" not in outcome else 2
+
+    if args.command == "tune-intraday-gap":  # offline: never reads credentials
+        outcome = tune_intraday_gap_cli(
+            earnings_csv=args.earnings_csv, start=args.start, end=args.end, cache_dir=args.cache_dir,
+            config_path=args.config, report_dir=args.report_dir, equity=args.equity,
+            variants=tuple(v.strip() for v in args.variants.split(",") if v.strip()),
         )
         print(json.dumps(outcome, indent=2, sort_keys=True, default=str))
         return 0 if "error" not in outcome else 2

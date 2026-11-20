@@ -9,20 +9,26 @@ the whole file's hash.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from collections.abc import Hashable
+from dataclasses import dataclass, field, fields
+from datetime import time
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
+from typing import Any
 
 import yaml
 
 from ..hashing import hash_config
 from .controls import (
+    BACKTEST_ONLY_STRATEGY_IDS,
     DEFAULT_SIGNAL_VALIDITY_SESSIONS,
     KNOWN_STRATEGY_IDS,
+    STRATEGY_MODE_BACKTEST,
     STRATEGY_MODE_PAPER,
     StrategyControls,
     StrategyControlsError,
 )
+from .earnings_gap_intraday import EarningsGapIntradayConfig, EarningsGapIntradayConfigError
 
 DEFAULT_STRATEGY_CONFIG_PATH = Path(__file__).resolve().parents[3] / "config" / "strategies.yaml"
 
@@ -162,6 +168,11 @@ class StrategyConfig:
     # One entry per known strategy; a strategy with no `strategy_controls` entry gets the defaults
     # (paper mode, the global stage, no allowlist, no budgets, one session of signal validity).
     controls: dict[str, StrategyControls] = field(default_factory=dict)
+    # Research-only strategies (BACKTEST_ONLY_STRATEGY_IDS). Kept apart from `controls` so no paper-path
+    # consumer can ever see them; each is always mode "backtest".
+    backtest_only_controls: dict[str, StrategyControls] = field(default_factory=dict)
+    # Optional section: None when `earnings_gap_intraday:` is absent from the file.
+    earnings_gap_intraday: EarningsGapIntradayConfig | None = None
 
     def controls_for(self, strategy_id: str) -> StrategyControls:
         try:
@@ -201,7 +212,7 @@ def _parse_controls(raw: dict, global_stage: str) -> dict[str, StrategyControls]
         section = {}
     if not isinstance(section, dict):
         raise StrategyConfigError("strategy_controls must be a mapping of strategy id to settings")
-    unknown = sorted(set(section) - set(KNOWN_STRATEGY_IDS))
+    unknown = sorted(set(section) - set(KNOWN_STRATEGY_IDS) - set(BACKTEST_ONLY_STRATEGY_IDS))
     if unknown:
         raise StrategyConfigError(f"strategy_controls names unknown strategies: {unknown}")
     controls: dict[str, StrategyControls] = {}
@@ -245,15 +256,156 @@ def _parse_controls(raw: dict, global_stage: str) -> dict[str, StrategyControls]
     return controls
 
 
+def _parse_backtest_only_controls(raw: dict, global_stage: str) -> dict[str, StrategyControls]:
+    """Controls for research-only strategies. The only setting is `mode`, which must be `backtest`
+    (the default when absent): `paper`, `shadow` and `live` are refused until a separate paper plan exists."""
+    section = raw.get("strategy_controls")
+    if section is None:
+        section = {}
+    if not isinstance(section, dict):
+        raise StrategyConfigError("strategy_controls must be a mapping of strategy id to settings")
+    controls: dict[str, StrategyControls] = {}
+    for strategy_id in BACKTEST_ONLY_STRATEGY_IDS:
+        entry = section.get(strategy_id)
+        if entry is None:
+            entry = {}
+        if not isinstance(entry, dict):
+            raise StrategyConfigError(f"strategy_controls.{strategy_id} must be a mapping")
+        extra = sorted(set(entry) - {"mode"})
+        if extra:
+            raise StrategyConfigError(
+                f"strategy_controls.{strategy_id} has unknown keys: {extra}; a backtest-only strategy takes only 'mode'"
+            )
+        mode = entry.get("mode", STRATEGY_MODE_BACKTEST)
+        if mode != STRATEGY_MODE_BACKTEST:
+            raise StrategyConfigError(
+                f"strategy_controls.{strategy_id}.mode {mode!r} is refused: {strategy_id} is research-only and "
+                f"must be '{STRATEGY_MODE_BACKTEST}' (paper, shadow and live need a separate, approved plan)"
+            )
+        try:
+            controls[strategy_id] = StrategyControls(
+                strategy_id=strategy_id, mode=STRATEGY_MODE_BACKTEST, activation_stage=global_stage,
+            )
+        except StrategyControlsError as exc:
+            raise StrategyConfigError(str(exc)) from exc
+    return controls
+
+
 def _sub_hash(raw: dict, key: str) -> str:
     return hash_config({key: raw[key]})
+
+
+def _egi_value(name: str, default: object, value: object) -> object:
+    """Convert one earnings_gap_intraday YAML value to the type of its dataclass default."""
+    label = f"earnings_gap_intraday.{name}"
+    if isinstance(default, bool):
+        if not isinstance(value, bool):
+            raise StrategyConfigError(f"{label} must be true or false")
+        return value
+    if isinstance(default, int):
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise StrategyConfigError(f"{label} must be an integer")
+        return value
+    if isinstance(default, Decimal):
+        if isinstance(value, bool) or not isinstance(value, (int, float, str)):
+            raise StrategyConfigError(f"{label} must be a number")
+        try:
+            parsed = Decimal(str(value))
+        except InvalidOperation as exc:
+            raise StrategyConfigError(f"{label} must be a number") from exc
+        if not parsed.is_finite():
+            raise StrategyConfigError(f"{label} must be finite")
+        return parsed
+    if isinstance(default, time):
+        # Quoted "HH:MM" only: an unquoted 16:30 is read by YAML 1.1 as a base-60 integer.
+        if not isinstance(value, str):
+            raise StrategyConfigError(f"{label} must be a quoted 'HH:MM' string")
+        try:
+            parsed_time = time.fromisoformat(value)
+        except ValueError as exc:
+            raise StrategyConfigError(f"{label} must be a quoted 'HH:MM' string") from exc
+        if parsed_time.tzinfo is not None:
+            raise StrategyConfigError(f"{label} must be a naive ET wall-clock time")
+        return parsed_time
+    if isinstance(default, str):
+        if not isinstance(value, str):
+            raise StrategyConfigError(f"{label} must be a string")
+        return value
+    raise StrategyConfigError(f"{label} has an unsupported type")  # pragma: no cover
+
+
+def _parse_earnings_gap_intraday(section: object) -> EarningsGapIntradayConfig:
+    if not isinstance(section, dict):
+        raise StrategyConfigError("earnings_gap_intraday must be a mapping")
+    known = {f.name: f for f in fields(EarningsGapIntradayConfig)}
+    unknown = sorted(set(section) - set(known))
+    if unknown:
+        raise StrategyConfigError(f"earnings_gap_intraday has unknown keys: {unknown}")
+    values: dict[str, Any] = {name: _egi_value(name, known[name].default, value) for name, value in section.items()}
+    try:
+        return EarningsGapIntradayConfig(**values)
+    except EarningsGapIntradayConfigError as exc:
+        raise StrategyConfigError(str(exc)) from exc
+
+
+class _UniqueKeySafeLoader(yaml.SafeLoader):
+    """SafeLoader that rejects duplicate mapping keys instead of keeping the last one."""
+
+    def construct_mapping(self, node, deep=False):  # type: ignore[no-untyped-def]
+        if isinstance(node, yaml.MappingNode):
+            seen: set = set()
+            for key_node, _ in node.value:
+                if key_node.tag == "tag:yaml.org,2002:merge":
+                    continue  # merge keys are flattened by SafeConstructor below
+                key = self.construct_object(key_node, deep=True)
+                if isinstance(key, Hashable):
+                    if key in seen:
+                        raise yaml.constructor.ConstructorError(
+                            None, None, f"duplicate mapping key {key!r}", key_node.start_mark
+                        )
+                    seen.add(key)
+        return super().construct_mapping(node, deep=deep)
+
+
+def _safe_load_unique(text: str):  # type: ignore[no-untyped-def]
+    return yaml.load(text, Loader=_UniqueKeySafeLoader)  # noqa: S506 - SafeLoader subclass
+
+
+def _read_raw(path: str | Path | None) -> dict:
+    config_path = Path(path) if path else DEFAULT_STRATEGY_CONFIG_PATH
+    try:
+        raw = _safe_load_unique(config_path.read_text()) or {}
+    except OSError as exc:
+        raise StrategyConfigError(f"cannot read strategy config at {config_path}: {exc}") from exc
+    except yaml.YAMLError as exc:
+        raise StrategyConfigError(f"invalid YAML in strategy config at {config_path}: {exc}") from exc
+    if not isinstance(raw, dict):
+        raise StrategyConfigError(f"strategy config at {config_path} must be a mapping")
+    return raw
+
+
+def load_earnings_gap_intraday_config(path: str | Path | None = None) -> EarningsGapIntradayConfig:
+    """Load and validate the `earnings_gap_intraday` section (research / backtest only).
+
+    Fails closed: the section must be present, every key must be known, and the strategy's
+    `strategy_controls` mode must be `backtest` (paper, shadow and live are refused). The global
+    `activation_stage` is not changed or consulted."""
+    raw = _read_raw(path)
+    if raw.get("earnings_gap_intraday") is None:
+        raise StrategyConfigError("strategy config has no earnings_gap_intraday section")
+    selection = raw.get("strategy_candidate_selection")
+    stage = selection.get("activation_stage") if isinstance(selection, dict) else None
+    if stage not in ACTIVATION_STAGES:
+        stage = "STAGE_2_HISTORICAL_BACKTEST"
+    _parse_backtest_only_controls(raw, stage)
+    return _parse_earnings_gap_intraday(raw["earnings_gap_intraday"])
 
 
 def load_strategy_config(path: str | Path | None = None) -> StrategyConfig:
     """Load and validate config/strategies.yaml. Fails closed on any problem."""
     config_path = Path(path) if path else DEFAULT_STRATEGY_CONFIG_PATH
     try:
-        raw = yaml.safe_load(config_path.read_text()) or {}
+        raw = _safe_load_unique(config_path.read_text()) or {}
     except OSError as exc:
         raise StrategyConfigError(f"cannot read strategy config at {config_path}: {exc}") from exc
     except yaml.YAMLError as exc:
@@ -316,6 +468,10 @@ def load_strategy_config(path: str | Path | None = None) -> StrategyConfig:
     if missing_sl:
         raise StrategyConfigError(f"strategy config shortlist missing keys: {sorted(missing_sl)}")
 
+    egi_section = raw.get("earnings_gap_intraday")
+    earnings_gap_intraday = _parse_earnings_gap_intraday(egi_section) if egi_section is not None else None
+    backtest_only_controls = _parse_backtest_only_controls(raw, selection["activation_stage"])
+
     return StrategyConfig(
         version=raw["version"],
         strategy_candidate_selection_enabled=bool(selection["enabled"]),
@@ -373,4 +529,6 @@ def load_strategy_config(path: str | Path | None = None) -> StrategyConfig:
         config_hash=hash_config(raw),
         raw=raw,
         controls=_parse_controls(raw, selection["activation_stage"]),
+        backtest_only_controls=backtest_only_controls,
+        earnings_gap_intraday=earnings_gap_intraday,
     )

@@ -34,6 +34,12 @@ DEFAULT_SIGNAL_VALIDITY_SESSIONS = 1
 
 KNOWN_STRATEGY_IDS = ("momentum_breakout", "mean_reversion", "event_catalyst")
 
+# Research-only strategies. They are deliberately NOT in KNOWN_STRATEGY_IDS: every consumer of
+# `StrategyConfig.controls` (the paper bridge, the paper cycle) iterates the paper-capable ids, and an
+# id absent from a controls entry defaults to mode "paper". A backtest-only id is parsed separately,
+# must be configured `backtest`, and is refused at load time in any other mode.
+BACKTEST_ONLY_STRATEGY_IDS = ("earnings_gap_intraday",)
+
 
 class StrategyControlsError(ValueError):
     """A strategy's operating controls are invalid."""

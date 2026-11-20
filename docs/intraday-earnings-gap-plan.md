@@ -1,6 +1,11 @@
 # Intraday Earnings-Gap Strategy — Build Plan
 
-**Status:** Proposed (2026-11-14). Nothing in this plan is implemented.
+**Status:** Proposed (2026-11-14). Steps 1–6 are implemented in code (bars and
+provider, earnings records, signals and candidates, simulator, metrics and
+report, CLI and runbook). Step 7's tooling is implemented (2026-11-18): the
+`tune-intraday-gap` grid sweep, the committed frozen-parameters file, and the
+out-of-sample run-once ledger. Running Step 7 is operator-only, and the
+acceptance gate has not been evaluated.
 **Stage:** Research only. The strategy is added at `mode: backtest` and stays
 there until this plan's acceptance gate passes. The global
 `activation_stage` in `config/strategies.yaml` does not change.
@@ -131,7 +136,7 @@ Observations that shape this plan:
 | D6 | Costs | `slippage_bps` per side (default 10) plus a spread proxy: `max(spread_floor_bps, k × first bar's (high − low) / close)`. Extended hours use a separate, larger floor and multiplier. Recorded in the run identity. |
 | D7 | Train/test split | Chronological. Parameters are chosen only on the earliest 60% of event dates; the last 40% is evaluated once, with frozen parameters. |
 | D8 | New strategy vs. extending `event_catalyst` | New strategy `earnings_gap_intraday`. `event_catalyst` keeps its contract. |
-| D9 | Session boundaries | Pre-market 04:00–09:30 ET, regular 09:30–16:00, post-market 16:00–20:00. On early-close days, the post-market ends at a configured time (default 17:00) that must be confirmed against the data vendor and broker before Step 1 is merged. The overnight session (20:00–04:00) is out of scope for v1. |
+| D9 | Session boundaries | Pre-market 04:00–09:30 ET, regular 09:30–16:00, post-market 16:00–20:00. On early-close days there is no tradable post-market. Alpaca runs no stock after-hours session on half-days ([24/5 trading](https://docs.alpaca.markets/docs/245-trading), checked 2026-11-20), so the configured `early_close_postmarket_end` defaults to the 13:00 early close. The overnight session (20:00–04:00) is out of scope for v1. |
 | D10 | Report release time | Use `release_time` when the CSV has it, and require the first usable signal bar to start **after** it. Never assume a release time. When it is missing, use a conservative bound: an `am` report is treated as released at the 09:30 regular open, so every variant whose decision time is before 09:30 (`premarket_entry`, and the 09:25 variants) excludes the event; a `pm` report is treated as released at 20:00, so `post_report_overnight` excludes it, while variants decided on the next morning stay eligible. Excluded events are recorded with reason `release_time_unverified` and counted in the report. |
 | D11 | Extended-hours fill model | Limit orders only. The limit is computed from a completed bar, so the order is submitted at that bar's `available_at` and can fill only on a **later** bar, never on the bar that produced the limit. A buy fills only if such a bar trades at or below the limit and has volume. Fill size is capped at `extended_participation` (default 2%) of that bar's volume; any remainder is unfilled, not filled later. Bars with zero volume, and the 16:00 bar's closing-print volume, never fill. Stops cannot rest in extended hours: a stop is simulated as "if a bar closes below the stop, sell with a limit at that bar's low minus the extended spread proxy at the next bar," which may also fail to fill. |
 | D12 | Overnight variant | Allowed in the backtest, labelled `overnight`, and reported apart from the same-day variants. It has its own acceptance gate, because overnight gap risk is a different risk from a same-day trade. |
@@ -342,8 +347,8 @@ Safety-relevant steps also pass `nox -s safety_typecheck`.
   (`orb`, `pmh_break`, `vwap_pullback`, VWAP-trail exit) where the signal
   becomes true only at the bar's close and the next bar opens lower: a buy
   fills at the next bar's open plus slippage and a sell (including the
-  VWAP-trail exit) at the next bar's open minus slippage, and
-  never the signal bar's close; a next open beyond the stop still fills the entry and the stop
+  VWAP-trail exit) at the next bar's open minus slippage, never the signal bar's close;
+  a next open beyond the stop still fills the entry and the stop
   exits at the worse of the stop and that open (two fixtures identical through
   submission, with next opens on opposite sides of the stop, both hold the
   order); a flat-price pre-market fixture (entry equals stop) is skipped as
@@ -402,9 +407,22 @@ Safety-relevant steps also pass `nox -s safety_typecheck`.
 2. Tune parameters on the in-sample split only, using the fixed grid:
    variant {`orb`, `pmh_break`, `vwap_pullback`, `premarket_entry`,
    `post_report_overnight`} × opening range {5, 15, 30} minutes (where it
-   applies) × `maximum_risk_percent` {5, 8, 12}.
-3. Freeze the chosen parameters in a commit before running out of sample.
-4. Run out of sample once and record the result in this document.
+   applies) × `maximum_risk_percent` {5, 8, 12}. `tune-intraday-gap` runs the
+   whole grid offline and writes a summary plus a frozen-parameters template.
+3. Freeze the chosen parameters in a commit before running out of sample
+   (`config/intraday-gap-frozen.json`, bound to the CSV by SHA-256).
+4. Run out of sample once per variant with `--frozen-params`, and record the
+   result below. The command refuses an uncommitted or mismatched freeze and a
+   second, different run of a variant already in the run-once ledger.
+
+Operational detail: [`runbooks/intraday-gap-backtest.md`](runbooks/intraday-gap-backtest.md).
+
+#### Step 7 results
+
+Not yet run.
+
+| Variant | Frozen commit | Opening range | Max risk % | OOS run ID | Trades | Expectancy R | Profit factor | Max DD R | Verdict |
+|---|---|---|---|---|---|---|---|---|---|
 
 ## 7. Acceptance gate (out of sample, after costs)
 

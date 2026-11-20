@@ -41,4 +41,7 @@ batch/runs/*
 # Dashboard runtime state (PID/log files, not source)
 data/.dashboard_runtime/
 
+# Generated intraday earnings-gap backtest reports (never committed)
+reports/intraday-gap-*
+
 .DS_Store

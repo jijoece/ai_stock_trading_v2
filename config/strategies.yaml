@@ -42,6 +42,10 @@ strategy_controls:
   event_catalyst:
     mode: paper
     signal_validity_sessions: 1
+  # Research-only (docs/intraday-earnings-gap-plan.md). The loader refuses any mode but `backtest`
+  # (paper, shadow, live) until a separate paper plan exists; it never reaches the paper bridge.
+  earnings_gap_intraday:
+    mode: backtest
 
 momentum_breakout:
   enabled: true
@@ -95,3 +99,57 @@ shortlist:
   # gate remains authoritative and this value must never exceed that cap.
   maximum_symbol_allocation_fraction: 0.08
   minimum_candidate_allocation_fraction: 0.01
+
+# Intraday earnings-gap research strategy (docs/intraday-earnings-gap-plan.md). BACKTEST ONLY: it has
+# no paper path, is not in the shortlist or candidate/shadow loops, and the global activation_stage
+# above does not change. Percent fields are percentages (5 = 5%); *_fraction are fractions; *_bps are
+# basis points. Times are quoted ET wall-clock "HH:MM" strings (an unquoted 16:30 is a YAML base-60
+# integer). Changing any value changes the run identity.
+earnings_gap_intraday:
+  # Common eligibility (plan 5.2)
+  minimum_price: 3
+  minimum_avg_dollar_volume: 5000000
+  history_sessions: 20
+  # Pre-market / post-market signals (plan 5.1-5.2)
+  minimum_gap_percent: 5
+  minimum_premarket_rel_volume: 3
+  premarket_history_sessions: 20
+  post_signal_time: "16:30"
+  premarket_decision_time: "09:25"
+  premarket_entry_first_decision_time: "08:00"
+  # Entry and exit clock (plan 5.3-5.6)
+  opening_range_minutes: 15
+  earliest_entry_time: "09:45"
+  pmh_break_earliest_entry_time: "09:35"
+  latest_entry_time: "14:30"
+  flat_time: "15:55"
+  overnight_flat_time: "10:30"
+  post_market_exit: false
+  # Guards and sizing (plan 5.4-5.5)
+  maximum_risk_percent: 8
+  maximum_trades_per_day: 3
+  maximum_losses_per_day: 2
+  minimum_extended_fill_usd: 1000
+  extended_participation: 0.02
+  regular_participation: 0.01
+  risk_fraction: 0.005
+  maximum_position_fraction: 0.10
+  # Costs (plan D6): slippage per side plus max(floor, k x first bar (high - low) / close in bps)
+  slippage_bps: 10
+  spread_floor_bps: 5
+  spread_k: 0.1
+  extended_spread_floor_bps: 30
+  extended_spread_k: 0.25
+  vwap_stop_percent: 1
+  # D9: post-market end on early-close days. Alpaca runs no stock after-hours session on half-days
+  # (docs.alpaca.markets/docs/245-trading, checked 2026-11-20), so it equals the 13:00 early close.
+  early_close_postmarket_end: "13:00"
+  # Fraction by which summed 5-minute regular volume may differ from the daily bar before it is flagged
+  volume_tolerance: 0.20
+  # D7 chronological split: parameters are chosen only on the earliest fraction of event dates
+  in_sample_fraction: 0.6
+  # Optional market-trend filter: off in v1 but recorded
+  trend_filter_enabled: false
+  trend_benchmark: SPY
+  trend_sma_sessions: 50
+
