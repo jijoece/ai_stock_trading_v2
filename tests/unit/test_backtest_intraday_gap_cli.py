@@ -163,9 +163,40 @@ def test_out_of_sample_requires_frozen_parameters(world, tmp_path):
     assert outcome["error"]["code"] == "FROZEN_PARAMETERS_REQUIRED"
 
 
+def _git(repo, *args):
+    import subprocess
+
+    subprocess.run(["git", "-C", str(repo), *args], check=True, capture_output=True)
+
+
+def _frozen(world, repo, variants=None, *, commit=True, csv_sha=None):
+    """A frozen-parameters file in a throwaway git repo (never the project repository)."""
+    from trading_research.backtesting.intraday_gap_step7 import FROZEN_SCHEMA, file_sha256
+
+    repo.mkdir(parents=True, exist_ok=True)
+    if not (repo / ".git").exists():
+        _git(repo, "init", "-q")
+        _git(repo, "config", "user.email", "test@example.invalid")
+        _git(repo, "config", "user.name", "test")
+    path = repo / "frozen.json"
+    doc = {
+        "schema": FROZEN_SCHEMA, "earnings_csv_sha256": csv_sha or file_sha256(world["csv"]),
+        "in_sample_fraction": "0.6",
+        "variants": variants or {
+            "orb": {"opening_range_minutes": 30, "maximum_risk_percent": "5"},
+            "premarket_entry": {"opening_range_minutes": None, "maximum_risk_percent": "8"},
+        },
+    }
+    path.write_text(json.dumps(doc), encoding="utf-8")
+    if commit:
+        _git(repo, "add", "frozen.json")
+        _git(repo, "commit", "-q", "-m", "freeze")
+    return path
+
+
 def test_out_of_sample_uses_frozen_params_and_later_forty_percent_only(world, tmp_path):
     ins = _run(world, tmp_path / "i", split="in_sample")
-    oos = _run(world, tmp_path / "o", split="out_of_sample", opening_range_minutes=30, maximum_risk_percent=5)
+    oos = _run(world, tmp_path / "o", split="out_of_sample", frozen_params=_frozen(world, tmp_path / "repo"))
     assert "error" not in oos, oos
     p_in = json.loads(open(ins["report_json"]).read())["parameters"]
     p_out = json.loads(open(oos["report_json"]).read())["parameters"]
@@ -391,3 +422,114 @@ def test_fetch_repairs_invalid_existing_cache_entry(world, tmp_path, damage):
     assert outcome["repaired_invalid"] == 1 and outcome["fetched"] == 1
     assert vendor.calls == [("AAA", "2026-11-04")]
     assert CachedAlpacaIntradayProvider(cache, adjustment="split").get_bars("AAA", date(2026, 11, 4))
+
+
+# -- Step 7: frozen parameters, run-once ledger, tuning grid ----------------------
+
+
+def test_out_of_sample_refuses_explicit_parameters_and_in_sample_refuses_frozen(world, tmp_path):
+    frozen = _frozen(world, tmp_path / "repo")
+    bad = _run(world, tmp_path, split="out_of_sample", frozen_params=frozen, opening_range_minutes=5)
+    assert bad["error"]["code"] == "FROZEN_PARAMETERS_CONFLICT"
+    assert _run(world, tmp_path, frozen_params=frozen)["error"]["code"] == "INVALID_ARGUMENT"
+
+
+def test_out_of_sample_refuses_an_uncommitted_or_edited_freeze(world, tmp_path):
+    uncommitted = _frozen(world, tmp_path / "a", commit=False)
+    out = _run(world, tmp_path / "r", split="out_of_sample", frozen_params=uncommitted)
+    assert out["error"]["code"] == "FROZEN_PARAMETERS_NOT_COMMITTED"
+    committed = _frozen(world, tmp_path / "b")
+    committed.write_text(committed.read_text().replace('"5"', '"12"'), encoding="utf-8")
+    out = _run(world, tmp_path / "r", split="out_of_sample", frozen_params=committed)
+    assert out["error"]["code"] == "FROZEN_PARAMETERS_NOT_COMMITTED"
+    assert not (tmp_path / "r").exists()
+
+
+def test_out_of_sample_refuses_a_different_csv_snapshot_or_missing_variant(world, tmp_path):
+    other = _frozen(world, tmp_path / "a", csv_sha="0" * 64)
+    assert _run(world, tmp_path, split="out_of_sample", frozen_params=other)["error"]["code"] == "FROZEN_PARAMETERS_MISMATCH"
+    frozen = _frozen(world, tmp_path / "b")
+    out = _run(world, tmp_path, variant="vwap_pullback", split="out_of_sample", frozen_params=frozen)
+    assert out["error"]["code"] == "FROZEN_PARAMETERS_MISMATCH"
+
+
+@pytest.mark.parametrize("spec", [
+    {"orb": {"opening_range_minutes": 10, "maximum_risk_percent": "5"}},  # off-grid range
+    {"orb": {"opening_range_minutes": 15, "maximum_risk_percent": "7"}},  # off-grid risk
+    {"premarket_entry": {"opening_range_minutes": 15, "maximum_risk_percent": "5"}},  # range n/a
+    {"nope": {"opening_range_minutes": 15, "maximum_risk_percent": "5"}},
+])
+def test_frozen_parameters_must_be_on_the_fixed_grid(world, tmp_path, spec):
+    frozen = _frozen(world, tmp_path / "repo", spec)
+    assert _run(world, tmp_path, split="out_of_sample", frozen_params=frozen)["error"]["code"] == "FROZEN_PARAMETERS_INVALID"
+
+
+def test_out_of_sample_runs_once_per_variant_and_records_the_ledger(world, tmp_path):
+    from trading_research.backtesting.intraday_gap_step7 import ledger_path
+
+    repo = tmp_path / "repo"
+    frozen = _frozen(world, repo)
+    first = _run(world, tmp_path / "o", split="out_of_sample", frozen_params=frozen)
+    assert "error" not in first, first
+    ledger = json.loads(ledger_path(frozen).read_text())
+    entry = ledger["runs"]["orb"]
+    assert entry["run_id"] == first["run_id"] and len(entry["frozen_parameters_commit"]) == 40
+    report = json.loads(open(first["report_json"]).read())
+    assert report["parameters"]["frozen_parameters_sha256"] == entry["frozen_parameters_sha256"]
+    # A deterministic re-run reproduces the same run ID and is allowed.
+    assert _run(world, tmp_path / "o2", split="out_of_sample", frozen_params=frozen)["run_id"] == first["run_id"]
+    # Re-freezing different parameters and running again is refused, and writes no report.
+    frozen.write_text(frozen.read_text().replace('"5"', '"12"'), encoding="utf-8")
+    _git(repo, "commit", "-q", "-am", "refreeze")
+    again = _run(world, tmp_path / "o3", split="out_of_sample", frozen_params=frozen)
+    assert again["error"]["code"] == "OUT_OF_SAMPLE_ALREADY_RUN"
+    assert not (tmp_path / "o3").exists()
+    # Other variants still get their single run.
+    pm = _run(world, tmp_path / "o4", variant="premarket_entry", split="out_of_sample", frozen_params=frozen)
+    assert "error" not in pm, pm
+
+
+def test_grid_is_the_fixed_plan_grid():
+    from trading_research.backtesting.intraday_gap_step7 import grid_points
+
+    points = grid_points()
+    assert len(points) == 3 * 3 * 3 + 2 * 3
+    assert {p.opening_range_minutes for p in points if p.variant == "premarket_entry"} == {None}
+    assert {str(p.maximum_risk_percent) for p in points} == {"5", "8", "12"}
+    assert len(set(points)) == len(points)
+
+
+def test_tune_sweeps_the_grid_offline_and_writes_a_deterministic_summary(world, tmp_path):
+    from trading_research.cli import tune_intraday_gap_cli
+
+    def tune(d):
+        return tune_intraday_gap_cli(
+            earnings_csv=world["csv"], start=date(2026, 11, 1), end=date(2026, 11, 30),
+            cache_dir=world["cache"], report_dir=d, variants=("orb", "premarket_entry"),
+        )
+
+    a, b = tune(tmp_path / "a"), tune(tmp_path / "b")
+    assert "error" not in a, a
+    assert a["runs"] == 9 + 3
+    assert (tmp_path / "a" / "intraday-gap-tuning.json").read_bytes() == (tmp_path / "b" / "intraday-gap-tuning.json").read_bytes()
+    summary = json.loads((tmp_path / "a" / "intraday-gap-tuning.json").read_text())
+    assert all(r["run_id"] and r["verdict"] for r in summary["runs"])
+    assert all(json.loads(open(p).read())["split"] == "in_sample" for p in (tmp_path / "a" / "tuning").glob("*.json"))
+    template = json.loads((tmp_path / "a" / "intraday-gap-frozen.template.json").read_text())
+    assert template["earnings_csv_sha256"] == a["earnings_csv_sha256"]
+    # The template is loadable as a frozen file once committed (grid-valid values only).
+    from trading_research.backtesting.intraday_gap_step7 import load_frozen_parameters
+
+    path = tmp_path / "t.json"
+    path.write_text(json.dumps(template))
+    load_frozen_parameters(path, require_committed=False)
+
+
+def test_tune_rejects_unknown_variant(world, tmp_path):
+    from trading_research.cli import tune_intraday_gap_cli
+
+    out = tune_intraday_gap_cli(
+        earnings_csv=world["csv"], start=date(2026, 11, 1), end=date(2026, 11, 30),
+        cache_dir=world["cache"], report_dir=tmp_path, variants=("nope",),
+    )
+    assert out["error"]["code"] == "INVALID_ARGUMENT"

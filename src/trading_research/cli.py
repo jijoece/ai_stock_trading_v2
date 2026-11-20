@@ -2796,16 +2796,21 @@ def backtest_intraday_gap_cli(
     config_path: Path | None = None, report_dir: Path = Path("reports"), equity=None,
     opening_range_minutes: int | None = None, maximum_risk_percent=None,
     api_key: str | None = None, api_secret: str | None = None, http_client=None,
-    adjustment: str = "split", feed: str = "iex",
+    adjustment: str = "split", feed: str = "iex", frozen_params: Path | None = None,
 ) -> dict:
-    """`backtest-intraday-gap` CLI command (docs/intraday-earnings-gap-plan.md Step 6).
+    """`backtest-intraday-gap` CLI command (docs/intraday-earnings-gap-plan.md Steps 6-7).
 
     Research only: no broker, model call or scheduler. Without `fetch` it runs fully offline from the
     on-disk cache. `fetch` is a separate, explicit, operator-only mode that needs Alpaca market-data
     credentials (passed in by the caller; never read here) and only fills the cache.
+
+    `out_of_sample` takes its parameters only from a committed frozen-parameters file bound to the
+    earnings CSV by SHA-256, and records itself in that file's run-once ledger (Step 7).
     """
     import dataclasses
     from decimal import Decimal
+
+    from .backtesting import intraday_gap_step7 as step7
 
     from .backtesting.intraday_history import CachedAlpacaIntradayProvider, RecordingIntradayProvider
     from .backtesting.models import BacktestError
@@ -2827,13 +2832,37 @@ def backtest_intraday_gap_cli(
         return _err("INVALID_ARGUMENT", f"unknown split {split!r}")
     if start > end:
         return _err("INVALID_ARGUMENT", "--start must not be after --end")
-    if split == "out_of_sample" and not fetch and (opening_range_minutes is None or maximum_risk_percent is None):
+    oos = split == "out_of_sample" and not fetch
+    if oos and frozen_params is None:
         return _err(
             "FROZEN_PARAMETERS_REQUIRED",
-            "out_of_sample requires --opening-range-minutes and --maximum-risk-percent (the parameters frozen in a commit)",
+            "out_of_sample requires --frozen-params (a committed frozen-parameters file; see the runbook)",
         )
+    if oos and (opening_range_minutes is not None or maximum_risk_percent is not None):
+        return _err(
+            "FROZEN_PARAMETERS_CONFLICT",
+            "out_of_sample takes its parameters only from --frozen-params; drop --opening-range-minutes/--maximum-risk-percent",
+        )
+    if not oos and frozen_params is not None:
+        return _err("INVALID_ARGUMENT", "--frozen-params applies only to an out_of_sample backtest")
+    frozen = None
     try:
         config = load_earnings_gap_intraday_config(config_path)
+        if oos:
+            assert frozen_params is not None
+            frozen = step7.load_frozen_parameters(frozen_params)
+            csv_sha = step7.file_sha256(earnings_csv)
+            if csv_sha != frozen.earnings_csv_sha256:
+                return _err(
+                    "FROZEN_PARAMETERS_MISMATCH",
+                    "the earnings CSV SHA-256 differs from the frozen snapshot; the 60/40 boundary would move",
+                )
+            if frozen.in_sample_fraction != config.in_sample_fraction:
+                return _err("FROZEN_PARAMETERS_MISMATCH", "in_sample_fraction differs from the frozen value")
+            if variant not in frozen.variants:
+                return _err("FROZEN_PARAMETERS_MISMATCH", f"{variant} has no frozen parameters")
+            fv = frozen.variants[variant]
+            opening_range_minutes, maximum_risk_percent = fv.opening_range_minutes, fv.maximum_risk_percent
         overrides: dict = {}
         if opening_range_minutes is not None:
             overrides["opening_range_minutes"] = opening_range_minutes
@@ -2903,6 +2932,10 @@ def backtest_intraday_gap_cli(
             "first_event_date": events[0].report_date, "last_event_date": events[-1].report_date,
             "adjustment": adjustment, "feed": feed, "in_sample_fraction": config.in_sample_fraction,
         }
+        if frozen is not None:  # the OOS identity is bound to the exact frozen file and its commit
+            parameters["frozen_parameters_sha256"] = frozen.sha256
+            parameters["frozen_parameters_commit"] = frozen.commit
+            parameters["earnings_csv_sha256"] = frozen.earnings_csv_sha256
         manifest = recorder.manifest_hash({
             "earnings": [
                 [e.symbol, e.fiscal_period, e.report_date.isoformat(), e.timing,
@@ -2913,13 +2946,28 @@ def backtest_intraday_gap_cli(
             "adjustment": adjustment, "feed": feed,
         })
         report = build_report(evaluation, split=split, parameters=parameters, input_manifest_hash=manifest)
+        if frozen is not None:
+            prior = step7.check_not_already_run(frozen.path, variant)
+            if prior is not None and prior.get("run_id") != report["run_id"]:
+                return _err(
+                    "OUT_OF_SAMPLE_ALREADY_RUN",
+                    f"{variant} already has an out-of-sample run ({prior.get('run_id')}); the gate allows one",
+                )
         json_path, md_path = write_report(report, report_dir)
+        if frozen is not None:
+            step7.record_run(frozen.path, variant, {
+                "run_id": report["run_id"], "report_hash": report["report_hash"],
+                "frozen_parameters_sha256": frozen.sha256, "frozen_parameters_commit": frozen.commit,
+                "verdict": report["gate"]["verdict"],
+            })
         return {
             "mode": "backtest", "run_id": report["run_id"], "variant": variant, "split": split,
             "verdict": report["gate"]["verdict"], "trades": report["counts"]["trades"],
             "report_json": str(json_path), "report_markdown": str(md_path),
             "note": "Research output only; not financial advice and not an acceptance decision.",
         }
+    except step7.Step7Error as exc:
+        return _err(exc.code, str(exc))
     except BacktestError as exc:  # curated: includes the missing-cache message
         return _err("BACKTEST_ERROR", str(exc))
     except (StrategyConfigError, EarningsGapIntradayConfigError):
@@ -2928,6 +2976,64 @@ def backtest_intraday_gap_cli(
         return _err("EARNINGS_CSV_ERROR", str(exc))
     except Exception as exc:
         return {"error": _sanitized_cli_error(exc)}
+
+
+def tune_intraday_gap_cli(
+    *, earnings_csv: Path, start, end, cache_dir: Path, config_path: Path | None = None,
+    report_dir: Path = Path("reports"), equity=None, variants: tuple[str, ...] = INTRADAY_GAP_VARIANTS,
+) -> dict:
+    """`tune-intraday-gap` CLI command (docs/intraday-earnings-gap-plan.md Step 7.2).
+
+    Offline, in-sample only: runs the fixed grid through `backtest-intraday-gap`, then writes a
+    deterministic summary and a frozen-parameters template for the operator to review and commit.
+    Stops at the first failing run (a partial sweep is never summarized).
+    """
+    from .backtesting import intraday_gap_step7 as step7
+    from .strategies.config import StrategyConfigError, load_earnings_gap_intraday_config
+    from .strategies.earnings_gap_intraday import EarningsGapIntradayConfigError
+
+    try:
+        points = step7.grid_points(variants)
+        config = load_earnings_gap_intraday_config(config_path)
+        csv_sha = step7.file_sha256(earnings_csv)
+    except step7.Step7Error as exc:
+        return {"error": {"code": exc.code, "message": _bounded_message(str(exc))}}
+    except (StrategyConfigError, EarningsGapIntradayConfigError):
+        return {"error": {"code": "BACKTEST_CONFIG_ERROR", "message": "earnings_gap_intraday configuration is missing or invalid"}}
+    except OSError:
+        return {"error": {"code": "EARNINGS_CSV_ERROR", "message": "cannot read the earnings CSV"}}
+    rows = []
+    for p in points:
+        outcome = backtest_intraday_gap_cli(
+            earnings_csv=earnings_csv, start=start, end=end, variant=p.variant, split="in_sample",
+            cache_dir=cache_dir, config_path=config_path, report_dir=report_dir / "tuning", equity=equity,
+            opening_range_minutes=p.opening_range_minutes, maximum_risk_percent=p.maximum_risk_percent,
+        )
+        if "error" in outcome:
+            failed = {"variant": p.variant, "opening_range_minutes": p.opening_range_minutes,
+                      "maximum_risk_percent": str(p.maximum_risk_percent)}
+            return {**outcome, "failed_grid_point": failed, "completed_runs": len(rows)}
+        report = json.loads(Path(outcome["report_json"]).read_text(encoding="utf-8"))
+        rows.append({
+            "variant": p.variant, "opening_range_minutes": p.opening_range_minutes,
+            "maximum_risk_percent": str(p.maximum_risk_percent), "run_id": outcome["run_id"],
+            "trades": outcome["trades"], "verdict": outcome["verdict"],
+            "expectancy_r": report["metrics"].get("expectancy_r"),
+            "profit_factor": report["metrics"].get("profit_factor"),
+            "max_drawdown_r": report["metrics"].get("max_drawdown_r"),
+        })
+    summary = step7.build_tuning_summary(rows, earnings_csv_sha256=csv_sha, in_sample_fraction=config.in_sample_fraction)
+    summary_json = report_dir / "intraday-gap-tuning.json"
+    template = report_dir / "intraday-gap-frozen.template.json"
+    step7.write_json(summary_json, summary)
+    (report_dir / "intraday-gap-tuning.md").write_text(step7.tuning_markdown(summary), encoding="utf-8")
+    step7.write_json(template, step7.frozen_template(summary))
+    return {
+        "mode": "tune", "runs": len(rows), "summary_json": str(summary_json),
+        "summary_markdown": str(report_dir / "intraday-gap-tuning.md"), "frozen_template": str(template),
+        "earnings_csv_sha256": csv_sha,
+        "note": "In-sample only. Review the template, copy it into the repository, commit it, then run out of sample once.",
+    }
 
 
 def strategy_candidates_cli(
@@ -3571,7 +3677,21 @@ def main(argv: list[str] | None = None) -> int:
     p_intraday_gap.add_argument("--report-dir", type=Path, default=Path("reports"))
     p_intraday_gap.add_argument("--equity", type=_parse_decimal, default=None, help="Starting equity (default 100000)")
     p_intraday_gap.add_argument("--opening-range-minutes", type=int, choices=(5, 15, 30), default=None)
-    p_intraday_gap.add_argument("--maximum-risk-percent", type=_parse_decimal, default=None)
+    p_intraday_gap.add_argument("--maximum-risk-percent", type=_parse_decimal, default=None, help="In-sample only; out_of_sample reads --frozen-params")
+    p_intraday_gap.add_argument("--frozen-params", type=Path, default=None, help="Committed frozen-parameters JSON; required for out_of_sample (Step 7)")
+
+    p_tune_gap = sub.add_parser(
+        "tune-intraday-gap",
+        help="Run the fixed in-sample grid offline and write a tuning summary plus a frozen-parameters template (research only)",
+    )
+    p_tune_gap.add_argument("--earnings-csv", required=True, type=Path)
+    p_tune_gap.add_argument("--start", required=True, type=date.fromisoformat)
+    p_tune_gap.add_argument("--end", required=True, type=date.fromisoformat)
+    p_tune_gap.add_argument("--cache-dir", required=True, type=Path)
+    p_tune_gap.add_argument("--variants", default=",".join(INTRADAY_GAP_VARIANTS), help="Comma-separated subset of the grid's variants")
+    p_tune_gap.add_argument("--config", type=Path, default=None)
+    p_tune_gap.add_argument("--report-dir", type=Path, default=Path("reports"))
+    p_tune_gap.add_argument("--equity", type=_parse_decimal, default=None)
 
     p_candidates = sub.add_parser(
         "strategy-candidates",
@@ -3649,6 +3769,16 @@ def main(argv: list[str] | None = None) -> int:
             split=args.split, cache_dir=args.cache_dir, fetch=args.fetch, config_path=args.config,
             report_dir=args.report_dir, equity=args.equity, opening_range_minutes=args.opening_range_minutes,
             maximum_risk_percent=args.maximum_risk_percent, api_key=api_key, api_secret=api_secret,
+            frozen_params=args.frozen_params,
+        )
+        print(json.dumps(outcome, indent=2, sort_keys=True, default=str))
+        return 0 if "error" not in outcome else 2
+
+    if args.command == "tune-intraday-gap":  # offline: never reads credentials
+        outcome = tune_intraday_gap_cli(
+            earnings_csv=args.earnings_csv, start=args.start, end=args.end, cache_dir=args.cache_dir,
+            config_path=args.config, report_dir=args.report_dir, equity=args.equity,
+            variants=tuple(v.strip() for v in args.variants.split(",") if v.strip()),
         )
         print(json.dumps(outcome, indent=2, sort_keys=True, default=str))
         return 0 if "error" not in outcome else 2

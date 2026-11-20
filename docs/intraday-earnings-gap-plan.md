@@ -2,8 +2,10 @@
 
 **Status:** Proposed (2026-11-14). Steps 1–6 are implemented in code (bars and
 provider, earnings records, signals and candidates, simulator, metrics and
-report, CLI and runbook). Step 7 is operator-only and the acceptance gate has
-not been evaluated.
+report, CLI and runbook). Step 7's tooling is implemented (2026-11-18): the
+`tune-intraday-gap` grid sweep, the committed frozen-parameters file, and the
+out-of-sample run-once ledger. Running Step 7 is operator-only, and the
+acceptance gate has not been evaluated.
 **Stage:** Research only. The strategy is added at `mode: backtest` and stays
 there until this plan's acceptance gate passes. The global
 `activation_stage` in `config/strategies.yaml` does not change.
@@ -405,9 +407,22 @@ Safety-relevant steps also pass `nox -s safety_typecheck`.
 2. Tune parameters on the in-sample split only, using the fixed grid:
    variant {`orb`, `pmh_break`, `vwap_pullback`, `premarket_entry`,
    `post_report_overnight`} × opening range {5, 15, 30} minutes (where it
-   applies) × `maximum_risk_percent` {5, 8, 12}.
-3. Freeze the chosen parameters in a commit before running out of sample.
-4. Run out of sample once and record the result in this document.
+   applies) × `maximum_risk_percent` {5, 8, 12}. `tune-intraday-gap` runs the
+   whole grid offline and writes a summary plus a frozen-parameters template.
+3. Freeze the chosen parameters in a commit before running out of sample
+   (`config/intraday-gap-frozen.json`, bound to the CSV by SHA-256).
+4. Run out of sample once per variant with `--frozen-params`, and record the
+   result below. The command refuses an uncommitted or mismatched freeze and a
+   second, different run of a variant already in the run-once ledger.
+
+Operational detail: [`runbooks/intraday-gap-backtest.md`](runbooks/intraday-gap-backtest.md).
+
+#### Step 7 results
+
+Not yet run.
+
+| Variant | Frozen commit | Opening range | Max risk % | OOS run ID | Trades | Expectancy R | Profit factor | Max DD R | Verdict |
+|---|---|---|---|---|---|---|---|---|---|
 
 ## 7. Acceptance gate (out of sample, after costs)
 

@@ -44,31 +44,57 @@ out-of-sample run.
 
 3. **Tune on the in-sample split only**, offline, over the fixed grid:
    variant {`orb`, `pmh_break`, `vwap_pullback`, `premarket_entry`,
-   `post_report_overnight`} x opening range {5, 15, 30} minutes (where it
-   applies) x `maximum_risk_percent` {5, 8, 12}:
+   `post_report_overnight`} x opening range {5, 15, 30} minutes (regular-session
+   variants only; the extended-hours variants use the configured default) x
+   `maximum_risk_percent` {5, 8, 12}, which is 33 runs:
 
    ```bash
-   .venv/bin/python -m trading_research.cli backtest-intraday-gap \
+   .venv/bin/python -m trading_research.cli tune-intraday-gap \
      --earnings-csv data/earnings.csv --start 2024-01-01 --end 2026-10-31 \
-     --variant orb --split in_sample --cache-dir data/intraday-cache \
-     --opening-range-minutes 15 --maximum-risk-percent 8
+     --cache-dir data/intraday-cache
    ```
+
+   It writes every run's report under `reports/tuning/`, a summary
+   (`reports/intraday-gap-tuning.json` and `.md`), and a frozen-parameters
+   template (`reports/intraday-gap-frozen.template.json`). The template is
+   pre-filled with the highest in-sample expectancy per variant (ties go to the
+   lower risk percent, then the longer opening range). That ranking is a
+   suggestion, not a decision. The sweep stops at the first failing run and
+   never summarizes a partial grid. Single in-sample runs still work with
+   `backtest-intraday-gap --split in_sample --opening-range-minutes N
+   --maximum-risk-percent R`.
 
    The split is chronological 60/40 by event (report) date; a date never
    straddles the boundary.
 4. **Freeze the chosen parameters in a commit** before any out-of-sample run.
-5. **Run out of sample once.** `--split out_of_sample` refuses to run unless
-   `--opening-range-minutes` and `--maximum-risk-percent` are both given, and it
-   uses only the later 40% of events:
+   Review the template, edit it if you choose differently, copy it to
+   `config/intraday-gap-frozen.json`, and commit it. Values must be on the grid,
+   and extended-hours variants must have `"opening_range_minutes": null`. The
+   file records the earnings CSV's SHA-256 and the `in_sample_fraction`.
+5. **Run out of sample once per variant.** `--split out_of_sample` takes its
+   parameters only from `--frozen-params` (passing `--opening-range-minutes` or
+   `--maximum-risk-percent` too is refused). It refuses if the file is untracked
+   or has uncommitted changes, if the CSV's SHA-256 or `in_sample_fraction`
+   differs from the frozen values, or if the variant has no frozen entry. It uses
+   only the later 40% of events:
 
    ```bash
    .venv/bin/python -m trading_research.cli backtest-intraday-gap \
      --earnings-csv data/earnings.csv --start 2024-01-01 --end 2026-10-31 \
      --variant orb --split out_of_sample --cache-dir data/intraday-cache \
-     --opening-range-minutes 15 --maximum-risk-percent 8
+     --frozen-params config/intraday-gap-frozen.json
    ```
 
-6. **Record the result in the plan** (`docs/intraday-earnings-gap-plan.md`).
+   The run ID includes the frozen file's SHA-256 and commit. Each run is
+   recorded in `config/intraday-gap-frozen.oos-ledger.json`. Re-running with
+   identical inputs reproduces the same run ID and is allowed. A run that would
+   produce a different run ID for a variant already in the ledger fails with
+   `OUT_OF_SAMPLE_ALREADY_RUN` and writes no report. Commit the ledger with the
+   results. It guards against accidental re-runs; it does not stop an operator
+   who deliberately edits it.
+6. **Record the result in the plan** (`docs/intraday-earnings-gap-plan.md`,
+   "Step 7 results"): one row per variant, with the run ID, the frozen commit,
+   the verdict, and the section 7 metrics.
 
 ## Outputs
 
@@ -95,6 +121,14 @@ and must not be committed.
 - **Early-close post-market end: UNCONFIRMED against vendor/broker - operator
   must confirm before merge.** It is the configured parameter
   `early_close_postmarket_end` (default 17:00 ET). Do not treat it as confirmed.
+- Truncated data fails closed with `incomplete_session_data` and never shrinks the
+  sample. The run is invalid in any of these cases: a candidate's regular
+  session ends before the entry cutoff with no signal; a reaction-day regular
+  session is missing entirely; an extended-hours limit order goes unfilled
+  because the bars stop inside its order window; a baseline's session lacks the
+  09:30 opening bar or ends more than one bar before the close; a filled
+  position's bars end before its exit. Isolated missing bars inside a session
+  are tolerated. Refetch complete sessions and rerun.
 - Missing `release_time`: the conservative bound applies (am released at 09:30,
   pm released at 20:00). Excluded events get `release_time_unverified` and are
   counted in the report.
