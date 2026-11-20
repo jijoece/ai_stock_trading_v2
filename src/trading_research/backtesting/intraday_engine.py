@@ -338,7 +338,12 @@ def _regular_plan(
 
     reg_idx = [i for i, b in enumerate(timeline) if b.session == "regular" and _ny(b.start).date() == day]
     if not reg_idx:
-        return None, NO_BARS
+        # An eligible candidate's whole regular session missing is a vendor/cache gap, not a market
+        # observation; recording it as `no_bars` would silently drop the event from the sample.
+        raise BacktestError(
+            f"{INCOMPLETE_SESSION_DATA}: {cand.symbol} {cand.fiscal_period} has no regular-session bars "
+            "on the reaction day; refetch complete sessions"
+        )
     or_high: Decimal | None = None
     or_low: Decimal | None = None
     prev_above_or = False
@@ -501,6 +506,15 @@ def _simulate(
             entry_idx, qty = i, fill
             break
         if entry_idx < 0:
+            # "Limit not reached" is only an observation if the data covers the whole working window.
+            # Extended bars are sparse (no trades, no bar), so coverage is proven by any later bar at or
+            # after the window end; bars that simply stop inside the window prove nothing.
+            if not any(b.start >= plan.work_until for b in tl[plan.work_start_index:]):
+                raise BacktestError(
+                    f"{INCOMPLETE_SESSION_DATA}: {cand.symbol} {cand.fiscal_period} bars end inside the "
+                    "extended-hours order window, so an unfilled limit cannot be established; refetch "
+                    "complete sessions"
+                )
             return _Outcome(unfilled_reason=LIMIT_NOT_REACHED)
         eb = tl[entry_idx]
         day = _ny(eb.start).date()

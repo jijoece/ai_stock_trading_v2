@@ -47,7 +47,7 @@ from zoneinfo import ZoneInfo
 from ..backtesting.intraday_engine import IntradayBacktestResult, IntradayTrade, _spread_bps, run_intraday_backtest
 from ..backtesting.intraday_history import IntradayHistoryProvider
 from ..backtesting.models import BacktestError, IntradayBar
-from ..evaluation.market_calendar import MARKET_TIMEZONE_NAME, is_trading_day, regular_session_close
+from ..evaluation.market_calendar import MARKET_TIMEZONE_NAME, is_trading_day, regular_session_close, regular_session_open
 from ..hashing import hash_config
 from .earnings_gap_intraday import CandidateDecision, EarningsGapIntradayConfig, evaluate_candidate
 from .earnings_surprise import EarningsSurprise
@@ -376,8 +376,13 @@ def compute_baselines(
         react = tuple(provider.get_bars(c.symbol, c.reaction_date))
         reg = _regular_bars(react, c.reaction_date)
         not_before = c.assumed_release
-        open_bar = reg[0] if reg else None
-        close_bar = reg[-1] if reg else None
+        if not reg or _ny(reg[0].start) != _ny(regular_session_open(c.reaction_date)):
+            raise BacktestError(
+                f"incomplete_session_data: {c.symbol} {c.fiscal_period} regular session is missing or does "
+                "not start with the opening bar, so the open price is unknown; refetch complete sessions"
+            )
+        open_bar = reg[0]
+        close_bar = reg[-1]
         if close_bar is not None and _ny(close_bar.end) < _session_close_floor(c.reaction_date):
             raise BacktestError(
                 f"incomplete_session_data: {c.symbol} {c.fiscal_period} regular-session bars end before the "

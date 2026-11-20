@@ -509,3 +509,12 @@ def test_baselines_reject_an_early_final_bar_as_the_session_close():
     # One missing final bar is tolerated (isolated gap).
     ok = build(RD, lambda h, m: flat(10), end=(15, 55))
     compute_baselines([cand("orb")], FixtureIntradayHistoryProvider({(SYM, RD): tuple(ok)}), cfg())
+
+
+def test_baselines_reject_a_missing_regular_session_or_opening_bar():
+    pre = build(RD, lambda h, m: flat(10), start=(4, 0), end=(9, 30))
+    with pytest.raises(BacktestError, match="incomplete_session_data"):
+        compute_baselines([cand("orb")], FixtureIntradayHistoryProvider({(SYM, RD): tuple(pre)}), cfg())
+    late_open = build(RD, lambda h, m: flat(10), start=(9, 35))
+    with pytest.raises(BacktestError, match="incomplete_session_data"):
+        compute_baselines([cand("orb")], FixtureIntradayHistoryProvider({(SYM, RD): tuple(late_open)}), cfg())

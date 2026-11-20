@@ -647,3 +647,21 @@ def test_truncation_before_a_would_be_signal_is_never_an_ordinary_no_signal():
     quiet = build(RD, orb_fn(signal=(23, 0)))
     res = run([cand("orb")], {(SYM, RD): quiet}, cfg(), "orb")
     assert not res.trades and any("no_signal" in r.reasons for r in res.rejected)
+
+
+def test_missing_regular_session_is_never_an_ordinary_no_bars_observation():
+    # Pre-market present, regular session absent entirely: a vendor gap, not a market observation.
+    pre = [b for b in pre_world() if b.session == "pre"]
+    with pytest.raises(BacktestError, match="incomplete_session_data"):
+        run([cand("orb")], {(SYM, RD): pre}, cfg(), "orb")
+
+
+def test_extended_limit_unfilled_on_a_truncated_work_window_invalidates_the_run():
+    # Limit never reached in a complete window is an ordinary unfilled order ...
+    high = {time(h, m): ob(RD, h, m, "10.8", "10.85", "10.75", "10.8", 100_000)
+            for h in (9,) for m in range(0, 30, 5)}
+    assert run([pm_cand()], {(SYM, RD): pre_world(high)}, cfg(), "premarket_entry").unfilled_count == 1
+    # ... but bars that stop inside the working window cannot establish "limit not reached".
+    cut = [b for b in pre_world(high) if et_of(b.start).time() < time(9, 5)]
+    with pytest.raises(BacktestError, match="incomplete_session_data"):
+        run([pm_cand()], {(SYM, RD): cut}, cfg(), "premarket_entry")
