@@ -69,10 +69,13 @@ def test_session_tagging_normal_day(tmp_path):
 
 def test_session_tagging_early_close_day():
     assert classify_session(datetime(2025, 11, 28, 12, 55, tzinfo=NY), EARLY) == ("regular", False)
-    assert classify_session(datetime(2025, 11, 28, 13, 0, tzinfo=NY), EARLY) == ("post", True)
-    assert classify_session(datetime(2025, 11, 28, 16, 55, tzinfo=NY), EARLY) == ("post", False)
-    assert classify_session(datetime(2025, 11, 28, 17, 0, tzinfo=NY), EARLY) is None
+    # Default: no after-hours session on half-days, so nothing from the 13:00 close on is covered.
+    assert classify_session(datetime(2025, 11, 28, 13, 0, tzinfo=NY), EARLY) is None
+    assert classify_session(datetime(2025, 11, 28, 16, 55, tzinfo=NY), EARLY) is None
     # configurable early-close post-market end
+    assert classify_session(datetime(2025, 11, 28, 13, 0, tzinfo=NY), EARLY, time(17, 0)) == ("post", True)
+    assert classify_session(datetime(2025, 11, 28, 16, 55, tzinfo=NY), EARLY, time(17, 0)) == ("post", False)
+    assert classify_session(datetime(2025, 11, 28, 17, 0, tzinfo=NY), EARLY, time(17, 0)) is None
     assert classify_session(datetime(2025, 11, 28, 17, 0, tzinfo=NY), EARLY, time(18, 0)) == ("post", False)
 
 
@@ -91,8 +94,17 @@ def test_naive_timestamp_in_cache_rejected(tmp_path):
                 "ABC", NORMAL)
 
 
-def test_early_close_day_provider_tags_post(tmp_path):
+def test_early_close_day_default_has_no_tradable_post_market(tmp_path):
+    # Alpaca runs no stock after-hours session on half-days, so by default every bar from the 13:00
+    # early close on is outside the covered window (vendor bars from other venues are not tradable).
     p = CachedAlpacaIntradayProvider(tmp_path)
+    payload = {"bars": [raw(EARLY, 12, 55), raw(EARLY, 13, 0, volume=900), raw(EARLY, 13, 5), raw(EARLY, 17, 0)]}
+    p.fetch(FakeHttp([payload]), "ABC", EARLY)
+    assert [(b.session, b.is_closing_print) for b in p.get_bars("ABC", EARLY)] == [("regular", False)]
+
+
+def test_early_close_day_provider_tags_post_when_a_window_is_configured(tmp_path):
+    p = CachedAlpacaIntradayProvider(tmp_path, early_close_postmarket_end=time(17, 0))
     payload = {"bars": [raw(EARLY, 12, 55), raw(EARLY, 13, 0, volume=900), raw(EARLY, 13, 5), raw(EARLY, 17, 0)]}
     p.fetch(FakeHttp([payload]), "ABC", EARLY)
     bars = p.get_bars("ABC", EARLY)

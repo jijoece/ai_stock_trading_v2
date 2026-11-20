@@ -239,8 +239,11 @@ def regular_session_close(day: date) -> datetime:
 
 _PREMARKET_OPEN_TIME = time(4, 0)
 _REGULAR_POSTMARKET_END = time(20, 0)
-# UNCONFIRMED against vendor/broker - operator must confirm before merge.
-DEFAULT_EARLY_CLOSE_POSTMARKET_END = time(17, 0)
+# Broker-confirmed (2026-11-20): Alpaca runs no stock after-hours session on US market half-days
+# ("on the Friday after US Thanksgiving, the overnight session runs as usual, but the after-hours
+# session does not" - https://docs.alpaca.markets/docs/245-trading). The post-market therefore ends
+# at the 13:00 ET early close: a zero-length window, so nothing is tradable after the close.
+DEFAULT_EARLY_CLOSE_POSTMARKET_END = time(13, 0)
 
 
 def regular_session_open(day: date) -> datetime:
@@ -279,7 +282,7 @@ def postmarket_close(
 ) -> datetime:
     """End of the post-market session: 20:00 ET on normal days; on early-close
     days (regular close before 16:00) the configurable `early_close_postmarket_end`
-    (default 17:00 ET, UNCONFIRMED against vendor/broker)."""
+    (default 13:00 ET = the early close: Alpaca has no after-hours session on half-days)."""
     close = regular_session_close(day)
     if close.time() >= time(16, 0):
         end_time = _REGULAR_POSTMARKET_END

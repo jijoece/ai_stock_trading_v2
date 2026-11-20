@@ -28,9 +28,9 @@ def test_normal_day_boundaries():
 
 
 def test_early_close_day_default_postmarket_end():
+    # Alpaca runs no stock after-hours session on half-days: the post-market ends at the close.
     assert regular_session_close(EARLY).hour == 13
-    assert postmarket_close(EARLY).hour == 17
-    assert postmarket_close(EARLY).minute == 0
+    assert postmarket_close(EARLY) == regular_session_close(EARLY)
 
 
 def test_early_close_postmarket_end_configurable():

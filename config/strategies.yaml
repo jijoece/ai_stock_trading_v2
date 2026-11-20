@@ -141,9 +141,9 @@ earnings_gap_intraday:
   extended_spread_floor_bps: 30
   extended_spread_k: 0.25
   vwap_stop_percent: 1
-  # D9: post-market end on early-close days. UNCONFIRMED against vendor/broker - operator must
-  # confirm before merge.
-  early_close_postmarket_end: "17:00"
+  # D9: post-market end on early-close days. Alpaca runs no stock after-hours session on half-days
+  # (docs.alpaca.markets/docs/245-trading, checked 2026-11-20), so it equals the 13:00 early close.
+  early_close_postmarket_end: "13:00"
   # Fraction by which summed 5-minute regular volume may differ from the daily bar before it is flagged
   volume_tolerance: 0.20
   # D7 chronological split: parameters are chosen only on the earliest fraction of event dates

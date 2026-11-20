@@ -139,7 +139,7 @@ class EarningsGapIntradayConfig:
     extended_spread_floor_bps: Decimal = Decimal("30")
     extended_spread_k: Decimal = Decimal("0.25")
     vwap_stop_percent: Decimal = Decimal("1")
-    # UNCONFIRMED against vendor/broker - operator must confirm before merge.
+    # 13:00 ET: Alpaca has no stock after-hours session on half-days (market_calendar.py).
     early_close_postmarket_end: time = DEFAULT_EARLY_CLOSE_POSTMARKET_END
     volume_tolerance: Decimal = Decimal("0.20")
     in_sample_fraction: Decimal = Decimal("0.6")

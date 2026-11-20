@@ -409,7 +409,7 @@ def test_config_defaults_match_the_plan():
     assert c.maximum_losses_per_day == 2 and c.minimum_extended_fill_usd == Decimal(1000)
     assert c.extended_participation == Decimal("0.02") and c.risk_fraction == Decimal("0.005")
     assert c.maximum_position_fraction == Decimal("0.10") and c.slippage_bps == Decimal(10)
-    assert c.early_close_postmarket_end == time(17, 0) and c.in_sample_fraction == Decimal("0.6")
+    assert c.early_close_postmarket_end == time(13, 0) and c.in_sample_fraction == Decimal("0.6")
     assert c.trend_filter_enabled is False
 
 

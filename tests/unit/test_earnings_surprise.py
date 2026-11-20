@@ -135,14 +135,17 @@ def test_holiday_skipped_and_early_close():
 
 
 def test_early_close_post_market_end():
+    # Default: Alpaca runs no after-hours session on half-days, so a pm report has no post-market
+    # window and reacts on the next session.
     w = reaction_window(date(2026, 11, 27), "pm", time(13, 5))
-    assert w.post_market.end.time() == time(17, 0)
+    assert w.post_market is None
     assert w.reaction_date == date(2026, 11, 30)
     w2 = reaction_window(
         date(2026, 11, 27), "pm", time(13, 5), early_close_postmarket_end=time(16, 0)
     )
     assert w2.post_market.end.time() == time(16, 0)
-    assert reaction_window(date(2026, 11, 27), "pm", time(17, 30)).post_market is None
+    w3 = reaction_window(date(2026, 11, 27), "pm", time(17, 30), early_close_postmarket_end=time(17, 0))
+    assert w3.post_market is None
 
 
 def test_non_session_and_bad_timing():

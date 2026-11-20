@@ -128,9 +128,15 @@ and must not be committed.
 
 ## Data caveats
 
-- **Early-close post-market end: UNCONFIRMED against vendor/broker - operator
-  must confirm before merge.** It is the configured parameter
-  `early_close_postmarket_end` (default 17:00 ET). Do not treat it as confirmed.
+- **Early-close days have no tradable post-market.** Alpaca's
+  [24/5 trading page](https://docs.alpaca.markets/docs/245-trading), checked
+  2026-11-20, says the after-hours session does not run on US market half-days.
+  So `early_close_postmarket_end` defaults to 13:00 ET, the early close. Bars
+  from 13:00 on those days are dropped even if the data vendor has prints from
+  other venues. `post_report_overnight` cannot enter after a half-day report,
+  and the 16:30 baseline skips those events. Alpaca's docs do not say when the
+  vendor's post-market bars end on half-days. That doesn't matter here: bars
+  that can't be traded at the broker are never used.
 - Truncated data fails closed with `incomplete_session_data` and never shrinks the
   sample. The run is invalid in any of these cases: a candidate's regular
   session ends before the entry cutoff with no signal; a reaction-day regular

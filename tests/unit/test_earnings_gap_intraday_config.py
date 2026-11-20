@@ -40,7 +40,7 @@ def test_shipped_config_loads_every_plan_default():
     cfg = load_earnings_gap_intraday_config()
     assert cfg == EarningsGapIntradayConfig()  # yaml and dataclass defaults agree
     assert cfg.minimum_price == Decimal(3) and cfg.post_signal_time == time(16, 30)
-    assert cfg.early_close_postmarket_end == time(17, 0)
+    assert cfg.early_close_postmarket_end == time(13, 0)
     assert load_strategy_config().earnings_gap_intraday == cfg
 
 
