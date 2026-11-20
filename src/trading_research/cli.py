@@ -2859,6 +2859,17 @@ def backtest_intraday_gap_cli(
                 )
             if frozen.in_sample_fraction != config.in_sample_fraction:
                 return _err("FROZEN_PARAMETERS_MISMATCH", "in_sample_fraction differs from the frozen value")
+            # Every non-grid setting (and equity/adjustment/feed) must match what the sweep was tuned on.
+            config_sha = step7.strategy_config_sha256(
+                config, equity=Decimal(str(equity)) if equity is not None else Decimal("100000"),
+                adjustment=adjustment, feed=feed,
+            )
+            if config_sha != frozen.strategy_config_sha256:
+                return _err(
+                    "FROZEN_PARAMETERS_MISMATCH",
+                    "the strategy configuration (non-grid settings, equity, adjustment or feed) differs from "
+                    "the one the frozen parameters were tuned under",
+                )
             if variant not in frozen.variants:
                 return _err("FROZEN_PARAMETERS_MISMATCH", f"{variant} has no frozen parameters")
             fv = frozen.variants[variant]
@@ -2936,6 +2947,7 @@ def backtest_intraday_gap_cli(
             parameters["frozen_parameters_sha256"] = frozen.sha256
             parameters["frozen_parameters_commit"] = frozen.commit
             parameters["earnings_csv_sha256"] = frozen.earnings_csv_sha256
+            parameters["strategy_config_sha256"] = frozen.strategy_config_sha256
         manifest = recorder.manifest_hash({
             "earnings": [
                 [e.symbol, e.fiscal_period, e.report_date.isoformat(), e.timing,
@@ -2946,20 +2958,22 @@ def backtest_intraday_gap_cli(
             "adjustment": adjustment, "feed": feed,
         })
         report = build_report(evaluation, split=split, parameters=parameters, input_manifest_hash=manifest)
+        ledger_entry = None
         if frozen is not None:
-            prior = step7.check_not_already_run(frozen.path, variant)
-            if prior is not None and prior.get("run_id") != report["run_id"]:
-                return _err(
-                    "OUT_OF_SAMPLE_ALREADY_RUN",
-                    f"{variant} already has an out-of-sample run ({prior.get('run_id')}); the gate allows one",
-                )
-        json_path, md_path = write_report(report, report_dir)
-        if frozen is not None:
-            step7.record_run(frozen.path, variant, {
+            # Reserve (pending) under the ledger lock BEFORE publishing anything: a competing or
+            # later different run is refused, and an interruption leaves an auditable pending entry
+            # that only this identical deterministic run can complete.
+            ledger_entry = {
                 "run_id": report["run_id"], "report_hash": report["report_hash"],
                 "frozen_parameters_sha256": frozen.sha256, "frozen_parameters_commit": frozen.commit,
+                "strategy_config_sha256": frozen.strategy_config_sha256,
                 "verdict": report["gate"]["verdict"],
-            })
+            }
+            step7.reserve_run(frozen.path, variant, ledger_entry)
+        json_path, md_path = write_report(report, report_dir)
+        if frozen is not None:
+            assert ledger_entry is not None
+            step7.commit_run(frozen.path, variant, ledger_entry)
         return {
             "mode": "backtest", "run_id": report["run_id"], "variant": variant, "split": split,
             "verdict": report["gate"]["verdict"], "trades": report["counts"]["trades"],
@@ -3022,7 +3036,17 @@ def tune_intraday_gap_cli(
             "profit_factor": report["metrics"].get("profit_factor"),
             "max_drawdown_r": report["metrics"].get("max_drawdown_r"),
         })
-    summary = step7.build_tuning_summary(rows, earnings_csv_sha256=csv_sha, in_sample_fraction=config.in_sample_fraction)
+    from decimal import Decimal
+
+    # Same defaults the per-run backtest uses (equity 100000; split-adjusted IEX bars).
+    config_sha = step7.strategy_config_sha256(
+        config, equity=Decimal(str(equity)) if equity is not None else Decimal("100000"),
+        adjustment="split", feed="iex",
+    )
+    summary = step7.build_tuning_summary(
+        rows, earnings_csv_sha256=csv_sha, in_sample_fraction=config.in_sample_fraction,
+        strategy_config_sha256=config_sha,
+    )
     summary_json = report_dir / "intraday-gap-tuning.json"
     template = report_dir / "intraday-gap-frozen.template.json"
     step7.write_json(summary_json, summary)

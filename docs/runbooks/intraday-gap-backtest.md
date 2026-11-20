@@ -70,12 +70,17 @@ out-of-sample run.
    Review the template, edit it if you choose differently, copy it to
    `config/intraday-gap-frozen.json`, and commit it. Values must be on the grid,
    and extended-hours variants must have `"opening_range_minutes": null`. The
-   file records the earnings CSV's SHA-256 and the `in_sample_fraction`.
+   file records the earnings CSV's SHA-256, the `in_sample_fraction`, and
+   `strategy_config_sha256`: a hash of every `earnings_gap_intraday` setting
+   except the two grid parameters, plus the equity, adjustment, and feed the
+   sweep ran with. Do not edit that hash; re-tune if the configuration changes.
 5. **Run out of sample once per variant.** `--split out_of_sample` takes its
    parameters only from `--frozen-params` (passing `--opening-range-minutes` or
    `--maximum-risk-percent` too is refused). It refuses if the file is untracked
-   or has uncommitted changes, if the CSV's SHA-256 or `in_sample_fraction`
-   differs from the frozen values, or if the variant has no frozen entry. It uses
+   or has uncommitted changes, if the CSV's SHA-256, `in_sample_fraction`, or
+   strategy configuration (any non-grid setting, or `--equity`) differs from the
+   frozen values, or if the variant has no frozen
+   entry. It uses
    only the later 40% of events:
 
    ```bash
@@ -86,12 +91,17 @@ out-of-sample run.
    ```
 
    The run ID includes the frozen file's SHA-256 and commit. Each run is
-   recorded in `config/intraday-gap-frozen.oos-ledger.json`. Re-running with
-   identical inputs reproduces the same run ID and is allowed. A run that would
-   produce a different run ID for a variant already in the ledger fails with
-   `OUT_OF_SAMPLE_ALREADY_RUN` and writes no report. Commit the ledger with the
-   results. It guards against accidental re-runs; it does not stop an operator
-   who deliberately edits it.
+   recorded in `config/intraday-gap-frozen.oos-ledger.json`. Before any report
+   is written, the run reserves its variant (`"status": "pending"`, with its run
+   ID) under an exclusive lock (`config/intraday-gap-frozen.oos-ledger.lock`, an
+   empty file you need not commit). After the reports are written, the entry
+   becomes `"status": "committed"`. Re-running with identical inputs reproduces
+   the same run ID and is allowed; that is also how an interrupted run (left
+   `pending`) is completed. A run that would produce a different run ID for a
+   variant already in the ledger, whether pending or committed, including a
+   concurrent run, fails with `OUT_OF_SAMPLE_ALREADY_RUN` and writes no report.
+   Commit the ledger with the results. It guards against accidental and
+   concurrent re-runs; it does not stop an operator who deliberately edits it.
 6. **Record the result in the plan** (`docs/intraday-earnings-gap-plan.md`,
    "Step 7 results"): one row per variant, with the run ID, the frozen commit,
    the verdict, and the section 7 metrics.

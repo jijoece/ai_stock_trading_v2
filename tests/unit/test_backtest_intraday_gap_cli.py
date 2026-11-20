@@ -169,7 +169,19 @@ def _git(repo, *args):
     subprocess.run(["git", "-C", str(repo), *args], check=True, capture_output=True)
 
 
-def _frozen(world, repo, variants=None, *, commit=True, csv_sha=None):
+def _default_config_sha(config_path=None, equity=None):
+    from decimal import Decimal
+
+    from trading_research.backtesting.intraday_gap_step7 import strategy_config_sha256
+    from trading_research.strategies.config import load_earnings_gap_intraday_config
+
+    return strategy_config_sha256(
+        load_earnings_gap_intraday_config(config_path), equity=Decimal(str(equity or 100000)),
+        adjustment="split", feed="iex",
+    )
+
+
+def _frozen(world, repo, variants=None, *, commit=True, csv_sha=None, config_sha=None):
     """A frozen-parameters file in a throwaway git repo (never the project repository)."""
     from trading_research.backtesting.intraday_gap_step7 import FROZEN_SCHEMA, file_sha256
 
@@ -182,6 +194,7 @@ def _frozen(world, repo, variants=None, *, commit=True, csv_sha=None):
     doc = {
         "schema": FROZEN_SCHEMA, "earnings_csv_sha256": csv_sha or file_sha256(world["csv"]),
         "in_sample_fraction": "0.6",
+        "strategy_config_sha256": config_sha or _default_config_sha(),
         "variants": variants or {
             "orb": {"opening_range_minutes": 30, "maximum_risk_percent": "5"},
             "premarket_entry": {"opening_range_minutes": None, "maximum_risk_percent": "8"},
@@ -474,6 +487,7 @@ def test_out_of_sample_runs_once_per_variant_and_records_the_ledger(world, tmp_p
     ledger = json.loads(ledger_path(frozen).read_text())
     entry = ledger["runs"]["orb"]
     assert entry["run_id"] == first["run_id"] and len(entry["frozen_parameters_commit"]) == 40
+    assert entry["status"] == "committed"
     report = json.loads(open(first["report_json"]).read())
     assert report["parameters"]["frozen_parameters_sha256"] == entry["frozen_parameters_sha256"]
     # A deterministic re-run reproduces the same run ID and is allowed.
@@ -533,3 +547,224 @@ def test_tune_rejects_unknown_variant(world, tmp_path):
         cache_dir=world["cache"], report_dir=tmp_path, variants=("nope",),
     )
     assert out["error"]["code"] == "INVALID_ARGUMENT"
+
+
+# -- Review fixes: freeze binds the full strategy configuration -----------------
+
+
+def _config_variant(tmp_path, old, new):
+    from trading_research.strategies.config import DEFAULT_STRATEGY_CONFIG_PATH
+
+    text = DEFAULT_STRATEGY_CONFIG_PATH.read_text(encoding="utf-8")
+    assert text.count(old) == 1, old
+    path = tmp_path / "strategies-b.yaml"
+    path.write_text(text.replace(old, new), encoding="utf-8")
+    return path
+
+
+def test_freeze_from_tuning_binds_the_full_strategy_config(world, tmp_path):
+    """Config A tunes and freezes; OOS under A runs, OOS under a changed non-grid setting fails closed."""
+    from trading_research.cli import tune_intraday_gap_cli
+
+    tuned = tune_intraday_gap_cli(
+        earnings_csv=world["csv"], start=date(2026, 11, 1), end=date(2026, 11, 30),
+        cache_dir=world["cache"], report_dir=tmp_path / "tune", variants=("premarket_entry",),
+    )
+    assert "error" not in tuned, tuned
+    template = json.loads((tmp_path / "tune" / "intraday-gap-frozen.template.json").read_text())
+    assert template["strategy_config_sha256"] == _default_config_sha()
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, "init", "-q")
+    _git(repo, "config", "user.email", "test@example.invalid")
+    _git(repo, "config", "user.name", "test")
+    if "premarket_entry" not in template["variants"]:  # no expectancy in-sample: freeze a grid point
+        template["variants"]["premarket_entry"] = {"opening_range_minutes": None, "maximum_risk_percent": "8"}
+    frozen = repo / "frozen.json"
+    frozen.write_text(json.dumps(template), encoding="utf-8")
+    _git(repo, "add", "frozen.json")
+    _git(repo, "commit", "-q", "-m", "freeze")
+
+    config_b = _config_variant(tmp_path, "  slippage_bps: 10\n", "  slippage_bps: 25\n")
+    changed = _run(world, tmp_path / "b", variant="premarket_entry", split="out_of_sample",
+                   frozen_params=frozen, config_path=config_b)
+    assert changed["error"]["code"] == "FROZEN_PARAMETERS_MISMATCH", changed
+    assert "strategy configuration" in changed["error"]["message"]
+    other_equity = _run(world, tmp_path / "e", variant="premarket_entry", split="out_of_sample",
+                        frozen_params=frozen, equity=250000)
+    assert other_equity["error"]["code"] == "FROZEN_PARAMETERS_MISMATCH"
+    assert not (tmp_path / "b").exists() and not (tmp_path / "e").exists()
+    from trading_research.backtesting.intraday_gap_step7 import ledger_path
+
+    assert not ledger_path(frozen).exists()  # refused runs never touch the ledger
+
+    same = _run(world, tmp_path / "a", variant="premarket_entry", split="out_of_sample", frozen_params=frozen)
+    assert "error" not in same, same
+    report = json.loads(open(same["report_json"]).read())
+    assert report["parameters"]["strategy_config_sha256"] == template["strategy_config_sha256"]
+
+
+def test_config_identity_covers_non_grid_fields_but_not_grid_fields():
+    import dataclasses
+    from datetime import time as dtime
+    from decimal import Decimal
+
+    from trading_research.backtesting.intraday_gap_step7 import strategy_config_sha256
+    from trading_research.strategies.earnings_gap_intraday import EarningsGapIntradayConfig
+
+    base = EarningsGapIntradayConfig()
+
+    def h(cfg, **kw):
+        args = {"equity": Decimal("100000"), "adjustment": "split", "feed": "iex", **kw}
+        return strategy_config_sha256(cfg, **args)
+
+    ref = h(base)
+    assert h(dataclasses.replace(base, opening_range_minutes=30, maximum_risk_percent=Decimal("12"))) == ref
+    for change in (
+        {"minimum_gap_percent": Decimal("6")}, {"slippage_bps": Decimal("11")},
+        {"regular_participation": Decimal("0.02")}, {"latest_entry_time": dtime(14, 0)},
+        {"trend_filter_enabled": True}, {"maximum_trades_per_day": 4},
+    ):
+        assert h(dataclasses.replace(base, **change)) != ref, change
+    assert h(base, equity=Decimal("50000")) != ref
+    assert h(base, adjustment="raw") != ref and h(base, feed="sip") != ref
+
+
+def test_freeze_without_strategy_config_hash_is_invalid(world, tmp_path):
+    frozen = _frozen(world, tmp_path / "repo")
+    doc = json.loads(frozen.read_text())
+    del doc["strategy_config_sha256"]
+    frozen.write_text(json.dumps(doc), encoding="utf-8")
+    _git(tmp_path / "repo", "commit", "-q", "-am", "drop config hash")
+    out = _run(world, tmp_path / "r", split="out_of_sample", frozen_params=frozen)
+    assert out["error"]["code"] == "FROZEN_PARAMETERS_INVALID"
+
+
+# -- Review fixes: run-once ledger survives interruption and concurrency ------------
+
+
+def _refreeze(repo, frozen):
+    frozen.write_text(frozen.read_text().replace('"5"', '"12"'), encoding="utf-8")
+    _git(repo, "commit", "-q", "-am", "refreeze")
+
+
+def test_interrupted_report_publication_leaves_a_pending_reservation(world, tmp_path, monkeypatch):
+    from trading_research.backtesting.intraday_gap_step7 import ledger_path
+    from trading_research.strategies import intraday_metrics
+
+    repo = tmp_path / "repo"
+    frozen = _frozen(world, repo)
+    real_write = intraday_metrics.write_report
+
+    def crash(*a, **kw):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(intraday_metrics, "write_report", crash)
+    failed = _run(world, tmp_path / "o", split="out_of_sample", frozen_params=frozen)
+    assert "error" in failed
+    entry = json.loads(ledger_path(frozen).read_text())["runs"]["orb"]
+    assert entry["status"] == "pending" and entry["run_id"].startswith("igb-")
+    monkeypatch.setattr(intraday_metrics, "write_report", real_write)
+
+    # The identical deterministic run completes the reservation.
+    done = _run(world, tmp_path / "o", split="out_of_sample", frozen_params=frozen)
+    assert "error" not in done and done["run_id"] == entry["run_id"]
+    assert json.loads(ledger_path(frozen).read_text())["runs"]["orb"]["status"] == "committed"
+
+
+def test_pending_reservation_refuses_a_different_run(world, tmp_path, monkeypatch):
+    from trading_research.backtesting.intraday_gap_step7 import ledger_path
+    from trading_research.strategies import intraday_metrics
+
+    repo = tmp_path / "repo"
+    frozen = _frozen(world, repo)
+    monkeypatch.setattr(intraday_metrics, "write_report", lambda *a, **kw: (_ for _ in ()).throw(OSError("x")))
+    assert "error" in _run(world, tmp_path / "o", split="out_of_sample", frozen_params=frozen)
+    pending = json.loads(ledger_path(frozen).read_text())["runs"]["orb"]
+    monkeypatch.undo()
+    _refreeze(repo, frozen)
+    other = _run(world, tmp_path / "o2", split="out_of_sample", frozen_params=frozen)
+    assert other["error"]["code"] == "OUT_OF_SAMPLE_ALREADY_RUN"
+    assert "pending" in other["error"]["message"]
+    assert not (tmp_path / "o2").exists()
+    assert json.loads(ledger_path(frozen).read_text())["runs"]["orb"] == pending
+
+
+def test_ledger_commit_failure_after_publication_cannot_admit_another_run(world, tmp_path, monkeypatch):
+    from trading_research.backtesting import intraday_gap_step7 as step7
+
+    repo = tmp_path / "repo"
+    frozen = _frozen(world, repo)
+    real_commit = step7.commit_run
+
+    def fail(*a, **kw):
+        raise OSError("ledger write failed")
+
+    monkeypatch.setattr(step7, "commit_run", fail)
+    failed = _run(world, tmp_path / "o", split="out_of_sample", frozen_params=frozen)
+    assert "error" in failed
+    entry = json.loads(step7.ledger_path(frozen).read_text())["runs"]["orb"]
+    assert entry["status"] == "pending"
+    monkeypatch.setattr(step7, "commit_run", real_commit)
+    _refreeze(repo, frozen)
+    other = _run(world, tmp_path / "o2", split="out_of_sample", frozen_params=frozen)
+    assert other["error"]["code"] == "OUT_OF_SAMPLE_ALREADY_RUN"
+    assert not (tmp_path / "o2").exists()
+
+
+def test_reserve_and_commit_protocol(tmp_path):
+    from trading_research.backtesting import intraday_gap_step7 as step7
+
+    frozen = tmp_path / "frozen.json"
+    step7.reserve_run(frozen, "orb", {"run_id": "igb-a"})
+    step7.reserve_run(frozen, "orb", {"run_id": "igb-a"})  # same run: idempotent
+    with pytest.raises(step7.Step7Error) as exc:
+        step7.reserve_run(frozen, "orb", {"run_id": "igb-b"})
+    assert exc.value.code == "OUT_OF_SAMPLE_ALREADY_RUN"
+    with pytest.raises(step7.Step7Error):
+        step7.commit_run(frozen, "orb", {"run_id": "igb-b"})
+    with pytest.raises(step7.Step7Error) as exc:
+        step7.commit_run(frozen, "pmh_break", {"run_id": "igb-a"})
+    assert exc.value.code == "OOS_LEDGER_INVALID"
+    step7.commit_run(frozen, "orb", {"run_id": "igb-a", "verdict": "x"})
+    entry = step7.read_ledger(frozen)["runs"]["orb"]
+    assert entry == {"run_id": "igb-a", "verdict": "x", "status": "committed"}
+    with pytest.raises(step7.Step7Error):
+        step7.reserve_run(frozen, "orb", {"run_id": "igb-b"})
+    assert not list(tmp_path.glob("*.tmp"))
+
+
+_RACE = """
+import sys, time
+from pathlib import Path
+from trading_research.backtesting import intraday_gap_step7 as step7
+frozen, run_id, go = Path(sys.argv[1]), sys.argv[2], Path(sys.argv[3])
+while not go.exists():
+    time.sleep(0.005)
+try:
+    step7.reserve_run(frozen, "orb", {"run_id": run_id})
+except step7.Step7Error as exc:
+    print(exc.code)
+else:
+    print("RESERVED")
+"""
+
+
+def test_competing_processes_cannot_both_reserve_the_variant(tmp_path):
+    import subprocess
+    import sys
+
+    from trading_research.backtesting import intraday_gap_step7 as step7
+
+    frozen, go = tmp_path / "frozen.json", tmp_path / "go"
+    procs = [
+        subprocess.Popen([sys.executable, "-c", _RACE, str(frozen), f"igb-{i}", str(go)],
+                         stdout=subprocess.PIPE, text=True)
+        for i in range(6)
+    ]
+    go.touch()
+    outs = [p.communicate(timeout=60)[0].strip() for p in procs]
+    assert all(p.returncode == 0 for p in procs), outs
+    assert outs.count("RESERVED") == 1 and outs.count("OUT_OF_SAMPLE_ALREADY_RUN") == 5, outs
+    winner = f"igb-{outs.index('RESERVED')}"
+    assert step7.read_ledger(frozen)["runs"]["orb"] == {"run_id": winner, "status": "pending"}
