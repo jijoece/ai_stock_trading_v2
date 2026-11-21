@@ -494,6 +494,44 @@ def test_daily_volume_is_part_of_the_run_identity(world, tmp_path):
     assert changed["trades"] == base["trades"] and changed["verdict"] == base["verdict"]  # report-only
 
 
+def test_within_tolerance_daily_volume_change_changes_the_run_identity(world, tmp_path):
+    import shutil
+
+    from trading_research.backtesting.intraday_history import CachedAlpacaIntradayProvider
+
+    cache = tmp_path / "cache"
+    shutil.copytree(world["cache"], cache)
+    kw = dict(earnings_csv=world["csv"], start=date(2026, 11, 1), end=date(2026, 11, 30), variant="orb",
+              split="in_sample", cache_dir=cache)
+    base = backtest_intraday_gap_cli(report_dir=tmp_path / "a", **kw)
+    assert "error" not in base, base
+    base_report = json.loads(Path(base["report_json"]).read_text())
+    base_vol = base_report["data_quality"]["volume_reconciliation"]
+    provider = CachedAlpacaIntradayProvider(cache, adjustment="split")
+    # Pick a read session that reconciles (not flagged, has a daily bar) and nudge its daily volume
+    # by 1%: still within the 20% tolerance, so the reconciliation summary is unchanged.
+    flagged = {(f["symbol"], f["session_date"]) for f in base_vol["flagged"]}
+    candidates = [
+        (symbol, day) for symbol, day in [("AAA", date(2026, 11, d)) for d in range(1, 31)]
+        if provider.cache_path(symbol, day).exists() and (symbol, day.isoformat()) not in flagged
+        and provider.daily_volume(symbol, day) is not None
+    ]
+    assert candidates
+    symbol, day = candidates[0]
+    path = provider.cache_path(symbol, day)
+    doc = json.loads(path.read_text())
+    doc["daily_volume"] = doc["daily_volume"] * 101 // 100
+    path.write_text(json.dumps(doc))
+    changed = backtest_intraday_gap_cli(report_dir=tmp_path / "b", **kw)
+    assert "error" not in changed, changed
+    changed_report = json.loads(Path(changed["report_json"]).read_text())
+    assert changed_report["data_quality"]["volume_reconciliation"] == base_vol  # summary blind to it
+    assert changed["trades"] == base["trades"] and changed["verdict"] == base["verdict"]  # report-only
+    assert changed_report["metrics"] == base_report["metrics"]
+    assert changed_report["input_manifest_hash"] != base_report["input_manifest_hash"]
+    assert changed["run_id"] != base["run_id"]
+
+
 def test_fetch_reports_days_without_a_daily_bar(world, tmp_path):
     out = backtest_intraday_gap_cli(
         earnings_csv=world["csv"], start=date(2026, 11, 1), end=date(2026, 11, 30), variant="orb",

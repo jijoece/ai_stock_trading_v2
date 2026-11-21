@@ -2964,12 +2964,16 @@ def backtest_intraday_gap_cli(
             parameters["strategy_config_sha256"] = frozen.strategy_config_sha256
         # Step 1 data check: flag (never fix) read sessions whose regular 5-minute volume disagrees with
         # the daily bar. Report-only, but part of the run identity since it is in the report.
+        daily_volumes = {key: provider.daily_volume(*key) for key in recorder.reads()}
         volume_check = volume_reconciliation_summary(
-            {key: (bars, provider.daily_volume(*key)) for key, bars in recorder.reads().items()},
+            {key: (bars, daily_volumes[key]) for key, bars in recorder.reads().items()},
             config.volume_tolerance,
         )
         manifest = recorder.manifest_hash({
             "volume_reconciliation": volume_check,
+            # Every read session's daily volume (None = no daily bar), not just the flagged ones the
+            # summary lists, so any change to the cached daily input changes the run identity.
+            "daily_volumes": [[s, d.isoformat(), daily_volumes[(s, d)]] for s, d in sorted(daily_volumes)],
             "earnings": [
                 [e.symbol, e.fiscal_period, e.report_date.isoformat(), e.timing,
                  e.release_time.isoformat() if e.release_time else "", e.eps_estimate, e.eps_actual, e.source,
