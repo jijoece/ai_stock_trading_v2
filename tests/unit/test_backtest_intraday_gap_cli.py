@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 from datetime import date, datetime, timedelta, timezone
+from decimal import Decimal
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -24,6 +25,8 @@ EVENTS = {
     "EEE": (date(2026, 11, 10), date(2026, 11, 11)),
 }
 CSV_HEADER = "symbol,fiscal_period,report_date,timing,release_time,eps_estimate,eps_actual,source,captured_at\n"
+VOLUME_MISMATCH = ("AAA", date(2026, 11, 4))  # daily bar disagrees with the 5-minute sum: flagged
+NO_DAILY_BAR = ("BBB", date(2026, 11, 5))  # vendor returns no daily bar: counted unavailable
 
 
 class FakeVendor:
@@ -33,6 +36,9 @@ class FakeVendor:
         self.calls: list[tuple[str, str]] = []
 
     def get_json(self, url, *, params, operation, symbol):
+        if params["timeframe"] == "1Day":
+            self.calls.append((symbol, "daily"))
+            return {"bars": self._daily(symbol, date.fromisoformat(params["start"]), date.fromisoformat(params["end"]))}, None
         start = datetime.fromisoformat(params["start"].replace("Z", "+00:00")).astimezone(NY)
         day = start.date()
         self.calls.append((symbol, day.isoformat()))
@@ -42,6 +48,21 @@ class FakeVendor:
             bars.append(self._bar(symbol, day, cur))
             cur += timedelta(minutes=5)
         return {"bars": bars, "next_page_token": None}, None
+
+    @staticmethod
+    def _daily(symbol: str, first: date, last: date) -> list[dict]:
+        """Daily bars stamped at midnight ET whose volume matches the 78 regular 5-minute bars, except
+        VOLUME_MISMATCH (doubled) and NO_DAILY_BAR (absent)."""
+        from trading_research.evaluation.market_calendar import is_trading_day
+
+        out, day = [], first
+        while day <= last:
+            if is_trading_day(day) and (symbol, day) != NO_DAILY_BAR:
+                volume = 78 * 1_000_000 * (2 if (symbol, day) == VOLUME_MISMATCH else 1)
+                t = datetime(day.year, day.month, day.day, tzinfo=NY).astimezone(timezone.utc)
+                out.append({"t": t.isoformat().replace("+00:00", "Z"), "o": 10, "h": 10, "l": 10, "c": 10, "v": volume})
+            day += timedelta(days=1)
+        return out
 
     @staticmethod
     def _bar(symbol: str, day: date, local: datetime) -> dict:
@@ -433,8 +454,77 @@ def test_fetch_repairs_invalid_existing_cache_entry(world, tmp_path, damage):
         split="in_sample", cache_dir=cache, fetch=True, http_client=vendor,
     )
     assert outcome["repaired_invalid"] == 1 and outcome["fetched"] == 1
-    assert vendor.calls == [("AAA", "2026-11-04")]
+    assert vendor.calls == [("AAA", "daily"), ("AAA", "2026-11-04")]
     assert CachedAlpacaIntradayProvider(cache, adjustment="split").get_bars("AAA", date(2026, 11, 4))
+
+
+def test_report_flags_daily_volume_mismatch_without_changing_results(world, tmp_path):
+    out = _run(world, tmp_path, "orb")
+    assert "error" not in out, out
+    report = json.loads(Path(out["report_json"]).read_text())
+    vol = report["data_quality"]["volume_reconciliation"]
+    flagged = {(f["symbol"], f["session_date"]) for f in vol["flagged"]}
+    assert flagged == {(VOLUME_MISMATCH[0], VOLUME_MISMATCH[1].isoformat())}
+    (only,) = vol["flagged"]
+    assert only["regular_volume"] == 78 * 1_000_000 and only["daily_volume"] == 2 * 78 * 1_000_000
+    assert vol["daily_volume_unavailable"] == 1 and vol["sessions_checked"] > 0
+    assert Decimal(vol["tolerance"]) == Decimal("0.20")
+    md = Path(out["report_markdown"]).read_text()
+    assert "daily-volume reconciliation (flag only)" in md and "| AAA | 2026-11-04 |" in md
+
+
+def test_daily_volume_is_part_of_the_run_identity(world, tmp_path):
+    import shutil
+
+    from trading_research.backtesting.intraday_history import CachedAlpacaIntradayProvider
+
+    cache = tmp_path / "cache"
+    shutil.copytree(world["cache"], cache)
+    base = _run(world, tmp_path / "a", "orb")
+    path = CachedAlpacaIntradayProvider(cache, adjustment="split").cache_path(*VOLUME_MISMATCH)
+    doc = json.loads(path.read_text())
+    doc["daily_volume"] = 78 * 1_000_000  # now reconciles; bars (and data_hash) unchanged
+    path.write_text(json.dumps(doc))
+    changed = backtest_intraday_gap_cli(
+        earnings_csv=world["csv"], start=date(2026, 11, 1), end=date(2026, 11, 30), variant="orb",
+        split="in_sample", cache_dir=cache, report_dir=tmp_path / "b",
+    )
+    assert "error" not in changed, changed
+    assert changed["run_id"] != base["run_id"]
+    assert changed["trades"] == base["trades"] and changed["verdict"] == base["verdict"]  # report-only
+
+
+def test_fetch_reports_days_without_a_daily_bar(world, tmp_path):
+    out = backtest_intraday_gap_cli(
+        earnings_csv=world["csv"], start=date(2026, 11, 1), end=date(2026, 11, 30), variant="orb",
+        split="in_sample", cache_dir=tmp_path / "c", fetch=True, http_client=FakeVendor(),
+    )
+    assert out["fetched_without_daily_bar"] == 1
+
+
+def test_older_cache_schema_is_refused_offline_and_refetched(world, tmp_path):
+    import shutil
+
+    from trading_research.backtesting.intraday_history import CachedAlpacaIntradayProvider
+
+    cache = tmp_path / "cache"
+    shutil.copytree(world["cache"], cache)
+    path = CachedAlpacaIntradayProvider(cache, adjustment="split").cache_path("CCC", date(2026, 11, 6))
+    doc = json.loads(path.read_text())
+    doc["schema_version"] = 1
+    del doc["daily_volume"]
+    path.write_text(json.dumps(doc))
+    offline = backtest_intraday_gap_cli(
+        earnings_csv=world["csv"], start=date(2026, 11, 1), end=date(2026, 11, 30), variant="orb",
+        split="in_sample", cache_dir=cache, report_dir=tmp_path / "r",
+    )
+    assert offline["error"]["code"] == "BACKTEST_ERROR" and "rerun the fetch step" in offline["error"]["message"]
+    vendor = FakeVendor()
+    refetch = backtest_intraday_gap_cli(
+        earnings_csv=world["csv"], start=date(2026, 11, 1), end=date(2026, 11, 30), variant="orb",
+        split="in_sample", cache_dir=cache, fetch=True, http_client=vendor,
+    )
+    assert refetch["repaired_invalid"] == 1 and vendor.calls == [("CCC", "daily"), ("CCC", "2026-11-06")]
 
 
 # -- Step 7: frozen parameters, run-once ledger, tuning grid ----------------------

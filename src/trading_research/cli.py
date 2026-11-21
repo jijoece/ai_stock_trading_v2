@@ -2812,7 +2812,11 @@ def backtest_intraday_gap_cli(
 
     from .backtesting import intraday_gap_step7 as step7
 
-    from .backtesting.intraday_history import CachedAlpacaIntradayProvider, RecordingIntradayProvider
+    from .backtesting.intraday_history import (
+        CachedAlpacaIntradayProvider,
+        RecordingIntradayProvider,
+        volume_reconciliation_summary,
+    )
     from .backtesting.models import BacktestError
     from .strategies.config import StrategyConfigError, load_earnings_gap_intraday_config
     from .strategies.earnings_gap_intraday import (
@@ -2905,21 +2909,31 @@ def backtest_intraday_gap_cli(
             # Fetch covers every event in range (both splits), so either split can then run offline.
             wanted = {(s.symbol, d) for s in surprises for d in _intraday_gap_fetch_dates(s, config)}
             wanted |= {(config.trend_benchmark.upper(), d) for s in surprises for d in _intraday_gap_fetch_dates(s, config)}
-            fetched = skipped = repaired = 0
+            skipped = repaired = 0
+            to_fetch: dict[str, list] = {}
             for symbol, day in sorted(wanted):
                 if provider.cache_path(symbol, day).exists():
                     try:
                         provider.get_bars(symbol, day)  # full validation: schema, keys, parse, data_hash
                     except BacktestError:
-                        repaired += 1  # invalid entry: refetch; fetch() replaces it atomically
+                        repaired += 1  # invalid or older-schema entry: refetch; fetch() replaces it atomically
                     else:
                         skipped += 1
                         continue
-                provider.fetch(http_client, symbol, day)
-                fetched += 1
+                to_fetch.setdefault(symbol, []).append(day)
+            fetched = no_daily_bar = 0
+            for symbol, days in to_fetch.items():
+                # One daily-bar request per symbol covers all its missing days (Step 1 volume check).
+                daily = provider.fetch_daily_volumes(http_client, symbol, days[0], days[-1])
+                for day in days:
+                    if day not in daily:
+                        no_daily_bar += 1
+                    provider.fetch(http_client, symbol, day, daily_volume=daily.get(day))
+                    fetched += 1
             return {
                 "mode": "fetch", "events": len(surprises), "fetched": fetched,
                 "already_cached": skipped, "repaired_invalid": repaired,
+                "fetched_without_daily_bar": no_daily_bar,
             }
 
         recorder = RecordingIntradayProvider(provider)  # every bar any stage reads feeds the manifest
@@ -2948,7 +2962,14 @@ def backtest_intraday_gap_cli(
             parameters["frozen_parameters_commit"] = frozen.commit
             parameters["earnings_csv_sha256"] = frozen.earnings_csv_sha256
             parameters["strategy_config_sha256"] = frozen.strategy_config_sha256
+        # Step 1 data check: flag (never fix) read sessions whose regular 5-minute volume disagrees with
+        # the daily bar. Report-only, but part of the run identity since it is in the report.
+        volume_check = volume_reconciliation_summary(
+            {key: (bars, provider.daily_volume(*key)) for key, bars in recorder.reads().items()},
+            config.volume_tolerance,
+        )
         manifest = recorder.manifest_hash({
+            "volume_reconciliation": volume_check,
             "earnings": [
                 [e.symbol, e.fiscal_period, e.report_date.isoformat(), e.timing,
                  e.release_time.isoformat() if e.release_time else "", e.eps_estimate, e.eps_actual, e.source,
@@ -2957,7 +2978,10 @@ def backtest_intraday_gap_cli(
             ],
             "adjustment": adjustment, "feed": feed,
         })
-        report = build_report(evaluation, split=split, parameters=parameters, input_manifest_hash=manifest)
+        report = build_report(
+            evaluation, split=split, parameters=parameters, input_manifest_hash=manifest,
+            data_quality={"volume_reconciliation": volume_check},
+        )
         ledger_entry = None
         if frozen is not None:
             # Reserve (pending) under the ledger lock BEFORE publishing anything: a competing or

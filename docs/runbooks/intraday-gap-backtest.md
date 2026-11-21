@@ -42,6 +42,13 @@ out-of-sample run.
      --variant orb --split in_sample --cache-dir data/intraday-cache --fetch
    ```
 
+   The fetch also makes one daily-bar request per symbol and stores each day's
+   daily volume with its 5-minute bars, for the volume check below. Its output
+   counts days the vendor returned no daily bar for
+   (`fetched_without_daily_bar`). A cache written before this check (schema 1)
+   is refused offline with "rerun the fetch step"; rerunning `--fetch` replaces
+   those days (`repaired_invalid`).
+
 3. **Tune on the in-sample split only**, offline, over the fixed grid:
    variant {`orb`, `pmh_break`, `vwap_pullback`, `premarket_entry`,
    `post_report_overnight`} x opening range {5, 15, 30} minutes (regular-session
@@ -152,12 +159,17 @@ and must not be committed.
   signal-bar completion, risk guard and sizing use the signal-bar close, and the
   next open never cancels or resizes. A gap beyond the stop still fills and the
   stop exits at the worse of the stop and that open.
-- Free-feed (IEX) volume understates consolidated volume. The helper
-  `reconcile_daily_volume` (flags differences, never repairs them) exists in
-  `backtesting/intraday_history.py` but is **not yet wired into the fetch,
-  backtest or report**, so the run does not flag symbol-days whose intraday and
-  daily volumes disagree. Liquidity filters, relative volume and participation
-  caps use the one consistent intraday source; check volume sanity manually
-  until reconciliation is wired in.
+- Free-feed (IEX) volume understates consolidated volume. Every report has a
+  `data_quality.volume_reconciliation` section (and a Markdown table) listing
+  each symbol-day the run read whose summed regular-session 5-minute volume
+  differs from the daily bar by more than `volume_tolerance` (default 0.20),
+  plus counts of days checked and days with no daily bar. Flags never change
+  eligibility, fills or the gate, and nothing is corrected. Liquidity filters,
+  relative volume and participation caps always use the one intraday source.
+  Many flags on one symbol mean its volume filters rest on suspect data: read
+  those trades with care. If nearly every day is flagged in the same direction,
+  the daily bar probably covers more of the day than the regular session, which
+  makes the check uninformative rather than the data wrong. The daily volumes
+  are part of the run ID.
 - Survivorship, estimate-revision and fill-model caveats are printed at the top
   of every report.

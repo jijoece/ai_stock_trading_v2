@@ -470,7 +470,7 @@ def test_report_is_deterministic_with_caveat_header_and_run_id_filename(tmp_path
     md = m.read_text()
     head = md[: md.index("## Identity")]
     for needle in ("Survivorship", "Point-in-time estimates", "Release time", "Fill model", "not financial advice",
-                   "NOT research acceptance", "UNCONFIRMED"):
+                   "NOT research acceptance", "no tradable post-market", "Volume reconciliation"):
         assert needle in head
     assert "release_time_unverified (excluded): 2" in md and "## Gate: PASS" in md
     data = json.loads(j.read_text())

@@ -4,7 +4,8 @@
 provider, earnings records, signals and candidates, simulator, metrics and
 report, CLI and runbook). Step 7's tooling is implemented (2026-11-18): the
 `tune-intraday-gap` grid sweep, the committed frozen-parameters file, and the
-out-of-sample run-once ledger. Running Step 7 is operator-only, and the
+out-of-sample run-once ledger. Step 1's daily-volume reconciliation flag is
+wired into the fetch and the report (2026-11-21). Running Step 7 is operator-only, and the
 acceptance gate has not been evaluated.
 **Stage:** Research only. The strategy is added at `mode: backtest` and stays
 there until this plan's acceptance gate passes. The global
@@ -284,7 +285,9 @@ Safety-relevant steps also pass `nox -s safety_typecheck`.
   symbol, date, interval, adjustment, and session coverage.
 - Data checks: tag the 16:00 closing-print bar; flag (don't silently fix)
   sessions where summed regular 5-minute volume differs from the daily bar
-  volume by more than a configured tolerance.
+  volume by more than a configured tolerance. (Wired in 2026-11-21: the fetch
+  caches each day's daily volume, and every report lists flagged sessions under
+  `data_quality`.)
 - Tests: session tagging on normal and early-close days, timestamp validation,
   closing-print detection, missing and zero-volume bars, and cache determinism
   (same input → same data hash).

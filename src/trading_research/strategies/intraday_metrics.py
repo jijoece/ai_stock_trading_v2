@@ -78,8 +78,10 @@ CAVEATS = (
     "pm at 20:00); those events are excluded as release_time_unverified and counted below.",
     "Fill model: bar-based simulation; market fills at the next bar open plus slippage and a "
     "spread proxy; extended-hours limits fill only if traded through; real liquidity may be worse. "
-    "The early-close post-market end (17:00 ET default) is UNCONFIRMED against vendor/broker - "
-    "operator must confirm before merge.",
+    "On early-close days there is no tradable post-market (Alpaca runs no after-hours session).",
+    "Volume reconciliation: sessions whose summed regular 5-minute volume differs from the daily "
+    "bar by more than volume_tolerance are listed under data_quality; they are flagged, never "
+    "corrected or excluded.",
 )
 
 _NY = ZoneInfo(MARKET_TIMEZONE_NAME)
@@ -693,10 +695,11 @@ def _jsonable(value: Any) -> Any:
 
 def build_report(
     evaluation: IntradayEvaluation, *, split: str = "unspecified", parameters: Mapping[str, Any] | None = None,
-    input_manifest_hash: str | None = None,
+    input_manifest_hash: str | None = None, data_quality: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Deterministic report dict (no wall clock): caveats first, then identity,
-    gate, metrics, baselines, control."""
+    gate, metrics, baselines, control. `data_quality` is report-only (it never
+    affects the gate); the caller folds it into `input_manifest_hash`."""
     r = evaluation.result
     # The engine's run id only sees bars its own simulation read. When the caller supplies a manifest
     # covering every consumed input (eligibility, benchmark, baseline, control bars; EPS rows), fold it in.
@@ -731,6 +734,7 @@ def build_report(
         "baselines": _jsonable(dict(evaluation.baselines)),
         "ordinary_day_control": _jsonable(evaluation.control),
         "doubled_spread": _jsonable(evaluation.doubled_spread),
+        "data_quality": _jsonable(dict(data_quality or {})),
     }
     report["report_hash"] = hash_config(report)
     return report
@@ -779,6 +783,20 @@ def render_markdown(report: Mapping[str, Any]) -> str:
     if report["doubled_spread"] is not None:
         d = report["doubled_spread"]
         lines.append(f"- doubled extended spread: trades {d['trades']}; expectancy_r: {d['expectancy_r']}")
+    vol = report.get("data_quality", {}).get("volume_reconciliation")
+    if vol is not None:
+        lines += [
+            "", "## Data quality: daily-volume reconciliation (flag only)", "",
+            f"- tolerance: {vol['tolerance']}; sessions checked: {vol['sessions_checked']}; "
+            f"no daily bar: {vol['daily_volume_unavailable']}; flagged: {vol['flagged_count']}",
+        ]
+        if vol["flagged"]:
+            lines += ["", "| symbol | session | regular volume | daily volume | relative difference |", "|---|---|---|---|---|"]
+            for f in vol["flagged"]:
+                lines.append(
+                    f"| {f['symbol']} | {f['session_date']} | {f['regular_volume']} | {f['daily_volume']} | "
+                    f"{f['relative_difference']} |"
+                )
     lines += ["", RESEARCH_NOTE, ""]
     return "\n".join(lines)
 

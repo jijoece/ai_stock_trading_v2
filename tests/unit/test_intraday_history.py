@@ -13,6 +13,7 @@ from trading_research.backtesting.intraday_history import (
     intraday_data_hash,
     missing_regular_slots,
     reconcile_daily_volume,
+    volume_reconciliation_summary,
 )
 from trading_research.backtesting.models import BacktestError, IntradayBar
 
@@ -282,6 +283,79 @@ def test_reconcile_within_tolerance_and_flagged():
     bad = reconcile_daily_volume(bars, 2000, Decimal("0.05"))
     assert bad.flagged and bad.difference == -1000 and bad.relative_difference == Decimal("0.5")
     assert bars[0].volume == 600  # never fixed
+
+
+def test_volume_reconciliation_summary_is_sorted_and_counts_unavailable():
+    ok = (make_bar(NORMAL, 9, 30, "regular", 1000),)
+    sessions = {
+        ("ZZZ", NORMAL): (ok, 3000),  # flagged
+        ("ABC", NORMAL): (ok, 1000),  # reconciles
+        ("ABC", EARLY): ((), None),  # no daily bar
+        ("ABC", date(2026, 3, 10)): (ok, 5000),  # flagged
+    }
+    s = volume_reconciliation_summary(sessions, Decimal("0.20"))
+    assert s["sessions_checked"] == 3 and s["daily_volume_unavailable"] == 1 and s["flagged_count"] == 2
+    assert [(f["symbol"], f["session_date"]) for f in s["flagged"]] == [("ABC", "2026-03-10"), ("ZZZ", "2026-03-11")]
+    assert s["flagged"][1]["relative_difference"] == str(Decimal(2000) / Decimal(3000))
+
+
+def daily_raw(day, volume, *, utc_midnight=False):
+    tz = timezone.utc if utc_midnight else NY
+    t = datetime(day.year, day.month, day.day, tzinfo=tz).astimezone(timezone.utc)
+    return {"t": t.isoformat().replace("+00:00", "Z"), "o": 1, "h": 1, "l": 1, "c": 1, "v": volume}
+
+
+def test_fetch_daily_volumes_params_pagination_and_stamp_forms(tmp_path):
+    p = CachedAlpacaIntradayProvider(tmp_path, adjustment="split", feed="sip")
+    http = FakeHttp([
+        {"bars": [daily_raw(date(2026, 3, 10), 500)], "next_page_token": "tok"},
+        {"bars": [daily_raw(NORMAL, 700, utc_midnight=True)], "next_page_token": None},
+    ])
+    got = p.fetch_daily_volumes(http, "abc", date(2026, 3, 10), NORMAL)
+    assert got == {date(2026, 3, 10): 500, NORMAL: 700}
+    url, params, op, symbol = http.calls[0]
+    assert url.endswith("/ABC/bars") and op == "daily_bars" and symbol == "ABC"
+    assert params["timeframe"] == "1Day" and params["start"] == "2026-03-10" and params["end"] == "2026-03-11"
+    assert params["feed"] == "sip" and params["adjustment"] == "split"
+    assert http.calls[1][1]["page_token"] == "tok"
+
+
+@pytest.mark.parametrize("bars", [
+    [daily_raw(NORMAL, 1), daily_raw(NORMAL, 2)],  # duplicate day
+    [{"t": "2026-03-11T04:00:00", "v": 1}],  # naive
+    [{"t": "2026-03-11T04:00:00Z", "v": "12"}],  # non-integer volume
+    [{"t": "2026-03-11T04:00:00Z", "v": -1}],
+    [{"t": "2026-03-11T04:00:00Z"}],  # no volume
+])
+def test_fetch_daily_volumes_rejects_malformed_bars(tmp_path, bars):
+    with pytest.raises(BacktestError):
+        CachedAlpacaIntradayProvider(tmp_path).fetch_daily_volumes(FakeHttp([{"bars": bars}]), "ABC", NORMAL, NORMAL)
+
+
+def test_cached_day_carries_daily_volume(tmp_path):
+    p = CachedAlpacaIntradayProvider(tmp_path)
+    p.fetch(FakeHttp([fixture_payload(NORMAL)]), "ABC", NORMAL, daily_volume=1234)
+    assert p.daily_volume("ABC", NORMAL) == 1234
+    p.fetch(FakeHttp([fixture_payload(NORMAL)]), "ABC", NORMAL)
+    assert p.daily_volume("ABC", NORMAL) is None
+    with pytest.raises(BacktestError):
+        p.fetch(ExplodingHttp(), "ABC", NORMAL, daily_volume=-5)
+
+
+@pytest.mark.parametrize("damage", ["v1_schema", "missing_field", "negative", "bool", "string"])
+def test_cache_daily_volume_validation(tmp_path, damage):
+    p = CachedAlpacaIntradayProvider(tmp_path)
+    path = p.fetch(FakeHttp([fixture_payload(NORMAL)]), "ABC", NORMAL, daily_volume=10)
+    doc = json.loads(path.read_text())
+    if damage == "v1_schema":
+        doc["schema_version"] = 1
+    elif damage == "missing_field":
+        del doc["daily_volume"]
+    else:
+        doc["daily_volume"] = {"negative": -1, "bool": True, "string": "10"}[damage]
+    path.write_text(json.dumps(doc))
+    with pytest.raises(BacktestError):
+        p.get_bars("ABC", NORMAL)
 
 
 def test_reconcile_zero_daily_volume_and_negative_tolerance():
