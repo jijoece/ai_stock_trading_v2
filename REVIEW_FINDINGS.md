@@ -3,26 +3,47 @@
 ## Review Metadata
 
 - Repository: `/Users/jijopaul/workspace/ai_stock_trading_v2`
-- Branch: `intraday-earnings-gap`
-- Reviewed HEAD: `903b256b935ab665ffda74af8d3305cbb05a8964`
-- Subject: Record PR 43 Step 7 review fixes pending re-review
-- Claude commits reviewed: 3a530d278245e47dc47c248a8cdb4470522a9c69,0c8f5c8550aba60de53543153db6e6ac6d4b45d8,638db304115852d1b8eb497170c139ea16053cda,9578517a701754a82f7148a4d44be53d43171adc,4f0ede1eaf54297e8e754b45e8f9249ffe96a3b0,32dd766ce8f292aebbb5cbab8b304904398b3d50,14c77d1881f2dd61bfbe03d713e376e310d1f15a,5c8062a4a18ca2ea579db379cbfd3d10fcb0168c,3c2b311c56757ec0e0ba1f4ddcd4f8b9edebaf83,3dc8d4d4912e4aa6f2150760183187d277fdc185,a5515c9aef3a6a80f278cf6e8d5ce563e4456233,534bfa1ad58025cc6adab4a334f0639a74c52c47,b0afdd6d0388e161277d9baa435b12c157e78cae,0d053969f9b2315181b20f2c4d0f1f485d2b90bc,99d6457279d3c07f5244ba4f456ada0e3544c408,0b4789ee4009c55081a91e931769a865469c8aa4,f424a3369c0cd5a24f9d6efc4457880a15651060,a2ff2e297f9072d3d2347c78b69c36e08f496e1d,ebd73222f9ec72e4b6cc90c610d91b567549eb82,399b812dcdc79a0daca07bdd6b5d18f713221178,903b256b935ab665ffda74af8d3305cbb05a8964
+- Branch: `intraday-gap-volume-reconciliation`
+- Reviewed HEAD: `27202e708a00f458c735ef3cf7a5f1f75b86a325`
+- Subject: Wire Step 1 daily-volume reconciliation into the intraday-gap fetch and report
+- Claude commits reviewed: 27202e708a00f458c735ef3cf7a5f1f75b86a325
 - Review scope: INCREMENTAL
-- Fix round: 1
+- Fix round: 0
 - Trigger: local Git `post-commit`
-- Review status: CLEAN
-- Highest priority: NONE
+- Review status: FIXES_APPLIED_PENDING_REVIEW
+- Highest priority: P2
 - Finding count: 0
+- Fix commit: e6523ad4644925081e9810ca5b36ccc92654de38
 
 ## Findings
 
-No findings.
+### [P2] Investigate: daily-volume changes can leave the run identity unchanged
 
-Reviewed all 21 specified Claude-authored commits chronologically and verified potential defects against HEAD `903b256b935ab665ffda74af8d3305cbb05a8964`. Earlier concerns involving incomplete sessions, cache identity, point-in-time inputs, report identity, frozen configuration, and OOS ledger concurrency were fixed by later commits in the range.
+Commit: 27202e708a00f458c735ef3cf7a5f1f75b86a325
+
+Location: src/trading_research/cli.py:2967-2972
+
+Concern: Verify whether every cached daily-volume input is intended to affect the run ID. The implementation hashes only the aggregated reconciliation summary, which omits daily volumes for sessions that remain within tolerance.
+
+Evidence: `volume_reconciliation_summary()` records actual volumes only for flagged sessions. For unflagged sessions it records only aggregate counts. Consequently, changing a session’s `daily_volume` from one within-tolerance value to another leaves `volume_check`, the manifest hash, and the run ID unchanged. The added test at tests/unit/test_backtest_intraday_gap_cli.py:476-494 changes a flagged session into an unflagged one, so it does not cover this case. This conflicts with the runbook’s statement that daily volumes are part of the run ID.
+
+Potential impact if confirmed: Two runs consuming different cached vendor data could share an identity and be treated as identical by the out-of-sample run-once ledger, weakening reproducibility and auditability.
+
+Investigation and conditional remediation: First verify against current HEAD that changing an unflagged session’s non-null daily volume to another still-unflagged value preserves the run ID. If confirmed, include a deterministic per-session daily-volume manifest—including `None`—in the hashed inputs and add regression coverage for within-tolerance-to-within-tolerance changes. If disproved or already fixed, document the evidence and leave the code unchanged.
+
+Validation: Add a test that changes one read session’s daily volume without crossing `volume_tolerance`, confirms trading results remain unchanged, and asserts that the run ID changes.
 
 Tests or diagnostics run:
 
-- AST parsing succeeded for all 24 changed Python files.
-- `git diff --check` found only documentation/configuration whitespace, outside the requested scope.
-- Targeted pytest collection could not start because the read-only environment provides no writable temporary directory.
-- No files or external state were modified. No network, broker, model, scheduler, credentialed test, or order path was invoked.
+- `git diff --check 9809529aad4d8f552e8c22db105513ced132ada5 27202e708a00f458c735ef3cf7a5f1f75b86a325` — passed.
+- Targeted `nox -s tests -- tests/unit/test_intraday_history.py tests/unit/test_backtest_intraday_gap_cli.py tests/unit/test_intraday_metrics.py` — could not start because the read-only environment had no usable temporary directory.
+- CodeRabbit CLI review — not run because its required host-authenticated execution was unavailable under the no-approval sandbox policy.
+
+## Fix Record
+
+- [P2] daily-volume run identity — CONFIRMED and fixed in `e6523ad4644925081e9810ca5b36ccc92654de38`.
+  `backtest_intraday_gap_cli` now hashes a sorted per-session `daily_volumes` list (including `None`)
+  into the input manifest. Regression: `test_within_tolerance_daily_volume_change_changes_the_run_identity`
+  (fails on `27202e7`, passes on the fix).
+- Validation: `nox -s ci` passed (tests 4391 passed / 213 skipped; paper_tests 160 passed;
+  safety_typecheck and migration_smoke successful).

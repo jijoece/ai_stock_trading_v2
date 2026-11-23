@@ -8,8 +8,13 @@ or worker invokes it over the network.
 
 Session tagging uses the XNYS calendar: 04:00 to the regular open is `pre`, the
 regular session is `regular`, and the regular close up to the post-market end
-(20:00 ET, or the configured early-close end, default 17:00 ET - UNCONFIRMED
-against vendor/broker) is `post`. Bars starting outside that window are dropped.
+(20:00 ET; on early-close days the configured end, default 13:00 ET because
+Alpaca runs no after-hours session on half-days) is `post`. Bars starting
+outside that window are dropped.
+
+Each cached day also stores the vendor's daily-bar volume (or null when the
+vendor returned no daily bar), so the offline run can flag (never fix) days
+whose summed regular-session 5-minute volume disagrees with it (plan Step 1).
 The first post bar (starting at the regular close) carries closing-auction
 volume and is flagged `is_closing_print`; it must never be treated as tradable
 post-market liquidity.
@@ -47,7 +52,11 @@ INTERVAL_MINUTES = 5
 INTERVAL_LABEL = "5Min"
 ADJUSTMENTS = ("raw", "split", "all")
 SESSION_COVERAGE = "pre+regular+post"
-CACHE_SCHEMA_VERSION = 1
+CACHE_SCHEMA_VERSION = 1  # bar-content hash schema (data_hash, manifest); unchanged by the doc schema
+# Cache document schema. v2 adds `daily_volume`; a v1 document is refused offline and refetched by
+# the fetch step, so every cached day carries the daily volume the reconciliation needs.
+CACHE_DOC_SCHEMA_VERSION = 2
+DAILY_INTERVAL_LABEL = "1Day"
 
 _NY = ZoneInfo(MARKET_TIMEZONE_NAME)
 
@@ -162,6 +171,33 @@ def reconcile_daily_volume(
     return VolumeReconciliation(regular, daily_volume, diff, rel, tolerance, within)
 
 
+def volume_reconciliation_summary(
+    sessions: Mapping[tuple[str, date], tuple[tuple[IntradayBar, ...], int | None]], tolerance: Decimal,
+) -> dict[str, Any]:
+    """Data-quality summary over every (symbol, session) a run read: how many were checked against
+    the daily bar, how many had no daily bar, and each flagged session. Report-only: it never
+    changes eligibility, fills or the gate. Deterministic (sorted by symbol, then date)."""
+    checked = unavailable = 0
+    flagged: list[dict[str, Any]] = []
+    for (symbol, day) in sorted(sessions):
+        bars, daily = sessions[(symbol, day)]
+        if daily is None:
+            unavailable += 1
+            continue
+        checked += 1
+        rec = reconcile_daily_volume(bars, daily, tolerance)
+        if rec.flagged:
+            flagged.append({
+                "symbol": symbol, "session_date": day.isoformat(),
+                "regular_volume": rec.regular_volume, "daily_volume": rec.daily_volume,
+                "relative_difference": None if rec.relative_difference is None else str(rec.relative_difference),
+            })
+    return {
+        "tolerance": str(tolerance), "sessions_checked": checked,
+        "daily_volume_unavailable": unavailable, "flagged_count": len(flagged), "flagged": flagged,
+    }
+
+
 # -- providers ---------------------------------------------------------------
 
 
@@ -222,6 +258,14 @@ class CachedAlpacaIntradayProvider:
     # offline read ----------------------------------------------------------
 
     def get_bars(self, symbol: str, session_date: date) -> tuple[IntradayBar, ...]:
+        return self.load_session(symbol, session_date)[0]
+
+    def daily_volume(self, symbol: str, session_date: date) -> int | None:
+        """The vendor's daily-bar volume cached with this day, or None when it returned none."""
+        return self.load_session(symbol, session_date)[1]
+
+    def load_session(self, symbol: str, session_date: date) -> tuple[tuple[IntradayBar, ...], int | None]:
+        """Bars and daily volume from one read of the same cache document."""
         symbol = symbol.upper()
         path = self.cache_path(symbol, session_date)
         if not path.exists():
@@ -234,8 +278,10 @@ class CachedAlpacaIntradayProvider:
             raise BacktestError(f"{symbol} {session_date}: unreadable intraday cache ({exc})") from exc
         if not isinstance(doc, dict):
             raise BacktestError(f"{symbol} {session_date}: intraday cache document is not a JSON object")
-        if doc.get("schema_version") != CACHE_SCHEMA_VERSION:
-            raise BacktestError(f"{symbol} {session_date}: unsupported intraday cache schema")
+        if doc.get("schema_version") != CACHE_DOC_SCHEMA_VERSION:
+            raise BacktestError(
+                f"{symbol} {session_date}: unsupported intraday cache schema; rerun the fetch step to refresh it"
+            )
         expected = {
             "symbol": symbol, "session_date": session_date.isoformat(), "interval": INTERVAL_LABEL,
             "adjustment": self._adjustment, "coverage": self._coverage, "feed": self._feed,
@@ -246,7 +292,12 @@ class CachedAlpacaIntradayProvider:
         bars = self._parse(symbol, session_date, doc.get("bars") or [])
         if doc.get("data_hash") != intraday_data_hash(bars):
             raise BacktestError(f"{symbol} {session_date}: intraday cache hash mismatch")
-        return bars
+        if "daily_volume" not in doc:
+            raise BacktestError(f"{symbol} {session_date}: intraday cache has no daily_volume field")
+        daily = doc["daily_volume"]
+        if daily is not None and (isinstance(daily, bool) or not isinstance(daily, int) or daily < 0):
+            raise BacktestError(f"{symbol} {session_date}: intraday cache daily_volume is invalid")
+        return bars, daily
 
     def _parse(self, symbol: str, session_date: date, raw_bars: list) -> tuple[IntradayBar, ...]:
         out: list[IntradayBar] = []
@@ -275,8 +326,58 @@ class CachedAlpacaIntradayProvider:
 
     # explicit fetch (credentialed; never called from tests over the network) --
 
-    def fetch(self, http_client: JsonHttpClient, symbol: str, session_date: date) -> Path:
-        """Fetch one symbol-day over the injected client and write the cache."""
+    def fetch_daily_volumes(
+        self, http_client: JsonHttpClient, symbol: str, first: date, last: date,
+    ) -> dict[date, int]:
+        """Daily-bar volume per session date in [first, last], in one paginated request, using the
+        same feed and adjustment as the 5-minute bars. Days the vendor returns no bar for are absent."""
+        symbol = symbol.upper()
+        if first > last:
+            raise BacktestError(f"{symbol}: daily-volume range starts after it ends")
+        params = {
+            "timeframe": DAILY_INTERVAL_LABEL, "start": first.isoformat(), "end": last.isoformat(),
+            "adjustment": self._adjustment, "limit": 10000, "feed": self._feed, "sort": "asc",
+        }
+        out: dict[date, int] = {}
+        page_token = None
+        for _ in range(20):  # bounded pagination
+            page_params = dict(params)
+            if page_token:
+                page_params["page_token"] = page_token
+            payload, _meta = http_client.get_json(
+                f"{DATA_BASE_URL}/{symbol}/bars", params=page_params, operation="daily_bars", symbol=symbol,
+            )
+            if not isinstance(payload, dict) or "bars" not in payload:
+                raise BacktestError(f"{symbol}: malformed daily-bar response (no 'bars')")
+            for raw in payload["bars"] or []:
+                try:
+                    stamp = datetime.fromisoformat(str(raw["t"]).replace("Z", "+00:00"))
+                    vol = raw["v"]
+                    if isinstance(vol, bool) or not isinstance(vol, int) or vol < 0:
+                        raise ValueError(f"volume {vol!r}")
+                except (KeyError, ValueError, TypeError) as exc:
+                    raise BacktestError(f"{symbol}: malformed daily bar ({exc})") from exc
+                if stamp.tzinfo is None:
+                    raise BacktestError(f"{symbol}: daily bar timestamp {raw['t']!r} is naive")
+                # A daily bar is stamped at the session's midnight (ET or UTC); either way its UTC
+                # calendar date is the session date.
+                day = stamp.astimezone(timezone.utc).date()
+                if day in out:
+                    raise BacktestError(f"{symbol}: duplicate daily bar for {day}")
+                if first <= day <= last:
+                    out[day] = vol
+            page_token = payload.get("next_page_token")
+            if not page_token:
+                return out
+        raise BacktestError(f"{symbol}: daily-bar pagination did not terminate")
+
+    def fetch(
+        self, http_client: JsonHttpClient, symbol: str, session_date: date, *, daily_volume: int | None = None,
+    ) -> Path:
+        """Fetch one symbol-day over the injected client and write the cache, storing
+        `daily_volume` (from `fetch_daily_volumes`; None when the vendor had no daily bar)."""
+        if daily_volume is not None and (isinstance(daily_volume, bool) or daily_volume < 0):
+            raise BacktestError("daily volume must be a non-negative integer or None")
         symbol = symbol.upper()
         try:
             start = premarket_open(session_date)
@@ -308,10 +409,10 @@ class CachedAlpacaIntradayProvider:
             raise BacktestError(f"{symbol} {session_date}: intraday pagination did not terminate")
         bars = self._parse(symbol, session_date, raw_bars)
         doc = {
-            "schema_version": CACHE_SCHEMA_VERSION, "symbol": symbol,
+            "schema_version": CACHE_DOC_SCHEMA_VERSION, "symbol": symbol,
             "session_date": session_date.isoformat(), "interval": INTERVAL_LABEL,
             "adjustment": self._adjustment, "coverage": self._coverage, "feed": self._feed,
-            "data_hash": intraday_data_hash(bars),
+            "data_hash": intraday_data_hash(bars), "daily_volume": daily_volume,
             "bars": [
                 {"t": b.start.astimezone(timezone.utc).isoformat().replace("+00:00", "Z"),
                  "o": _dec(b.open), "h": _dec(b.high), "l": _dec(b.low), "c": _dec(b.close), "v": b.volume}
@@ -339,14 +440,31 @@ class RecordingIntradayProvider:
     def __init__(self, inner: IntradayHistoryProvider):
         self._inner = inner
         self._seen: dict[tuple[str, date], tuple[IntradayBar, ...]] = {}
+        self._daily: dict[tuple[str, date], int | None] = {}
 
     def get_bars(self, symbol: str, session_date: date) -> tuple[IntradayBar, ...]:
         key = (symbol.upper(), session_date)
         if key in self._seen:
             return self._seen[key]  # every stage sees the first snapshot, which the manifest records
-        bars = tuple(self._inner.get_bars(symbol, session_date))
-        self._seen[key] = bars
-        return bars
+        load_session = getattr(self._inner, "load_session", None)
+        if load_session is not None:
+            # Bars and daily volume come from the same cache load, so a cache entry replaced
+            # mid-run can never pair old bars with a new daily volume.
+            bars, daily = load_session(symbol, session_date)
+        else:
+            bars, daily = self._inner.get_bars(symbol, session_date), None
+        self._seen[key] = tuple(bars)
+        self._daily[key] = daily
+        return self._seen[key]
+
+    def reads(self) -> dict[tuple[str, date], tuple[IntradayBar, ...]]:
+        """Every (SYMBOL, session_date) read so far, with the snapshot every stage saw."""
+        return dict(self._seen)
+
+    def daily_volumes(self) -> dict[tuple[str, date], int | None]:
+        """Daily volume captured with each read's first snapshot (None: no daily bar, or a provider
+        that has none)."""
+        return dict(self._daily)
 
     def manifest_hash(self, extra: Mapping[str, Any] | None = None) -> str:
         """Hash of every bar read (and each read's key, so empty days count) plus `extra` inputs."""
