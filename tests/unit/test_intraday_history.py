@@ -426,6 +426,29 @@ def test_recording_provider_returns_the_first_snapshot_it_recorded(tmp_path):
     assert rec.manifest_hash() == manifest
 
 
+def test_recording_provider_pairs_daily_volume_with_the_first_bars_snapshot(tmp_path):
+    from trading_research.backtesting.intraday_history import RecordingIntradayProvider
+
+    prov = CachedAlpacaIntradayProvider(tmp_path)
+    prov.fetch(FakeHttp([fixture_payload(NORMAL)]), "ABC", NORMAL, daily_volume=1000)
+    rec = RecordingIntradayProvider(prov)
+    first = rec.get_bars("ABC", NORMAL)
+    # A concurrent fetch replaces the entry with different bars and daily volume.
+    prov.fetch(FakeHttp([{"bars": [raw(NORMAL, 9, 30, volume=2000)]}]), "ABC", NORMAL, daily_volume=2000)
+    assert prov.daily_volume("ABC", NORMAL) == 2000
+    assert rec.get_bars("ABC", NORMAL) == first
+    assert rec.daily_volumes() == {("ABC", NORMAL): 1000}
+
+
+def test_recording_provider_without_daily_volume_support_records_none():
+    from trading_research.backtesting.intraday_history import RecordingIntradayProvider
+
+    bars = (make_bar(NORMAL, 9, 30, "regular"),)
+    rec = RecordingIntradayProvider(FixtureIntradayHistoryProvider({("ABC", NORMAL): bars}))
+    assert rec.get_bars("ABC", NORMAL) == bars
+    assert rec.daily_volumes() == {("ABC", NORMAL): None}
+
+
 def test_recording_provider_manifest_tracks_every_read(tmp_path):
     from trading_research.backtesting.intraday_history import RecordingIntradayProvider
 

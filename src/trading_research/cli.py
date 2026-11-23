@@ -2964,7 +2964,7 @@ def backtest_intraday_gap_cli(
             parameters["strategy_config_sha256"] = frozen.strategy_config_sha256
         # Step 1 data check: flag (never fix) read sessions whose regular 5-minute volume disagrees with
         # the daily bar. Report-only, but part of the run identity since it is in the report.
-        daily_volumes = {key: provider.daily_volume(*key) for key in recorder.reads()}
+        daily_volumes = recorder.daily_volumes()  # paired with each session's first bars snapshot
         volume_check = volume_reconciliation_summary(
             {key: (bars, daily_volumes[key]) for key, bars in recorder.reads().items()},
             config.volume_tolerance,

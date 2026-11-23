@@ -258,13 +258,14 @@ class CachedAlpacaIntradayProvider:
     # offline read ----------------------------------------------------------
 
     def get_bars(self, symbol: str, session_date: date) -> tuple[IntradayBar, ...]:
-        return self._load(symbol, session_date)[0]
+        return self.load_session(symbol, session_date)[0]
 
     def daily_volume(self, symbol: str, session_date: date) -> int | None:
         """The vendor's daily-bar volume cached with this day, or None when it returned none."""
-        return self._load(symbol, session_date)[1]
+        return self.load_session(symbol, session_date)[1]
 
-    def _load(self, symbol: str, session_date: date) -> tuple[tuple[IntradayBar, ...], int | None]:
+    def load_session(self, symbol: str, session_date: date) -> tuple[tuple[IntradayBar, ...], int | None]:
+        """Bars and daily volume from one read of the same cache document."""
         symbol = symbol.upper()
         path = self.cache_path(symbol, session_date)
         if not path.exists():
@@ -439,18 +440,31 @@ class RecordingIntradayProvider:
     def __init__(self, inner: IntradayHistoryProvider):
         self._inner = inner
         self._seen: dict[tuple[str, date], tuple[IntradayBar, ...]] = {}
+        self._daily: dict[tuple[str, date], int | None] = {}
 
     def get_bars(self, symbol: str, session_date: date) -> tuple[IntradayBar, ...]:
         key = (symbol.upper(), session_date)
         if key in self._seen:
             return self._seen[key]  # every stage sees the first snapshot, which the manifest records
-        bars = tuple(self._inner.get_bars(symbol, session_date))
-        self._seen[key] = bars
-        return bars
+        load_session = getattr(self._inner, "load_session", None)
+        if load_session is not None:
+            # Bars and daily volume come from the same cache load, so a cache entry replaced
+            # mid-run can never pair old bars with a new daily volume.
+            bars, daily = load_session(symbol, session_date)
+        else:
+            bars, daily = self._inner.get_bars(symbol, session_date), None
+        self._seen[key] = tuple(bars)
+        self._daily[key] = daily
+        return self._seen[key]
 
     def reads(self) -> dict[tuple[str, date], tuple[IntradayBar, ...]]:
         """Every (SYMBOL, session_date) read so far, with the snapshot every stage saw."""
         return dict(self._seen)
+
+    def daily_volumes(self) -> dict[tuple[str, date], int | None]:
+        """Daily volume captured with each read's first snapshot (None: no daily bar, or a provider
+        that has none)."""
+        return dict(self._daily)
 
     def manifest_hash(self, extra: Mapping[str, Any] | None = None) -> str:
         """Hash of every bar read (and each read's key, so empty days count) plus `extra` inputs."""
