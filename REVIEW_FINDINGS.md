@@ -3,47 +3,66 @@
 ## Review Metadata
 
 - Repository: `/Users/jijopaul/workspace/ai_stock_trading_v2`
-- Branch: `intraday-gap-volume-reconciliation`
-- Reviewed HEAD: `27202e708a00f458c735ef3cf7a5f1f75b86a325`
-- Subject: Wire Step 1 daily-volume reconciliation into the intraday-gap fetch and report
-- Claude commits reviewed: 27202e708a00f458c735ef3cf7a5f1f75b86a325
+- Branch: `intraday-gap-earnings-csv`
+- Reviewed HEAD: `eca6a6462064bffcca45dc489f2090c670d21a8f`
+- Subject: Build the intraday-gap earnings CSV from FMP free plan plus SEC 8-K Item 2.02 times
+- Claude commits reviewed: eca6a6462064bffcca45dc489f2090c670d21a8f
 - Review scope: INCREMENTAL
 - Fix round: 0
 - Trigger: local Git `post-commit`
 - Review status: FIXES_APPLIED_PENDING_REVIEW
-- Highest priority: P2
+- Highest priority: P1
 - Finding count: 0
-- Fix commit: e6523ad4644925081e9810ca5b36ccc92654de38
+- Fix commit: d6f099d76756c84a6a3b3840f5ba232ad2d5783e
 
 ## Findings
 
-### [P2] Investigate: daily-volume changes can leave the run identity unchanged
+### [P1] Investigate: cached raw files permanently suppress later earnings and filing updates
 
-Commit: 27202e708a00f458c735ef3cf7a5f1f75b86a325
+Commit: eca6a6462064bffcca45dc489f2090c670d21a8f
 
-Location: src/trading_research/cli.py:2967-2972
+Location: src/trading_research/evidence_providers/earnings_export.py:143-147, 182-190
 
-Concern: Verify whether every cached daily-volume input is intended to affect the run ID. The implementation hashes only the aggregated reconciliation summary, which omits daily volumes for sessions that remain within tolerance.
+Concern: Existing per-symbol raw files may be treated as permanently complete, causing later builds to omit newly published quarterly earnings or SEC filings.
 
-Evidence: `volume_reconciliation_summary()` records actual volumes only for flagged sessions. For unflagged sessions it records only aggregate counts. Consequently, changing a session’s `daily_volume` from one within-tolerance value to another leaves `volume_check`, the manifest hash, and the run ID unchanged. The added test at tests/unit/test_backtest_intraday_gap_cli.py:476-494 changes a flagged session into an unflagged one, so it does not cover this case. This conflicts with the runbook’s statement that daily volumes are part of the run ID.
+Evidence: Both fetch paths skip a symbol whenever its raw file exists, without checking its capture time, requested date range, or whether newer reports are available. Because FMP’s endpoint is rolling and SEC submissions accumulate new filings, rerunning the documented workflow after another quarter will reuse stale snapshots. The runbook explicitly says saved symbols are skipped but provides no refresh or invalidation procedure.
 
-Potential impact if confirmed: Two runs consuming different cached vendor data could share an identity and be treated as identical by the out-of-sample run-once ledger, weakening reproducibility and auditability.
+Potential impact if confirmed: Backtests built from a reused raw directory can silently omit recent events or combine snapshots captured at materially different dates, producing incomplete and non-reproducible samples.
 
-Investigation and conditional remediation: First verify against current HEAD that changing an unflagged session’s non-null daily volume to another still-unflagged value preserves the run ID. If confirmed, include a deterministic per-session daily-volume manifest—including `None`—in the hashed inputs and add regression coverage for within-tolerance-to-within-tolerance changes. If disproved or already fixed, document the evidence and leave the code unchanged.
+Investigation and conditional remediation: Verify the concern against current provider behavior and the intended snapshot lifecycle first. If confirmed, add an explicit refresh mechanism or bounded freshness/completeness contract for both providers, document it, and add regression coverage proving a later fetch can incorporate newly available reports and filings. If snapshots are intentionally immutable and already rotated through an external documented process, record that evidence and leave the code unchanged.
 
-Validation: Add a test that changes one read session’s daily volume without crossing `volume_tolerance`, confirms trading results remain unchanged, and asserts that the run ID changes.
+Validation: Reproduce with a saved symbol, then make the fake provider expose an additional earnings row or Item 2.02 filing and rerun the fetch; verify whether the new data can enter the build without manually deleting files.
 
-Tests or diagnostics run:
+### [P1] Investigate: operator-selectable SEC clock can reinterpret an explicit UTC timestamp
 
-- `git diff --check 9809529aad4d8f552e8c22db105513ced132ada5 27202e708a00f458c735ef3cf7a5f1f75b86a325` — passed.
-- Targeted `nox -s tests -- tests/unit/test_intraday_history.py tests/unit/test_backtest_intraday_gap_cli.py tests/unit/test_intraday_metrics.py` — could not start because the read-only environment had no usable temporary directory.
-- CodeRabbit CLI review — not run because its required host-authenticated execution was unavailable under the no-approval sandbox policy.
+Commit: eca6a6462064bffcca45dc489f2090c670d21a8f
 
-## Fix Record
+Location: src/trading_research/evidence_providers/earnings_export.py:259-265
 
-- [P2] daily-volume run identity — CONFIRMED and fixed in `e6523ad4644925081e9810ca5b36ccc92654de38`.
-  `backtest_intraday_gap_cli` now hashes a sorted per-session `daily_volumes` list (including `None`)
-  into the input manifest. Regression: `test_within_tolerance_daily_volume_change_changes_the_run_identity`
-  (fails on `27202e7`, passes on the fix).
-- Validation: `nox -s ci` passed (tests 4391 passed / 213 skipped; paper_tests 160 passed;
-  safety_typecheck and migration_smoke successful).
+Concern: The `eastern` mode may discard the explicit UTC offset encoded by SEC’s trailing `Z` and reinterpret the same wall clock as New York time.
+
+Evidence: `_acceptance_local` first parses `Z` as `+00:00`, but `clock == "eastern"` then replaces that timezone instead of converting it. Elsewhere, the repository’s existing SEC provider treats the same field as UTC (`src/trading_research/evidence_providers/sec_provider.py:39-41`). The new runbook delegates this contract to manual histogram calibration, allowing identical source data to produce release times four or five hours apart.
+
+Potential impact if confirmed: A wrong selection can misclassify premarket, regular-session, and after-close events, drop valid events, or assign fabricated release times that affect candidate eligibility and backtest results.
+
+Investigation and conditional remediation: First verify the SEC field’s authoritative timezone contract and reconcile it with the existing SEC provider. If confirmed as UTC, remove or fail closed on the reinterpretation mode and add regression coverage using known SEC timestamps across daylight-saving boundaries. If SEC truly publishes ambiguous or historically inconsistent values, document concrete evidence and implement deterministic validation rather than operator inference. If the current behavior is correct, preserve it and record the supporting evidence.
+
+Validation: Compare known filing acceptance timestamps against the SEC filing detail page and assert that the exporter and existing SEC provider produce the same instant and New York wall-clock time.
+
+### [P2] Investigate: partial fetch failures can return success with `remaining: 0`
+
+Commit: eca6a6462064bffcca45dc489f2090c670d21a8f
+
+Location: src/trading_research/evidence_providers/earnings_export.py:160-172, 205-230
+
+Concern: Fetch commands may report successful completion and zero remaining work even when requested symbols failed and no raw file was saved.
+
+Evidence: Per-symbol provider failures and missing CIKs are accumulated in `failed`, but normal loop completion returns `remaining=0`. The CLI then exits successfully because the result has no top-level `error`. Only rate-limit and request-cap exits calculate remaining files.
+
+Potential impact if confirmed: Automation or an operator relying on exit status and `remaining` can proceed to build an incomplete earnings universe, silently biasing the sample toward symbols whose fetches succeeded.
+
+Investigation and conditional remediation: Verify the intended meanings of command success and `remaining` against the current runbook first. If confirmed, make partial completion unambiguous—such as counting all unsaved requested symbols as remaining and/or returning a non-success status—and add regression tests for provider errors, malformed responses, and missing CIKs. If `failed` is intentionally the sole retry signal and callers already enforce it, document that evidence and leave the code unchanged.
+
+Validation: Run the existing fake-client failure scenarios and assert that the command cannot be mistaken for complete while requested raw files remain absent.
+
+Tests or diagnostics run: Inspected the full commit diff and relevant earnings loader, strategy timing contract, existing SEC timestamp parser, tests, and runbooks. Attempted `tests/unit/test_earnings_export.py` with pytest and cache disabled; pytest could not start because the read-only environment had no writable temporary directory. No network, credentials, brokers, models, schedulers, or order paths were accessed.
