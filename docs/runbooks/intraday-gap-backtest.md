@@ -23,7 +23,9 @@ out-of-sample run.
 
 1. **Export the earnings CSV** (columns: `symbol,fiscal_period,report_date,timing,release_time,eps_estimate,eps_actual,source,captured_at`; see
    `tests/fixtures/earnings_surprises_sample.csv`). `timing` is `am` or `pm`;
-   `release_time` may be empty (see the release-time caveat below). Treat the
+   `release_time` may be empty (see the release-time caveat below). To build
+   it from the FMP free plan plus SEC filing times, follow
+   [`intraday-gap-earnings-csv.md`](intraday-gap-earnings-csv.md). Treat the
    file as a versioned snapshot: record its SHA-256 (`shasum -a 256 data/earnings.csv`)
    and commit or archive it. Use that exact file for fetching, tuning and the
    single out-of-sample run: the chronological split is recomputed from the

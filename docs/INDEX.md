@@ -71,6 +71,7 @@ Use runbooks for operator procedures; use code and tests for exact behavior.
 |---|---|
 | Historical strategy backtesting | [`runbooks/strategy-backtesting.md`](runbooks/strategy-backtesting.md) |
 | Intraday earnings-gap backtest (operator fetch, in-sample tuning, single out-of-sample run) | [`runbooks/intraday-gap-backtest.md`](runbooks/intraday-gap-backtest.md) |
+| Intraday earnings-gap earnings CSV (FMP free plan + SEC 8-K Item 2.02 times) | [`runbooks/intraday-gap-earnings-csv.md`](runbooks/intraday-gap-earnings-csv.md) |
 | Strategy paper testing, stages 3–5 | [`runbooks/strategy-paper-testing.md`](runbooks/strategy-paper-testing.md) |
 | Alpaca paper operations | [`runbooks/alpaca-paper-operations.md`](runbooks/alpaca-paper-operations.md) |
 | Recurring local paper trading | [`runbooks/recurring-local-paper-trading.md`](runbooks/recurring-local-paper-trading.md) |
