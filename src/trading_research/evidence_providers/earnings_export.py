@@ -19,7 +19,9 @@ Three separate steps (docs/runbooks/intraday-gap-earnings-csv.md):
    regular session, on non-trading days, in the future, or with null EPS are dropped and counted.
 
 The SEC submissions API's `acceptanceDateTime` is read exactly as the repository's SEC provider
-reads it (`sec_provider._parse_accepted_at`: the trailing `Z` is UTC). There is no operator
+reads it (`sec_provider._parse_accepted_at`: the trailing `Z` is UTC, verified against the
+EDGAR-displayed Eastern acceptance times of real filings in both EST and EDT; see the runbook's
+"SEC acceptance time" section). There is no operator
 choice. Every Item 2.02 acceptance must fall inside EDGAR's filing hours (06:00-22:00 ET) once
 converted, or the build fails closed: a feed whose clock disagrees with that contract is
 detected deterministically instead of silently shifting releases by four or five hours.

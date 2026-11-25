@@ -77,6 +77,22 @@ parser (`sec_provider._parse_accepted_at`), not something to work around in
 this command. `item_2_02_acceptance_hour_histogram_et` is still reported as
 a sanity check.
 
+The UTC reading was checked against EDGAR on 2026-11-24. Each submissions-feed
+value was compared with the "Accepted" time on the filing's EDGAR index page,
+which is Eastern:
+
+| Filing | `acceptanceDateTime` | EDGAR "Accepted" (ET) |
+|---|---|---|
+| AAPL 0000320193-26-000005 (EST) | `2026-01-29T21:30:33.000Z` | 2026-01-29 16:30:33 |
+| AAPL 0000320193-26-000018 (EDT) | `2026-07-30T20:30:28.000Z` | 2026-07-30 16:30:28 |
+| JPM 0001628280-26-001902 (EST) | `2026-01-13T11:41:09.000Z` | 2026-01-13 06:41:09 |
+| JPM 0001628280-26-048078 (EDT) | `2026-07-14T10:30:38.000Z` | 2026-07-14 06:30:38 |
+
+The `Z` hour shifts by one across daylight saving while the Eastern time
+stays fixed, so the field is genuine UTC. Apple's Item 2.02 history back to
+2015 shows the same pattern: `20:30Z` in summer and `21:30Z` in winter for its
+16:30 ET release. `tests/unit/test_earnings_export.py` pins these examples.
+
 ## Steps
 
 1. **Write the universe**, one symbol per line (`#` comments allowed), for

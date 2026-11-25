@@ -227,6 +227,40 @@ def test_acceptance_is_the_sec_provider_instant_across_dst(tmp_path, stamp, loca
     assert exported.time() == local and summary["acceptance_time_contract"] == ex.ACCEPTANCE_CONTRACT
 
 
+# Real Item 2.02 8-Ks: the submissions-feed `acceptanceDateTime` next to the "Accepted" wall time the
+# EDGAR filing index page displays (Eastern), both read from sec.gov on 2026-11-24. The `Z` hour moves
+# by one across DST while the Eastern time stays fixed, so the trailing `Z` really is UTC; reading it
+# as Eastern would put Apple's 16:30 releases at 20:30/21:30 (outside EDGAR hours) and JPMorgan's
+# 06:30 releases at 10:30/11:41 (dropped as in-session).
+EDGAR_ACCEPTANCE_EVIDENCE = [
+    # (symbol, accession, acceptanceDateTime, EDGAR-displayed "Accepted" ET, timing)
+    ("AAPL", "0000320193-26-000005", "2026-01-29T21:30:33.000Z", "2026-01-29 16:30:33", "pm"),  # EST
+    ("AAPL", "0000320193-26-000018", "2026-07-30T20:30:28.000Z", "2026-07-30 16:30:28", "pm"),  # EDT
+    ("JPM", "0001628280-26-001902", "2026-01-13T11:41:09.000Z", "2026-01-13 06:41:09", "am"),  # EST
+    ("JPM", "0001628280-26-048078", "2026-07-14T10:30:38.000Z", "2026-07-14 06:30:38", "am"),  # EDT
+]
+
+
+@pytest.mark.parametrize(("symbol", "accession", "stamp", "edgar_accepted", "timing"), EDGAR_ACCEPTANCE_EVIDENCE)
+def test_acceptance_reproduces_edgar_displayed_eastern_time(tmp_path, symbol, accession, stamp, edgar_accepted, timing):
+    expected = datetime.strptime(edgar_accepted, "%Y-%m-%d %H:%M:%S")
+    assert ex._acceptance_local(stamp).replace(tzinfo=None) == expected
+    write_raw(tmp_path, symbol, [fmp_row(symbol, stamp[:10])], [("8-K", "2.02,9.01", stamp)])
+    (row,), summary = build(tmp_path, [symbol])
+    assert (row.report_date, row.timing, row.release_time) == (expected.date(), timing, expected.time())
+    assert summary["dropped"] == {}
+
+
+def test_reading_the_z_as_eastern_would_contradict_edgar():
+    # Guards the disproved alternative: treating the stamp's wall time as Eastern disagrees with EDGAR
+    # for every evidence row, by exactly the UTC offset in force on that date (5h EST, 4h EDT).
+    for _, _, stamp, edgar_accepted, _ in EDGAR_ACCEPTANCE_EVIDENCE:
+        as_eastern = datetime.fromisoformat(stamp.replace("Z", ""))
+        shown = datetime.strptime(edgar_accepted, "%Y-%m-%d %H:%M:%S")
+        offset_hours = (as_eastern - shown).total_seconds() / 3600
+        assert offset_hours == (5 if stamp[5:7] in ("01", "02", "11", "12") else 4)
+
+
 def test_no_operator_clock_choice_remains(tmp_path):
     import inspect
 
