@@ -4,65 +4,52 @@
 
 - Repository: `/Users/jijopaul/workspace/ai_stock_trading_v2`
 - Branch: `intraday-gap-earnings-csv`
-- Reviewed HEAD: `eca6a6462064bffcca45dc489f2090c670d21a8f`
-- Subject: Build the intraday-gap earnings CSV from FMP free plan plus SEC 8-K Item 2.02 times
-- Claude commits reviewed: eca6a6462064bffcca45dc489f2090c670d21a8f
+- Reviewed HEAD: `a1be9f12090a8f4dddcd327fc76ffae4cabc1598`
+- Subject: Record PR 45 review fixes pending re-review
+- Claude commits reviewed: eca6a6462064bffcca45dc489f2090c670d21a8f,d6f099d76756c84a6a3b3840f5ba232ad2d5783e,a1be9f12090a8f4dddcd327fc76ffae4cabc1598
 - Review scope: INCREMENTAL
-- Fix round: 0
+- Fix round: 1
 - Trigger: local Git `post-commit`
 - Review status: FIXES_APPLIED_PENDING_REVIEW
 - Highest priority: P1
 - Finding count: 0
-- Fix commit: d6f099d76756c84a6a3b3840f5ba232ad2d5783e
+- Fix commit: 7f1c3bdac49635abbea85a47cc13ef7730d5a66d
 
 ## Findings
 
-### [P1] Investigate: cached raw files permanently suppress later earnings and filing updates
+### [P1] Investigate: SEC acceptance times may be shifted by treating Eastern timestamps as UTC
 
-Commit: eca6a6462064bffcca45dc489f2090c670d21a8f
+Commit: d6f099d76756c84a6a3b3840f5ba232ad2d5783e
 
-Location: src/trading_research/evidence_providers/earnings_export.py:143-147, 182-190
+Location: src/trading_research/evidence_providers/earnings_export.py:298-313
 
-Concern: Existing per-symbol raw files may be treated as permanently complete, causing later builds to omit newly published quarterly earnings or SEC filings.
+Concern: Verify whether `acceptanceDateTime` from the SEC submissions feed represents Eastern time despite its trailing `Z`. The current implementation unconditionally interprets it as UTC and converts it to New York time.
 
-Evidence: Both fetch paths skip a symbol whenever its raw file exists, without checking its capture time, requested date range, or whether newer reports are available. Because FMP’s endpoint is rolling and SEC submissions accumulate new filings, rerunning the documented workflow after another quarter will reuse stale snapshots. The runbook explicitly says saved symbols are skipped but provides no refresh or invalidation procedure.
+Evidence: `_acceptance_local()` delegates to `_parse_accepted_at()`, which parses `Z` as UTC. The fix commit made this interpretation mandatory and removed the operator calibration path. However, the SEC’s timestamp guidance defines EDGAR “Acceptance Time” as Eastern Standard Time, while the submissions API documentation does not document a UTC conversion contract. The newly added tests only compare the exporter with the repository’s existing parser, so both can agree while sharing the same incorrect assumption. SEC timestamp guidance (`https://www.sec.gov/about/webmaster-frequently-asked-questions`), SEC submissions API documentation (`https://www.sec.gov/search-filings/edgar-application-programming-interfaces`).
 
-Potential impact if confirmed: Backtests built from a reused raw directory can silently omit recent events or combine snapshots captured at materially different dates, producing incomplete and non-reproducible samples.
+Potential impact if confirmed: Acceptance times can shift by four or five hours. After-close releases may be classified as regular-session events and dropped, while some morning filings may fail the EDGAR-hours check. This can materially bias the earnings sample and alter backtest eligibility and results.
 
-Investigation and conditional remediation: Verify the concern against current provider behavior and the intended snapshot lifecycle first. If confirmed, add an explicit refresh mechanism or bounded freshness/completeness contract for both providers, document it, and add regression coverage proving a later fetch can incorporate newly available reports and filings. If snapshots are intentionally immutable and already rotated through an external documented process, record that evidence and leave the code unchanged.
+Investigation and conditional remediation: First verify the concern against the current code and authoritative, known filing examples by comparing submissions-feed values with the filing’s EDGAR acceptance time. If confirmed, parse the field according to the verified SEC clock contract, update the shared SEC parser consistently, and add regression coverage across standard- and daylight-saving periods. If disproved or already fixed, document the timestamp evidence and leave the code unchanged.
 
-Validation: Reproduce with a saved symbol, then make the fake provider expose an additional earnings row or Item 2.02 filing and rerun the fetch; verify whether the new data can enter the build without manually deleting files.
+Validation: Select known premarket and after-close Item 2.02 filings across EST and EDT dates. Assert that the exporter reproduces the EDGAR-displayed acceptance wall time, assigns the correct `am`/`pm` classification, and does not incorrectly drop the events as regular-session or outside filing hours.
 
-### [P1] Investigate: operator-selectable SEC clock can reinterpret an explicit UTC timestamp
+Tests or diagnostics run:
 
-Commit: eca6a6462064bffcca45dc489f2090c670d21a8f
+- `git diff --check e7d8f05fefb0d256022384acac7c6f75de4b3d9c..a1be9f12090a8f4dddcd327fc76ffae4cabc1598` — passed.
+- `nox -s tests -- tests/unit/test_earnings_export.py` — could not start because the read-only environment had no usable temporary directory.
+- CodeRabbit CLI review — not run because its required host-authenticated execution was unavailable under the no-approval sandbox policy.
+- Inspected all three requested commit diffs chronologically, the current exporter and CLI, unit tests, strict earnings loader, shared SEC parser, relevant ADR references, and current runbooks. No credentials, brokers, models, schedulers, GitHub operations, or order paths were accessed.
 
-Location: src/trading_research/evidence_providers/earnings_export.py:259-265
-
-Concern: The `eastern` mode may discard the explicit UTC offset encoded by SEC’s trailing `Z` and reinterpret the same wall clock as New York time.
-
-Evidence: `_acceptance_local` first parses `Z` as `+00:00`, but `clock == "eastern"` then replaces that timezone instead of converting it. Elsewhere, the repository’s existing SEC provider treats the same field as UTC (`src/trading_research/evidence_providers/sec_provider.py:39-41`). The new runbook delegates this contract to manual histogram calibration, allowing identical source data to produce release times four or five hours apart.
-
-Potential impact if confirmed: A wrong selection can misclassify premarket, regular-session, and after-close events, drop valid events, or assign fabricated release times that affect candidate eligibility and backtest results.
-
-Investigation and conditional remediation: First verify the SEC field’s authoritative timezone contract and reconcile it with the existing SEC provider. If confirmed as UTC, remove or fail closed on the reinterpretation mode and add regression coverage using known SEC timestamps across daylight-saving boundaries. If SEC truly publishes ambiguous or historically inconsistent values, document concrete evidence and implement deterministic validation rather than operator inference. If the current behavior is correct, preserve it and record the supporting evidence.
-
-Validation: Compare known filing acceptance timestamps against the SEC filing detail page and assert that the exporter and existing SEC provider produce the same instant and New York wall-clock time.
-
-### [P2] Investigate: partial fetch failures can return success with `remaining: 0`
-
-Commit: eca6a6462064bffcca45dc489f2090c670d21a8f
-
-Location: src/trading_research/evidence_providers/earnings_export.py:160-172, 205-230
-
-Concern: Fetch commands may report successful completion and zero remaining work even when requested symbols failed and no raw file was saved.
-
-Evidence: Per-symbol provider failures and missing CIKs are accumulated in `failed`, but normal loop completion returns `remaining=0`. The CLI then exits successfully because the result has no top-level `error`. Only rate-limit and request-cap exits calculate remaining files.
-
-Potential impact if confirmed: Automation or an operator relying on exit status and `remaining` can proceed to build an incomplete earnings universe, silently biasing the sample toward symbols whose fetches succeeded.
-
-Investigation and conditional remediation: Verify the intended meanings of command success and `remaining` against the current runbook first. If confirmed, make partial completion unambiguous—such as counting all unsaved requested symbols as remaining and/or returning a non-success status—and add regression tests for provider errors, malformed responses, and missing CIKs. If `failed` is intentionally the sole retry signal and callers already enforce it, document that evidence and leave the code unchanged.
-
-Validation: Run the existing fake-client failure scenarios and assert that the command cannot be mistaken for complete while requested raw files remain absent.
-
-Tests or diagnostics run: Inspected the full commit diff and relevant earnings loader, strategy timing contract, existing SEC timestamp parser, tests, and runbooks. Attempted `tests/unit/test_earnings_export.py` with pytest and cache disabled; pytest could not start because the read-only environment had no writable temporary directory. No network, credentials, brokers, models, schedulers, or order paths were accessed.
+Resolution (fix commit 7f1c3bdac49635abbea85a47cc13ef7730d5a66d): disproved. The parser is unchanged.
+Each submissions-feed `acceptanceDateTime` was compared with the "Accepted" Eastern time on the
+filing's EDGAR index page, both read from sec.gov on 2026-11-24. AAPL 0000320193-26-000005
+`2026-01-29T21:30:33.000Z` showed 16:30:33 (EST). AAPL 0000320193-26-000018
+`2026-07-30T20:30:28.000Z` showed 16:30:28 (EDT). JPM 0001628280-26-001902
+`2026-01-13T11:41:09.000Z` showed 06:41:09 (EST). JPM 0001628280-26-048078
+`2026-07-14T10:30:38.000Z` showed 06:30:38 (EDT). The `Z` hour moves with daylight saving
+while the Eastern time stays fixed, so the field is genuine UTC. Apple's Item 2.02 history back
+to 2015 shows the same 20:30Z/21:30Z pattern. Regression tests in
+`tests/unit/test_earnings_export.py` (`test_acceptance_reproduces_edgar_displayed_eastern_time`,
+`test_reading_the_z_as_eastern_would_contradict_edgar`) pin these filings. The runbook records
+the evidence. The SEC reference links above are kept as code spans because sec.gov returns 403 to the
+repository link checker.
