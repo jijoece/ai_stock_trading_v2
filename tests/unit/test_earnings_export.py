@@ -57,8 +57,8 @@ def write_raw(raw, symbol, fmp_rows, sec_filings=None):
         (raw / "sec" / f"{symbol}.json").write_text(json.dumps(sec_doc(symbol, sec_filings)))
 
 
-def build(raw, symbols, clock="utc", start=date(2025, 1, 1), end=date(2026, 12, 31)):
-    return ex.build_earnings_rows(raw, symbols, start=start, end=end, today=TODAY, acceptance_clock=clock)
+def build(raw, symbols, start=date(2025, 1, 1), end=date(2026, 12, 31)):
+    return ex.build_earnings_rows(raw, symbols, start=start, end=end, today=TODAY)
 
 
 # -- fetch FMP -----------------------------------------------------------------
@@ -88,6 +88,7 @@ def test_fetch_fmp_records_failures_by_class_only(tmp_path):
     http = FakeHttp({"AAA": {"Error Message": "premium endpoint key=secret"}, "BBB": ProviderRequestError("x?apikey=REDACTED", retryable=False)})
     s = ex.fetch_fmp_earnings(http, ["AAA", "BBB"], tmp_path, api_key="k", max_requests=5, now=NOW)
     assert s.failed == {"AAA": "unexpected_response_shape", "BBB": "ProviderRequestError"}
+    assert (s.remaining, s.complete, s.as_dict()["complete"]) == (2, False, False)
     assert not (tmp_path / "fmp").exists()
     with pytest.raises(ex.EarningsExportError):
         ex.fetch_fmp_earnings(http, ["AAA"], tmp_path, api_key="", max_requests=5, now=NOW)
@@ -107,6 +108,88 @@ def test_fetch_sec_resolves_cik_and_keeps_needed_fields(tmp_path):
     assert s.saved == 1 and s.failed == {"BRK.B": "unexpected_response_shape", "ZZZ": "no_cik"}
     doc = json.loads((tmp_path / "sec" / "AAA.json").read_text())
     assert doc["cik"] == "0000000012" and set(doc["recent"]) == set(ex._SEC_FIELDS)
+    # Both failures (malformed response, missing CIK) leave work outstanding: never "remaining 0".
+    assert (s.remaining, s.complete) == (2, False)
+
+
+def test_fetch_sec_provider_error_is_remaining_not_complete(tmp_path):
+    http = FakeHttp({
+        ex.SEC_TICKER_INDEX_URL: {"0": {"ticker": "AAA", "cik_str": 12}},
+        ex.SEC_SUBMISSIONS_URL.format(cik10="0000000012"): ProviderRequestError("boom", retryable=True),
+    })
+    s = ex.fetch_sec_submissions(http, ["AAA"], tmp_path, now=NOW)
+    assert (s.failed, s.remaining, s.complete) == ({"AAA": "ProviderRequestError"}, 1, False)
+
+
+def test_fetch_complete_only_when_every_symbol_is_saved(tmp_path):
+    http = FakeHttp({"AAA": [fmp_row("AAA", "2026-05-01")]})
+    s = ex.fetch_fmp_earnings(http, ["AAA"], tmp_path, api_key="k", max_requests=5, now=NOW)
+    assert (s.remaining, s.complete) == (0, True)
+    # A max_requests stop also counts symbols that failed earlier in the same run.
+    http2 = FakeHttp({"BBB": ProviderRequestError("x", retryable=False), "CCC": [], "DDD": []})
+    s2 = ex.fetch_fmp_earnings(http2, ["BBB", "CCC", "DDD"], tmp_path, api_key="k", max_requests=2, now=NOW)
+    assert (s2.stopped_reason, s2.remaining, s2.complete) == ("max_requests", 2, False)
+
+
+# -- refresh -------------------------------------------------------------------
+
+
+LATER = datetime(2027, 2, 20, 15, 0, tzinfo=timezone.utc)
+
+
+def test_fmp_refresh_before_refetches_stale_files_and_adds_new_reports(tmp_path):
+    http = FakeHttp({"AAA": [fmp_row("AAA", "2026-08-03")]})
+    ex.fetch_fmp_earnings(http, ["AAA"], tmp_path, api_key="k", max_requests=5, now=NOW)
+    http.responses["AAA"] = [fmp_row("AAA", "2026-08-03"), fmp_row("AAA", "2026-11-02")]
+    skipped = ex.fetch_fmp_earnings(http, ["AAA"], tmp_path, api_key="k", max_requests=5, now=LATER)
+    assert skipped.already_saved == 1 and len(http.calls) == 1  # no refresh asked: snapshot kept
+    cutoff = datetime(2027, 2, 1, tzinfo=timezone.utc)
+    s = ex.fetch_fmp_earnings(http, ["AAA"], tmp_path, api_key="k", max_requests=5, now=LATER, refresh_before=cutoff)
+    assert (s.saved, s.already_saved, s.complete) == (1, 0, True)
+    doc = json.loads((tmp_path / "fmp" / "AAA.json").read_text())
+    assert doc["fetched_at"] == LATER.isoformat() and [r["date"] for r in doc["rows"]] == ["2026-08-03", "2026-11-02"]
+    again = ex.fetch_fmp_earnings(http, ["AAA"], tmp_path, api_key="k", max_requests=5, now=LATER, refresh_before=cutoff)
+    assert again.already_saved == 1 and len(http.calls) == 2  # resumable: refreshed files are not refetched
+
+
+def test_failed_refresh_keeps_previous_file_and_stays_remaining(tmp_path):
+    http = FakeHttp({"AAA": [fmp_row("AAA", "2026-08-03")]})
+    ex.fetch_fmp_earnings(http, ["AAA"], tmp_path, api_key="k", max_requests=5, now=NOW)
+    before = (tmp_path / "fmp" / "AAA.json").read_bytes()
+    http.responses["AAA"] = ProviderRateLimitedError("limit")
+    s = ex.fetch_fmp_earnings(http, ["AAA"], tmp_path, api_key="k", max_requests=5, now=LATER,
+                              refresh_before=datetime(2027, 2, 1, tzinfo=timezone.utc))
+    assert (s.stopped_reason, s.remaining, s.complete) == ("rate_limited", 1, False)
+    assert (tmp_path / "fmp" / "AAA.json").read_bytes() == before
+    with pytest.raises(ex.EarningsExportError, match="timezone-aware"):
+        ex.fetch_fmp_earnings(http, ["AAA"], tmp_path, api_key="k", max_requests=5, now=LATER,
+                              refresh_before=datetime(2027, 2, 1))
+
+
+def test_sec_refresh_before_picks_up_a_new_item_2_02_filing(tmp_path):
+    def submissions(filings):
+        return {"filings": {"recent": {
+            "accessionNumber": [f"a-{i}" for i in range(len(filings))], "form": ["8-K"] * len(filings),
+            "items": ["2.02"] * len(filings), "acceptanceDateTime": filings, "filingDate": [f[:10] for f in filings],
+        }}}
+
+    sub_url = ex.SEC_SUBMISSIONS_URL.format(cik10="0000000012")
+    http = FakeHttp({ex.SEC_TICKER_INDEX_URL: {"0": {"ticker": "AAA", "cik_str": 12}},
+                     sub_url: submissions(["2026-08-03T20:10:00.000Z"])})
+    ex.fetch_sec_submissions(http, ["AAA"], tmp_path, now=NOW)
+    write_raw(tmp_path, "AAA", [fmp_row("AAA", "2026-08-03"), fmp_row("AAA", "2027-02-10")])
+    later_today = date(2027, 2, 20)
+    rows, s = ex.build_earnings_rows(tmp_path, ["AAA"], start=date(2026, 1, 1), end=date(2027, 12, 31), today=later_today)
+    assert len(rows) == 1 and s["dropped"] == {"sec_snapshot_predates_report": 1}  # stale, and says so
+
+    http.responses[sub_url] = submissions(["2026-08-03T20:10:00.000Z", "2027-02-10T21:15:00.000Z"])
+    assert ex.fetch_sec_submissions(http, ["AAA"], tmp_path, now=LATER).already_saved == 1
+    s2 = ex.fetch_sec_submissions(http, ["AAA"], tmp_path, now=LATER, refresh_before=datetime(2027, 2, 1, tzinfo=timezone.utc))
+    assert (s2.saved, s2.complete) == (1, True)
+    rows, s = ex.build_earnings_rows(tmp_path, ["AAA"], start=date(2026, 1, 1), end=date(2027, 12, 31), today=later_today)
+    assert [(r.report_date, r.release_time) for r in rows] == [(date(2026, 8, 3), time(16, 10)), (date(2027, 2, 10), time(16, 15))]
+    assert s["sec_fetched_at_span"] == [LATER.isoformat(), LATER.isoformat()]
+    assert s["fmp_fetched_at_span"] == [NOW.isoformat(), NOW.isoformat()]
 
 
 # -- offline build ---------------------------------------------------------------
@@ -126,12 +209,42 @@ def test_build_classifies_am_pm_and_drops_session_releases(tmp_path):
     assert summary["item_2_02_acceptance_hour_histogram_et"] == {"07": 1, "11": 1, "16": 1}
 
 
-def test_eastern_clock_reads_the_wall_time_as_new_york(tmp_path):
-    write_raw(tmp_path, "AAA", [fmp_row("AAA", "2026-08-03")], [("8-K", "2.02", "2026-08-03T16:10:00.000Z")])
-    (row,), _ = build(tmp_path, ["AAA"], clock="eastern")
-    assert row.timing == "pm" and row.release_time == time(16, 10)
-    _, utc_summary = build(tmp_path, ["AAA"], clock="utc")  # read as UTC it is 12:10 ET
-    assert utc_summary["dropped"] == {"released_during_session": 1}
+@pytest.mark.parametrize(("stamp", "local"), [
+    ("2026-03-06T21:05:00.000Z", time(16, 5)),  # EST (UTC-5), Friday before the spring change
+    ("2026-03-09T20:05:00.000Z", time(16, 5)),  # EDT (UTC-4), Monday after it
+    ("2026-10-30T20:05:00.000Z", time(16, 5)),  # EDT, Friday before the autumn change
+    ("2026-11-02T21:05:00.000Z", time(16, 5)),  # EST, Monday after it
+])
+def test_acceptance_is_the_sec_provider_instant_across_dst(tmp_path, stamp, local):
+    from trading_research.evidence_providers.sec_provider import _parse_accepted_at
+
+    day = stamp[:10]
+    write_raw(tmp_path, "AAA", [fmp_row("AAA", day)], [("8-K", "2.02", stamp)])
+    (row,), summary = build(tmp_path, ["AAA"])
+    assert row.timing == "pm" and row.release_time == local
+    exported = ex._acceptance_local(stamp)
+    assert exported == _parse_accepted_at(stamp)  # the same instant as the existing SEC provider
+    assert exported.time() == local and summary["acceptance_time_contract"] == ex.ACCEPTANCE_CONTRACT
+
+
+def test_no_operator_clock_choice_remains(tmp_path):
+    import inspect
+
+    assert "acceptance_clock" not in inspect.signature(ex.build_earnings_rows).parameters
+    with pytest.raises(SystemExit):
+        from trading_research.cli import main
+
+        main(["build-earnings-csv", "build", "--symbols-file", str(tmp_path / "s.txt"), "--acceptance-clock", "eastern"])
+
+
+def test_acceptance_outside_edgar_hours_fails_closed(tmp_path):
+    # 03:30 ET: impossible for EDGAR, so this feed's clock is not the UTC contract; never guess.
+    write_raw(tmp_path, "AAA", [fmp_row("AAA", "2026-08-03")], [("8-K", "2.02", "2026-08-03T07:30:00.000Z")])
+    with pytest.raises(ex.EarningsExportError, match="outside EDGAR"):
+        build(tmp_path, ["AAA"])
+    write_raw(tmp_path, "AAA", [fmp_row("AAA", "2026-08-03")], [("8-K", "2.02", "2026-08-03T16:10:00")])
+    with pytest.raises(ex.EarningsExportError, match="naive"):
+        build(tmp_path, ["AAA"])
 
 
 def test_build_drop_reasons(tmp_path):
@@ -219,7 +332,7 @@ def test_cli_build_writes_csv_and_summary(tmp_path):
     symbols.write_text("AAA\n")
     out = build_earnings_csv_cli(
         mode="build", symbols_file=symbols, raw_dir=raw, out=tmp_path / "e.csv", start=date(2026, 1, 1),
-        end=date(2026, 12, 31), acceptance_clock="utc", now=NOW,
+        end=date(2026, 12, 31), now=NOW,
     )
     assert out["mode"] == "build" and out["kept"] == 1 and len(out["earnings_csv_sha256"]) == 64
     assert load_earnings_csv(tmp_path / "e.csv")
@@ -233,7 +346,7 @@ def test_cli_guards(tmp_path):
     assert build_earnings_csv_cli(mode="build", symbols_file=symbols, raw_dir=tmp_path)["error"]["code"] == "INVALID_ARGUMENT"
     none = build_earnings_csv_cli(
         mode="build", symbols_file=symbols, raw_dir=tmp_path, out=tmp_path / "e.csv", start=date(2026, 1, 1),
-        end=date(2026, 12, 31), acceptance_clock="utc", now=NOW,
+        end=date(2026, 12, 31), now=NOW,
     )
     assert none["error"]["code"] == "NO_ROWS" and not (tmp_path / "e.csv").exists()
     empty = tmp_path / "empty.txt"
@@ -248,3 +361,31 @@ def test_cli_fetch_fmp_uses_injected_client(tmp_path):
     out = build_earnings_csv_cli(mode="fetch-fmp", symbols_file=symbols, raw_dir=tmp_path, fmp_api_key="k",
                                  http_client=http, now=NOW)
     assert out["saved"] == 1 and "k" not in json.dumps(out)
+
+
+def test_cli_partial_fetch_is_not_success(tmp_path):
+    from trading_research.cli import _build_earnings_csv_exit_code
+
+    symbols = tmp_path / "symbols.txt"
+    symbols.write_text("AAA\nBBB\n")
+    http = FakeHttp({"AAA": [fmp_row("AAA", "2026-08-03")], "BBB": ProviderRequestError("x", retryable=False)})
+    out = build_earnings_csv_cli(mode="fetch-fmp", symbols_file=symbols, raw_dir=tmp_path, fmp_api_key="k",
+                                 http_client=http, now=NOW)
+    assert (out["remaining"], out["complete"]) == (1, False) and "error" not in out
+    assert _build_earnings_csv_exit_code(out) == 3
+    http.responses["BBB"] = [fmp_row("BBB", "2026-08-04")]
+    done = build_earnings_csv_cli(mode="fetch-fmp", symbols_file=symbols, raw_dir=tmp_path, fmp_api_key="k",
+                                  http_client=http, now=NOW)
+    assert (done["remaining"], done["complete"], _build_earnings_csv_exit_code(done)) == (0, True, 0)
+    assert _build_earnings_csv_exit_code({"error": {}}) == 2
+    assert _build_earnings_csv_exit_code({"mode": "build", "kept": 1}) == 0
+
+
+def test_cli_refresh_before_refetches(tmp_path):
+    symbols = tmp_path / "symbols.txt"
+    symbols.write_text("AAA\n")
+    http = FakeHttp({"AAA": [fmp_row("AAA", "2026-08-03")]})
+    build_earnings_csv_cli(mode="fetch-fmp", symbols_file=symbols, raw_dir=tmp_path, fmp_api_key="k", http_client=http, now=NOW)
+    out = build_earnings_csv_cli(mode="fetch-fmp", symbols_file=symbols, raw_dir=tmp_path, fmp_api_key="k",
+                                 http_client=http, now=LATER, refresh_before=date(2027, 2, 1))
+    assert out["saved"] == 1 and len(http.calls) == 2

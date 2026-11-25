@@ -34,6 +34,49 @@ or either EPS value is null.
   240) or at the first rate-limit response. Rerun it on later days: saved
   symbols are skipped.
 
+## Fetch results and exit codes
+
+Each fetch prints `saved`, `already_saved`, `failed` (by symbol, error class
+only), `remaining` and `complete`. `remaining` counts every requested symbol
+that still has no current raw file, whether it failed, had no CIK, or was not
+reached before a stop. The command exits `0` only when `complete` is true,
+`3` when it saved what it could but left work outstanding (rerun it), and `2`
+on an error. Do not build until both fetches report `complete: true`, or
+accept the listed `failed` symbols as excluded on purpose.
+
+## Refreshing a saved universe
+
+Saved raw files are snapshots and are never refetched by default. FMP's
+endpoint is a rolling window and SEC submissions accumulate new filings, so
+before building a later sample, refetch both with the same cutoff date:
+
+```bash
+.venv/bin/python -m trading_research.cli build-earnings-csv fetch-fmp \
+  --symbols-file data/earnings-symbols.txt --refresh-before 2027-02-01
+.venv/bin/python -m trading_research.cli build-earnings-csv fetch-sec \
+  --symbols-file data/earnings-symbols.txt --refresh-before 2027-02-01
+```
+
+Files fetched before 00:00 UTC on the `--refresh-before` date are refetched.
+Rerunning with the same date resumes, because refreshed files are skipped. A
+failed refresh keeps the previous file, which still counts as `remaining`.
+The build reports `fmp_fetched_at_span` and `sec_fetched_at_span` so mixed
+snapshot dates are visible. A report whose SEC snapshot was taken no later
+than the report day is dropped as `sec_snapshot_predates_report`, not as a
+missing 8-K.
+
+## SEC acceptance time
+
+`acceptanceDateTime` (for example `2026-08-03T20:10:00.000Z`) is read the
+same way the repository's SEC provider reads it, as UTC, and then converted
+to New York time. There is no operator option. Every Item 2.02 acceptance
+must fall within EDGAR's filing hours, 06:00–22:00 ET. If one does not, the
+build fails closed with `EARNINGS_EXPORT_ERROR`, because the data contradicts
+the UTC contract. Treat that as a code-level question for the shared SEC
+parser (`sec_provider._parse_accepted_at`), not something to work around in
+this command. `item_2_02_acceptance_hour_histogram_et` is still reported as
+a sanity check.
+
 ## Steps
 
 1. **Write the universe**, one symbol per line (`#` comments allowed), for
@@ -46,8 +89,8 @@ or either EPS value is null.
      --symbols-file data/earnings-symbols.txt
    ```
 
-   The output lists `saved`, `already_saved`, `failed` (by symbol, error
-   class only) and `remaining`. Raw files go to `data/raw/fmp/` (gitignored).
+   See [fetch results and exit codes](#fetch-results-and-exit-codes). Raw
+   files go to `data/raw/fmp/` (gitignored).
 3. **Fetch SEC filings** (operator, network; no key, but SEC requires a
    contact User-Agent, read from `sec.user_agent_contact` in
    `config/evidence_providers.yaml`):
@@ -57,27 +100,11 @@ or either EPS value is null.
      --symbols-file data/earnings-symbols.txt
    ```
 
-4. **Calibrate the acceptance clock once.** SEC's submissions API writes
-   `acceptanceDateTime` with a trailing `Z`; confirm which clock it really
-   reports before trusting the timing. Run the build both ways for a few
-   symbols you know report after the close:
+4. **Build** (offline; see [SEC acceptance time](#sec-acceptance-time)):
 
    ```bash
    .venv/bin/python -m trading_research.cli build-earnings-csv build \
-     --symbols-file data/earnings-symbols.txt --start 2025-01-01 --end 2026-11-20 \
-     --acceptance-clock eastern --out /tmp/earnings-eastern.csv
-   ```
-
-   The right clock puts most Item 2.02 acceptances at 06:00–09:00 or
-   16:00–17:00 in `item_2_02_acceptance_hour_histogram_et`. The wrong clock
-   shifts them by four or five hours, so many land mid-session and are
-   dropped as `released_during_session`.
-5. **Build** with the calibrated clock:
-
-   ```bash
-   .venv/bin/python -m trading_research.cli build-earnings-csv build \
-     --symbols-file data/earnings-symbols.txt --start 2025-01-01 --end 2026-11-20 \
-     --acceptance-clock <utc|eastern>
+     --symbols-file data/earnings-symbols.txt --start 2025-01-01 --end 2026-11-20
    ```
 
    The command writes `data/earnings.csv`, checks it with the same strict

@@ -3089,15 +3089,27 @@ def tune_intraday_gap_cli(
     }
 
 
+def _build_earnings_csv_exit_code(outcome: dict) -> int:
+    """2 on error; 3 when a fetch saved what it could but left requested symbols without a current
+    file (rerun it); 0 only when the mode fully succeeded."""
+    if "error" in outcome:
+        return 2
+    if outcome.get("mode") in ("fetch-fmp", "fetch-sec") and not outcome.get("complete"):
+        return 3
+    return 0
+
+
 def build_earnings_csv_cli(
     *, mode: str, symbols_file: Path, raw_dir: Path = Path("data/raw"), out: Path = Path("data/earnings.csv"),
-    start=None, end=None, acceptance_clock: str | None = None, max_requests: int = 240,
+    start=None, end=None, max_requests: int = 240, refresh_before=None,
     fmp_api_key: str | None = None, sec_user_agent: str | None = None, http_client=None, now=None, today=None,
 ) -> dict:
     """`build-earnings-csv` (docs/runbooks/intraday-gap-earnings-csv.md).
 
     Three explicit modes: `fetch-fmp` (operator, needs FMP_KEY), `fetch-sec` (operator, network,
     configured SEC contact User-Agent) and `build` (offline: merge saved files into the strict CSV).
+    `refresh_before` (a date) makes the fetch modes refetch saved files fetched before 00:00 UTC
+    that day. A fetch result's `complete` is false while any requested symbol lacks a current file.
     Research data only: no broker, model call or scheduler.
     """
     from datetime import datetime as _dt
@@ -3136,21 +3148,23 @@ def build_earnings_csv_cli(
                         base_headers={"User-Agent": sec_user_agent},
                         rate_limiter=MinIntervalRateLimiter(0.15), provider="sec-edgar",
                     )
+            cutoff = (
+                _dt(refresh_before.year, refresh_before.month, refresh_before.day, tzinfo=timezone.utc)
+                if refresh_before is not None else None
+            )
             if mode == "fetch-fmp":
                 summary = ex.fetch_fmp_earnings(
                     http_client, symbols, raw_dir, api_key=fmp_api_key or "", max_requests=max_requests, now=now,
+                    refresh_before=cutoff,
                 )
             else:
-                summary = ex.fetch_sec_submissions(http_client, symbols, raw_dir, now=now)
+                summary = ex.fetch_sec_submissions(http_client, symbols, raw_dir, now=now, refresh_before=cutoff)
             return {"mode": mode, **summary.as_dict()}
         if mode != "build":
             return _err("INVALID_ARGUMENT", f"unknown mode {mode!r}")
-        if start is None or end is None or acceptance_clock is None:
-            return _err("INVALID_ARGUMENT", "build needs --start, --end and --acceptance-clock")
-        rows, summary = ex.build_earnings_rows(
-            raw_dir, symbols, start=start, end=end, today=today or now.date(),
-            acceptance_clock=acceptance_clock,  # type: ignore[arg-type]
-        )
+        if start is None or end is None:
+            return _err("INVALID_ARGUMENT", "build needs --start and --end")
+        rows, summary = ex.build_earnings_rows(raw_dir, symbols, start=start, end=end, today=today or now.date())
         if not rows:
             return {"error": {"code": "NO_ROWS", "message": "no report survived the merge"}, "summary": summary}
         # The strict loader the backtest uses must accept the file before it replaces `out`.
@@ -3835,7 +3849,7 @@ def main(argv: list[str] | None = None) -> int:
     p_earn_csv.add_argument("--out", type=Path, default=Path("data/earnings.csv"))
     p_earn_csv.add_argument("--start", type=date.fromisoformat, default=None)
     p_earn_csv.add_argument("--end", type=date.fromisoformat, default=None)
-    p_earn_csv.add_argument("--acceptance-clock", choices=("utc", "eastern"), default=None, help="How to read SEC acceptanceDateTime (calibrate first; see the runbook)")
+    p_earn_csv.add_argument("--refresh-before", type=date.fromisoformat, default=None, help="fetch modes: refetch saved files fetched before 00:00 UTC on this date")
     p_earn_csv.add_argument("--max-requests", type=int, default=240, help="fetch-fmp: stop after this many requests (free-plan daily cap)")
 
     p_candidates = sub.add_parser(
@@ -3939,11 +3953,11 @@ def main(argv: list[str] | None = None) -> int:
             sec_agent = load_evidence_provider_config().sec.user_agent_contact
         outcome = build_earnings_csv_cli(
             mode=args.mode, symbols_file=args.symbols_file, raw_dir=args.raw_dir, out=args.out,
-            start=args.start, end=args.end, acceptance_clock=args.acceptance_clock,
-            max_requests=args.max_requests, fmp_api_key=fmp_key, sec_user_agent=sec_agent,
+            start=args.start, end=args.end, max_requests=args.max_requests,
+            refresh_before=args.refresh_before, fmp_api_key=fmp_key, sec_user_agent=sec_agent,
         )
         print(json.dumps(outcome, indent=2, sort_keys=True, default=str))
-        return 0 if "error" not in outcome else 2
+        return _build_earnings_csv_exit_code(outcome)
 
     if args.command == "strategy-candidates":
         cfg = load_config()  # also loads .env, which supplies market-data credentials for a snapshot fetch
