@@ -41,8 +41,15 @@ only), `remaining` and `complete`. `remaining` counts every requested symbol
 that still has no current raw file, whether it failed, had no CIK, or was not
 reached before a stop. The command exits `0` only when `complete` is true,
 `3` when it saved what it could but left work outstanding (rerun it), and `2`
-on an error. Do not build until both fetches report `complete: true`, or
-accept the listed `failed` symbols as excluded on purpose.
+on an error. Do not build until both fetches report `complete: true`.
+
+The build enforces this. If any requested symbol has no FMP or SEC raw file,
+it exits `2` with `INCOMPLETE_RAW_DATA` and leaves the existing output alone.
+To exclude those symbols on purpose, pass `--accept-missing` with a
+comma-separated list that names exactly the missing symbols (for example
+`--accept-missing BBB,CCC`). A list that leaves a symbol out, or names a
+symbol that is not missing, is rejected. A successful build records the
+accepted exclusions as `accepted_missing` next to its SHA-256.
 
 ## Refreshing a saved universe
 

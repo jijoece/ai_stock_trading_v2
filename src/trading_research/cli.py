@@ -3101,7 +3101,7 @@ def _build_earnings_csv_exit_code(outcome: dict) -> int:
 
 def build_earnings_csv_cli(
     *, mode: str, symbols_file: Path, raw_dir: Path = Path("data/raw"), out: Path = Path("data/earnings.csv"),
-    start=None, end=None, max_requests: int = 240, refresh_before=None,
+    start=None, end=None, max_requests: int = 240, refresh_before=None, accept_missing=None,
     fmp_api_key: str | None = None, sec_user_agent: str | None = None, http_client=None, now=None, today=None,
 ) -> dict:
     """`build-earnings-csv` (docs/runbooks/intraday-gap-earnings-csv.md).
@@ -3110,6 +3110,9 @@ def build_earnings_csv_cli(
     configured SEC contact User-Agent) and `build` (offline: merge saved files into the strict CSV).
     `refresh_before` (a date) makes the fetch modes refetch saved files fetched before 00:00 UTC
     that day. A fetch result's `complete` is false while any requested symbol lacks a current file.
+    `build` fails with `INCOMPLETE_RAW_DATA`, writing nothing, while any requested symbol lacks an
+    FMP or SEC raw file, unless `accept_missing` names exactly those symbols; the accepted
+    exclusions are then recorded in the result.
     Research data only: no broker, model call or scheduler.
     """
     from datetime import datetime as _dt
@@ -3164,7 +3167,23 @@ def build_earnings_csv_cli(
             return _err("INVALID_ARGUMENT", f"unknown mode {mode!r}")
         if start is None or end is None:
             return _err("INVALID_ARGUMENT", "build needs --start and --end")
+        accepted = sorted(ex.normalize_symbols(accept_missing or []))
         rows, summary = ex.build_earnings_rows(raw_dir, symbols, start=start, end=end, today=today or now.date())
+        missing = sorted(set(summary["symbols_without_fmp_file"]) | set(summary["symbols_without_sec_file"]))
+        if missing != accepted:
+            # An incomplete universe must never pass silently as a successful snapshot.
+            return {
+                "error": {
+                    "code": "INCOMPLETE_RAW_DATA",
+                    "message": _bounded_message(
+                        f"requested symbols without an FMP or SEC raw file: {missing}; "
+                        f"--accept-missing given: {accepted}. Finish both fetches, or pass "
+                        "--accept-missing naming exactly the missing symbols."
+                    ),
+                },
+                "missing": missing, "accepted_missing": accepted, "summary": summary,
+            }
+        summary["accepted_missing"] = accepted
         if not rows:
             return {"error": {"code": "NO_ROWS", "message": "no report survived the merge"}, "summary": summary}
         # The strict loader the backtest uses must accept the file before it replaces `out`.
@@ -3851,6 +3870,10 @@ def main(argv: list[str] | None = None) -> int:
     p_earn_csv.add_argument("--end", type=date.fromisoformat, default=None)
     p_earn_csv.add_argument("--refresh-before", type=date.fromisoformat, default=None, help="fetch modes: refetch saved files fetched before 00:00 UTC on this date")
     p_earn_csv.add_argument("--max-requests", type=int, default=240, help="fetch-fmp: stop after this many requests (free-plan daily cap)")
+    p_earn_csv.add_argument(
+        "--accept-missing", type=lambda v: [s for s in v.split(",") if s.strip()], default=None,
+        help="build: comma-separated symbols accepted as excluded; must name exactly the symbols without an FMP or SEC raw file",
+    )
 
     p_candidates = sub.add_parser(
         "strategy-candidates",
@@ -3954,7 +3977,8 @@ def main(argv: list[str] | None = None) -> int:
         outcome = build_earnings_csv_cli(
             mode=args.mode, symbols_file=args.symbols_file, raw_dir=args.raw_dir, out=args.out,
             start=args.start, end=args.end, max_requests=args.max_requests,
-            refresh_before=args.refresh_before, fmp_api_key=fmp_key, sec_user_agent=sec_agent,
+            refresh_before=args.refresh_before, accept_missing=args.accept_missing,
+            fmp_api_key=fmp_key, sec_user_agent=sec_agent,
         )
         print(json.dumps(outcome, indent=2, sort_keys=True, default=str))
         return _build_earnings_csv_exit_code(outcome)

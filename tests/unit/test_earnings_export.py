@@ -369,7 +369,63 @@ def test_cli_build_writes_csv_and_summary(tmp_path):
         end=date(2026, 12, 31), now=NOW,
     )
     assert out["mode"] == "build" and out["kept"] == 1 and len(out["earnings_csv_sha256"]) == 64
+    assert out["accepted_missing"] == []
     assert load_earnings_csv(tmp_path / "e.csv")
+
+
+def _partial_universe(tmp_path):
+    """AAA is complete, BBB has no SEC file, CCC has no files at all."""
+    raw = tmp_path / "raw"
+    write_raw(raw, "AAA", [fmp_row("AAA", "2026-08-03")], [("8-K", "2.02", "2026-08-03T20:10:00.000Z")])
+    write_raw(raw, "BBB", [fmp_row("BBB", "2026-08-03")])
+    symbols = tmp_path / "symbols.txt"
+    symbols.write_text("AAA\nBBB\nCCC\n")
+    out = tmp_path / "e.csv"
+    out.write_text("previous snapshot\n")
+    return raw, symbols, out
+
+
+@pytest.mark.parametrize("accept", [None, [], ["BBB"], ["CCC"], ["BBB", "CCC", "AAA"], ["BBB", "CCC", "DDD"]])
+def test_cli_build_refuses_an_incomplete_universe(tmp_path, accept):
+    from trading_research.cli import _build_earnings_csv_exit_code
+
+    raw, symbols, out = _partial_universe(tmp_path)
+    result = build_earnings_csv_cli(mode="build", symbols_file=symbols, raw_dir=raw, out=out,
+                                    start=date(2026, 1, 1), end=date(2026, 12, 31), now=NOW, accept_missing=accept)
+    assert result["error"]["code"] == "INCOMPLETE_RAW_DATA" and _build_earnings_csv_exit_code(result) == 2
+    assert result["missing"] == ["BBB", "CCC"]
+    assert "earnings_csv_sha256" not in result
+    assert out.read_text() == "previous snapshot\n"
+    assert [p.name for p in out.parent.iterdir() if p.suffix == ".tmp"] == []
+
+
+def test_cli_build_records_exactly_accepted_exclusions(tmp_path):
+    raw, symbols, out = _partial_universe(tmp_path)
+    results = [
+        build_earnings_csv_cli(mode="build", symbols_file=symbols, raw_dir=raw, out=out, start=date(2026, 1, 1),
+                               end=date(2026, 12, 31), now=NOW, accept_missing=accept)
+        for accept in (["ccc", " BBB "], ["BBB", "CCC"])
+    ]
+    for result in results:
+        assert "error" not in result and result["kept"] == 1
+        assert result["accepted_missing"] == ["BBB", "CCC"]
+        assert result["symbols_without_sec_file"] == ["BBB"] and result["symbols_without_fmp_file"] == ["CCC"]
+    assert results[0]["earnings_csv_sha256"] == results[1]["earnings_csv_sha256"]
+    assert load_earnings_csv(out)
+
+
+def test_cli_main_accept_missing_flag_end_to_end(tmp_path, capsys):
+    from trading_research.cli import main
+
+    raw, symbols, out = _partial_universe(tmp_path)
+    base = ["build-earnings-csv", "build", "--symbols-file", str(symbols), "--raw-dir", str(raw),
+            "--out", str(out), "--start", "2025-01-01", "--end", "2025-12-31"]
+    assert main(base) == 2
+    assert json.loads(capsys.readouterr().out)["error"]["code"] == "INCOMPLETE_RAW_DATA"
+    assert out.read_text() == "previous snapshot\n"
+    assert main([*base, "--accept-missing", "BBB,CCC"]) == 2  # passes the gate; 2025 holds no rows
+    printed = json.loads(capsys.readouterr().out)
+    assert printed["error"]["code"] == "NO_ROWS" and printed["summary"]["accepted_missing"] == ["BBB", "CCC"]
 
 
 def test_cli_guards(tmp_path):
@@ -378,6 +434,7 @@ def test_cli_guards(tmp_path):
     assert build_earnings_csv_cli(mode="fetch-fmp", symbols_file=symbols, raw_dir=tmp_path)["error"]["code"] == "MISSING_CREDENTIALS"
     assert build_earnings_csv_cli(mode="fetch-sec", symbols_file=symbols, raw_dir=tmp_path, sec_user_agent="no-contact")["error"]["code"] == "MISSING_CREDENTIALS"
     assert build_earnings_csv_cli(mode="build", symbols_file=symbols, raw_dir=tmp_path)["error"]["code"] == "INVALID_ARGUMENT"
+    write_raw(tmp_path, "AAA", [fmp_row("AAA", "2027-01-04")], [])  # complete files, nothing in range
     none = build_earnings_csv_cli(
         mode="build", symbols_file=symbols, raw_dir=tmp_path, out=tmp_path / "e.csv", start=date(2026, 1, 1),
         end=date(2026, 12, 31), now=NOW,
