@@ -16,6 +16,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import re
 import subprocess
 import sys
@@ -3088,6 +3089,121 @@ def tune_intraday_gap_cli(
     }
 
 
+def _build_earnings_csv_exit_code(outcome: dict) -> int:
+    """2 on error; 3 when a fetch saved what it could but left requested symbols without a current
+    file (rerun it); 0 only when the mode fully succeeded."""
+    if "error" in outcome:
+        return 2
+    if outcome.get("mode") in ("fetch-fmp", "fetch-sec") and not outcome.get("complete"):
+        return 3
+    return 0
+
+
+def build_earnings_csv_cli(
+    *, mode: str, symbols_file: Path, raw_dir: Path = Path("data/raw"), out: Path = Path("data/earnings.csv"),
+    start=None, end=None, max_requests: int = 240, refresh_before=None, accept_missing=None,
+    fmp_api_key: str | None = None, sec_user_agent: str | None = None, http_client=None, now=None, today=None,
+) -> dict:
+    """`build-earnings-csv` (docs/runbooks/intraday-gap-earnings-csv.md).
+
+    Three explicit modes: `fetch-fmp` (operator, needs FMP_KEY), `fetch-sec` (operator, network,
+    configured SEC contact User-Agent) and `build` (offline: merge saved files into the strict CSV).
+    `refresh_before` (a date) makes the fetch modes refetch saved files fetched before 00:00 UTC
+    that day. A fetch result's `complete` is false while any requested symbol lacks a current file.
+    `build` fails with `INCOMPLETE_RAW_DATA`, writing nothing, while any requested symbol lacks an
+    FMP or SEC raw file or has an empty FMP history, unless `accept_missing` names exactly those
+    symbols; the accepted exclusions are then recorded in the result.
+    Research data only: no broker, model call or scheduler.
+    """
+    from datetime import datetime as _dt
+
+    from .evidence_providers import earnings_export as ex
+    from .strategies.earnings_surprise import EarningsSurpriseError, load_earnings_csv
+
+    def _err(code: str, message: str) -> dict:
+        return {"error": {"code": code, "message": _bounded_message(message)}}
+
+    try:
+        symbols = ex.normalize_symbols(Path(symbols_file).read_text(encoding="utf-8").splitlines())
+    except OSError as exc:
+        return _err("INVALID_ARGUMENT", f"cannot read --symbols-file ({exc.strerror})")
+    except ex.EarningsExportError as exc:
+        return _err("INVALID_ARGUMENT", str(exc))
+    if not symbols:
+        return _err("INVALID_ARGUMENT", "--symbols-file lists no symbols")
+    now = now or _dt.now(timezone.utc)
+    try:
+        if mode in ("fetch-fmp", "fetch-sec"):
+            if http_client is None:
+                from .evidence_providers.http_client import HttpJsonClient
+                from .evidence_providers.rate_limits import MinIntervalRateLimiter
+
+                if mode == "fetch-fmp":
+                    if not fmp_api_key:
+                        return _err("MISSING_CREDENTIALS", "fetch-fmp needs FMP_KEY in the environment or .env")
+                    http_client = HttpJsonClient(
+                        base_headers={}, rate_limiter=MinIntervalRateLimiter(0.5), provider="fmp",
+                    )
+                else:
+                    if not sec_user_agent or "@" not in sec_user_agent:
+                        return _err("MISSING_CREDENTIALS", "fetch-sec needs a contact User-Agent (sec.user_agent_contact)")
+                    http_client = HttpJsonClient(
+                        base_headers={"User-Agent": sec_user_agent},
+                        rate_limiter=MinIntervalRateLimiter(0.15), provider="sec-edgar",
+                    )
+            cutoff = (
+                _dt(refresh_before.year, refresh_before.month, refresh_before.day, tzinfo=timezone.utc)
+                if refresh_before is not None else None
+            )
+            if mode == "fetch-fmp":
+                summary = ex.fetch_fmp_earnings(
+                    http_client, symbols, raw_dir, api_key=fmp_api_key or "", max_requests=max_requests, now=now,
+                    refresh_before=cutoff,
+                )
+            else:
+                summary = ex.fetch_sec_submissions(http_client, symbols, raw_dir, now=now, refresh_before=cutoff)
+            return {"mode": mode, **summary.as_dict()}
+        if mode != "build":
+            return _err("INVALID_ARGUMENT", f"unknown mode {mode!r}")
+        if start is None or end is None:
+            return _err("INVALID_ARGUMENT", "build needs --start and --end")
+        accepted = sorted(ex.normalize_symbols(accept_missing or []))
+        rows, summary = ex.build_earnings_rows(raw_dir, symbols, start=start, end=end, today=today or now.date())
+        missing = sorted(
+            set(summary["symbols_without_fmp_file"]) | set(summary["symbols_without_sec_file"])
+            | set(summary["symbols_with_empty_fmp_history"])
+        )
+        if missing != accepted:
+            # An incomplete universe must never pass silently as a successful snapshot.
+            return {
+                "error": {
+                    "code": "INCOMPLETE_RAW_DATA",
+                    "message": _bounded_message(
+                        f"requested symbols without an FMP or SEC raw file, or with an empty FMP history: {missing}; "
+                        f"--accept-missing given: {accepted}. Finish both fetches, or pass "
+                        "--accept-missing naming exactly the missing symbols."
+                    ),
+                },
+                "missing": missing, "accepted_missing": accepted, "summary": summary,
+            }
+        summary["accepted_missing"] = accepted
+        if not rows:
+            return {"error": {"code": "NO_ROWS", "message": "no report survived the merge"}, "summary": summary}
+        # The strict loader the backtest uses must accept the file before it replaces `out`.
+        ex.write_earnings_csv(rows, out, validate=load_earnings_csv)
+        return {
+            "mode": "build", "out": str(out),
+            "earnings_csv_sha256": hashlib.sha256(Path(out).read_bytes()).hexdigest(), **summary,
+            "note": "Estimates are FMP's current values and may have been revised after each report.",
+        }
+    except ex.EarningsExportError as exc:
+        return _err("EARNINGS_EXPORT_ERROR", str(exc))
+    except EarningsSurpriseError as exc:
+        return _err("EARNINGS_CSV_ERROR", str(exc))
+    except Exception as exc:
+        return {"error": _sanitized_cli_error(exc)}
+
+
 def strategy_candidates_cli(
     db_path: Path, *, strategies: list[str], symbols: list[str], as_of, data_source: str, snapshot: Path | None,
     benchmark: str, price_adjustment: str, strategy_config: Path | None, screening_config: Path | None,
@@ -3745,6 +3861,23 @@ def main(argv: list[str] | None = None) -> int:
     p_tune_gap.add_argument("--report-dir", type=Path, default=Path("reports"))
     p_tune_gap.add_argument("--equity", type=_parse_decimal, default=None)
 
+    p_earn_csv = sub.add_parser(
+        "build-earnings-csv",
+        help="Build the intraday-gap earnings CSV from FMP (free plan) plus SEC 8-K Item 2.02 times; fetch modes are operator-only",
+    )
+    p_earn_csv.add_argument("mode", choices=("fetch-fmp", "fetch-sec", "build"))
+    p_earn_csv.add_argument("--symbols-file", required=True, type=Path, help="One symbol per line; # comments allowed")
+    p_earn_csv.add_argument("--raw-dir", type=Path, default=Path("data/raw"))
+    p_earn_csv.add_argument("--out", type=Path, default=Path("data/earnings.csv"))
+    p_earn_csv.add_argument("--start", type=date.fromisoformat, default=None)
+    p_earn_csv.add_argument("--end", type=date.fromisoformat, default=None)
+    p_earn_csv.add_argument("--refresh-before", type=date.fromisoformat, default=None, help="fetch modes: refetch saved files fetched before 00:00 UTC on this date")
+    p_earn_csv.add_argument("--max-requests", type=int, default=240, help="fetch-fmp: stop after this many requests (free-plan daily cap)")
+    p_earn_csv.add_argument(
+        "--accept-missing", type=lambda v: [s for s in v.split(",") if s.strip()], default=None,
+        help="build: comma-separated symbols accepted as excluded; must name exactly the symbols without an FMP or SEC raw file",
+    )
+
     p_candidates = sub.add_parser(
         "strategy-candidates",
         help="Evaluate one closed session, record every strategy evaluation and print the shortlist (read-only; needs activation stage 3)",
@@ -3834,6 +3967,24 @@ def main(argv: list[str] | None = None) -> int:
         )
         print(json.dumps(outcome, indent=2, sort_keys=True, default=str))
         return 0 if "error" not in outcome else 2
+
+    if args.command == "build-earnings-csv":
+        fmp_key = sec_agent = None
+        if args.mode == "fetch-fmp":  # the FMP key is read only for this explicit mode
+            load_config()  # loads .env
+            fmp_key = os.environ.get("FMP_KEY") or None
+        elif args.mode == "fetch-sec":
+            from .evidence_providers.config import load_evidence_provider_config
+
+            sec_agent = load_evidence_provider_config().sec.user_agent_contact
+        outcome = build_earnings_csv_cli(
+            mode=args.mode, symbols_file=args.symbols_file, raw_dir=args.raw_dir, out=args.out,
+            start=args.start, end=args.end, max_requests=args.max_requests,
+            refresh_before=args.refresh_before, accept_missing=args.accept_missing,
+            fmp_api_key=fmp_key, sec_user_agent=sec_agent,
+        )
+        print(json.dumps(outcome, indent=2, sort_keys=True, default=str))
+        return _build_earnings_csv_exit_code(outcome)
 
     if args.command == "strategy-candidates":
         cfg = load_config()  # also loads .env, which supplies market-data credentials for a snapshot fetch
