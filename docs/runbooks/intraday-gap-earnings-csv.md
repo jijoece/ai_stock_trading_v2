@@ -39,12 +39,15 @@ or either EPS value is null.
 Each fetch prints `saved`, `already_saved`, `failed` (by symbol, error class
 only), `remaining` and `complete`. `remaining` counts every requested symbol
 that still has no current raw file, whether it failed, had no CIK, or was not
-reached before a stop. The command exits `0` only when `complete` is true,
+reached before a stop. An empty FMP history (`[]`) is not saved: it is
+reported as `failed: empty_response`, because a symbol with no coverage must
+not count as complete. The command exits `0` only when `complete` is true,
 `3` when it saved what it could but left work outstanding (rerun it), and `2`
 on an error. Do not build until both fetches report `complete: true`.
 
 The build enforces this. If any requested symbol has no FMP or SEC raw file,
-it exits `2` with `INCOMPLETE_RAW_DATA` and leaves the existing output alone.
+or its FMP file holds no rows (listed as `symbols_with_empty_fmp_history`), it
+exits `2` with `INCOMPLETE_RAW_DATA` and leaves the existing output alone.
 To exclude those symbols on purpose, pass `--accept-missing` with a
 comma-separated list that names exactly the missing symbols (for example
 `--accept-missing BBB,CCC`). A list that leaves a symbol out, or names a

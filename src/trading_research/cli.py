@@ -3111,8 +3111,8 @@ def build_earnings_csv_cli(
     `refresh_before` (a date) makes the fetch modes refetch saved files fetched before 00:00 UTC
     that day. A fetch result's `complete` is false while any requested symbol lacks a current file.
     `build` fails with `INCOMPLETE_RAW_DATA`, writing nothing, while any requested symbol lacks an
-    FMP or SEC raw file, unless `accept_missing` names exactly those symbols; the accepted
-    exclusions are then recorded in the result.
+    FMP or SEC raw file or has an empty FMP history, unless `accept_missing` names exactly those
+    symbols; the accepted exclusions are then recorded in the result.
     Research data only: no broker, model call or scheduler.
     """
     from datetime import datetime as _dt
@@ -3169,14 +3169,17 @@ def build_earnings_csv_cli(
             return _err("INVALID_ARGUMENT", "build needs --start and --end")
         accepted = sorted(ex.normalize_symbols(accept_missing or []))
         rows, summary = ex.build_earnings_rows(raw_dir, symbols, start=start, end=end, today=today or now.date())
-        missing = sorted(set(summary["symbols_without_fmp_file"]) | set(summary["symbols_without_sec_file"]))
+        missing = sorted(
+            set(summary["symbols_without_fmp_file"]) | set(summary["symbols_without_sec_file"])
+            | set(summary["symbols_with_empty_fmp_history"])
+        )
         if missing != accepted:
             # An incomplete universe must never pass silently as a successful snapshot.
             return {
                 "error": {
                     "code": "INCOMPLETE_RAW_DATA",
                     "message": _bounded_message(
-                        f"requested symbols without an FMP or SEC raw file: {missing}; "
+                        f"requested symbols without an FMP or SEC raw file, or with an empty FMP history: {missing}; "
                         f"--accept-missing given: {accepted}. Finish both fetches, or pass "
                         "--accept-missing naming exactly the missing symbols."
                     ),

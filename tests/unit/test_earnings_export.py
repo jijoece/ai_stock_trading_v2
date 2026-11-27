@@ -76,7 +76,7 @@ def test_fetch_fmp_saves_wrapper_and_skips_saved_symbols(tmp_path):
 
 
 def test_fetch_fmp_stops_at_max_requests_and_on_rate_limit(tmp_path):
-    http = FakeHttp({s: [] for s in ("AAA", "BBB", "CCC")})
+    http = FakeHttp({s: [fmp_row(s, "2026-05-01")] for s in ("AAA", "BBB", "CCC")})
     s = ex.fetch_fmp_earnings(http, ["AAA", "BBB", "CCC"], tmp_path, api_key="k", max_requests=2, now=NOW)
     assert s.stopped_reason == "max_requests" and s.saved == 2 and s.remaining == 1
     http2 = FakeHttp({"CCC": ProviderRateLimitedError("limit")})
@@ -92,6 +92,20 @@ def test_fetch_fmp_records_failures_by_class_only(tmp_path):
     assert not (tmp_path / "fmp").exists()
     with pytest.raises(ex.EarningsExportError):
         ex.fetch_fmp_earnings(http, ["AAA"], tmp_path, api_key="", max_requests=5, now=NOW)
+
+
+def test_fetch_fmp_empty_history_is_a_failure_not_a_saved_file(tmp_path):
+    http = FakeHttp({"AAA": [fmp_row("AAA", "2026-08-03")], "BBB": []})
+    s = ex.fetch_fmp_earnings(http, ["AAA", "BBB"], tmp_path, api_key="k", max_requests=5, now=NOW)
+    assert (s.saved, s.failed, s.remaining, s.complete) == (1, {"BBB": "empty_response"}, 1, False)
+    assert not (tmp_path / "fmp" / "BBB.json").exists()
+    # An empty refresh keeps the previous file and leaves the symbol remaining.
+    before = (tmp_path / "fmp" / "AAA.json").read_bytes()
+    http.responses["AAA"] = []
+    again = ex.fetch_fmp_earnings(http, ["AAA"], tmp_path, api_key="k", max_requests=5, now=LATER,
+                                  refresh_before=datetime(2027, 2, 1, tzinfo=timezone.utc))
+    assert (again.failed, again.remaining, again.complete) == ({"AAA": "empty_response"}, 1, False)
+    assert (tmp_path / "fmp" / "AAA.json").read_bytes() == before
 
 
 # -- fetch SEC -----------------------------------------------------------------
@@ -126,7 +140,8 @@ def test_fetch_complete_only_when_every_symbol_is_saved(tmp_path):
     s = ex.fetch_fmp_earnings(http, ["AAA"], tmp_path, api_key="k", max_requests=5, now=NOW)
     assert (s.remaining, s.complete) == (0, True)
     # A max_requests stop also counts symbols that failed earlier in the same run.
-    http2 = FakeHttp({"BBB": ProviderRequestError("x", retryable=False), "CCC": [], "DDD": []})
+    http2 = FakeHttp({"BBB": ProviderRequestError("x", retryable=False), "CCC": [fmp_row("CCC", "2026-05-01")],
+                      "DDD": [fmp_row("DDD", "2026-05-01")]})
     s2 = ex.fetch_fmp_earnings(http2, ["BBB", "CCC", "DDD"], tmp_path, api_key="k", max_requests=2, now=NOW)
     assert (s2.stopped_reason, s2.remaining, s2.complete) == ("max_requests", 2, False)
 
@@ -426,6 +441,39 @@ def test_cli_main_accept_missing_flag_end_to_end(tmp_path, capsys):
     assert main([*base, "--accept-missing", "BBB,CCC"]) == 2  # passes the gate; 2025 holds no rows
     printed = json.loads(capsys.readouterr().out)
     assert printed["error"]["code"] == "NO_ROWS" and printed["summary"]["accepted_missing"] == ["BBB", "CCC"]
+
+
+def test_cli_empty_fmp_history_cannot_silently_narrow_the_universe(tmp_path):
+    """AAA has a report; FMP returns [] for BBB. Both have SEC files."""
+    from trading_research.cli import _build_earnings_csv_exit_code
+
+    raw = tmp_path / "raw"
+    symbols = tmp_path / "symbols.txt"
+    symbols.write_text("AAA\nBBB\n")
+    http = FakeHttp({"AAA": [fmp_row("AAA", "2026-08-03")], "BBB": []})
+    fetched = build_earnings_csv_cli(mode="fetch-fmp", symbols_file=symbols, raw_dir=raw, fmp_api_key="k",
+                                     http_client=http, now=NOW)
+    assert fetched["failed"] == {"BBB": "empty_response"} and fetched["complete"] is False
+    assert _build_earnings_csv_exit_code(fetched) == 3
+    for s in ("AAA", "BBB"):
+        (raw / "sec").mkdir(parents=True, exist_ok=True)
+        (raw / "sec" / f"{s}.json").write_text(json.dumps(sec_doc(s, [("8-K", "2.02", "2026-08-03T20:10:00.000Z")])))
+    # An empty FMP file saved before the fetch refused them must not pass either.
+    write_raw(raw, "BBB", [])
+    out = tmp_path / "e.csv"
+    out.write_text("previous snapshot\n")
+    def run_build(accept=None):
+        return build_earnings_csv_cli(mode="build", symbols_file=symbols, raw_dir=raw, out=out,
+                                      start=date(2026, 1, 1), end=date(2026, 12, 31), now=NOW, accept_missing=accept)
+
+    refused = run_build()
+    assert refused["error"]["code"] == "INCOMPLETE_RAW_DATA" and refused["missing"] == ["BBB"]
+    assert refused["summary"]["symbols_with_empty_fmp_history"] == ["BBB"]
+    assert out.read_text() == "previous snapshot\n"
+    accepted = run_build(["BBB"])
+    assert "error" not in accepted and accepted["kept"] == 1 and accepted["accepted_missing"] == ["BBB"]
+    assert accepted["symbols_with_empty_fmp_history"] == ["BBB"]
+    assert [r.symbol for r in load_earnings_csv(out)] == ["AAA"]
 
 
 def test_cli_guards(tmp_path):

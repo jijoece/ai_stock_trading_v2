@@ -201,6 +201,11 @@ def fetch_fmp_earnings(
             # FMP reports plan limits as a JSON object or plain text; keep only the shape.
             failed[symbol] = "unexpected_response_shape"
             continue
+        if not payload:
+            # No history at all is a coverage gap, not complete data: keep any previous file and
+            # leave the symbol remaining so the gap cannot pass silently into a build.
+            failed[symbol] = "empty_response"
+            continue
         _write_json(path, {
             "schema": FMP_RAW_SCHEMA, "symbol": symbol,
             "fetched_at": now.astimezone(timezone.utc).isoformat(), "rows": payload,
@@ -366,6 +371,7 @@ def build_earnings_rows(
     adjacent = 0
     missing_fmp: list[str] = []
     missing_sec: list[str] = []
+    empty_fmp: list[str] = []
     rows: list[EarningsRow] = []
     fmp_rows = 0
     fmp_fetched: list[datetime] = []
@@ -382,6 +388,11 @@ def build_earnings_rows(
         fmp_fetched.append(captured_at)
         if not isinstance(fmp.get("rows"), list):
             raise EarningsExportError(f"{fmp_path}: rows must be a list")
+        if not fmp["rows"]:
+            # A file with no history (e.g. written before empty responses were refused) carries no
+            # coverage for the symbol; treat it like a missing file so the build gate sees it.
+            empty_fmp.append(symbol)
+            continue
         acceptances: list[datetime] | None = None
         sec_day: date | None = None  # New York date the SEC snapshot was taken
         if sec_path.exists():
@@ -455,6 +466,7 @@ def build_earnings_rows(
         "kept_pm": sum(r.timing == "pm" for r in rows), "dropped": dict(sorted(drops.items())),
         "no_matching_8k_with_one_on_adjacent_day": adjacent,
         "symbols_without_fmp_file": missing_fmp, "symbols_without_sec_file": missing_sec,
+        "symbols_with_empty_fmp_history": empty_fmp,
         "fmp_fetched_at_span": _span(fmp_fetched), "sec_fetched_at_span": _span(sec_fetched),
         "item_2_02_acceptance_hour_histogram_et": dict(sorted(hours.items())),
     }
